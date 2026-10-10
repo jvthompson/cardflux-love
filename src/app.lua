@@ -182,6 +182,8 @@ local dev = {}
 
 function App.load(args)
   love.keyboard.setKeyRepeat(true)
+  -- Window/taskbar icon (the exe's own icon is set by tools/build.ps1).
+  pcall(function() love.window.setIcon(love.image.newImageData("assets/icon.png")) end)
   theme.setDark(profile.getDarkMode())
   App.loadProfile()
   window.install()
