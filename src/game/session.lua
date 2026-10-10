@@ -1,0 +1,533 @@
+-- Port of lib/game/game_session.dart: owns the authoritative TableState,
+-- wraps every TableActions call with game-log entries, and notifies
+-- listeners on change.
+--
+-- Time: `opts.now` (seconds, default love.timer.getTime) drives the log
+-- clock and the arrow-lifetime timer; call session:update() each frame so
+-- pending timers fire.
+local models = require("src.core.models")
+local util = require("src.core.util")
+local uuid = require("src.core.uuid")
+local A = require("src.core.table_actions")
+local dwz = require("src.core.deck_widget_zones")
+local packs = require("src.core.pack_generator")
+
+local Session = {}
+Session.__index = Session
+
+Session.arrowLifetime = 5 -- seconds
+
+local function defaultNow() return love.timer.getTime() end
+
+-- opts: { game, localPlayerId, initialState, isLocalPractice, clockStart, now }
+function Session.new(opts)
+  local self = setmetatable({}, Session)
+  self.game = opts.game
+  self.localPlayerId = opts.localPlayerId
+  self.state = opts.initialState
+  self.isLocalPractice = opts.isLocalPractice or false
+  self.now = opts.now or defaultNow
+  self.clockStart = opts.clockStart or self.now()
+  self.activeSeatId = nil
+  self.listeners = {}
+  self.timers = {}
+  -- Cosmetic drag previews from other players: playerId -> preview.
+  self.cardDragPreviews = {}
+  self.arrowDragPreviews = {}
+  self.definitionsById = {}
+  for _, c in ipairs(self.game.cards) do
+    if self.definitionsById[c.id] == nil then self.definitionsById[c.id] = c end
+  end
+  return self
+end
+
+function Session:actingPlayerId() return self.activeSeatId or self.localPlayerId end
+
+function Session:setActiveSeat(playerId)
+  if not self.isLocalPractice then return end
+  self.activeSeatId = playerId
+  self:notify()
+end
+
+function Session:addListener(fn)
+  self.listeners[#self.listeners + 1] = fn
+  return fn
+end
+
+function Session:removeListener(fn)
+  for i, l in ipairs(self.listeners) do
+    if l == fn then table.remove(self.listeners, i) return end
+  end
+end
+
+function Session:notify()
+  for _, l in ipairs(util.shallowCopy(self.listeners)) do l(self) end
+end
+
+function Session:update()
+  if #self.timers == 0 then return end
+  local now = self.now()
+  local due = {}
+  local keep = {}
+  for _, t in ipairs(self.timers) do
+    if now >= t.at then due[#due + 1] = t else keep[#keep + 1] = t end
+  end
+  self.timers = keep
+  for _, t in ipairs(due) do t.fn() end
+end
+
+function Session:after(seconds, fn)
+  self.timers[#self.timers + 1] = { at = self.now() + seconds, fn = fn }
+end
+
+---------------------------------------------------------------------------
+-- Initial deal
+---------------------------------------------------------------------------
+
+-- opts: { game, players, localPlayerId, deckConfigsByPlayerId,
+--         sharedDeckConfigsByZoneId, isLocalPractice, now, rng }
+function Session.dealFromZones(opts)
+  local game = opts.game
+  local standardDeckCards = util.any(game.zones, function(z) return z.shared and z.standardDeck end)
+    and models.buildStandardDeckCards() or {}
+  local defs = {}
+  for _, c in ipairs(game.cards) do defs[c.id] = c end
+  for _, c in ipairs(standardDeckCards) do defs[c.id] = c end
+  local function entriesOf(list)
+    return util.map(list, function(c) return models.DeckEntry.new(c.id, 1) end)
+  end
+  local fullDeckEntries = entriesOf(game.cards)
+  local standardDeckEntries = entriesOf(standardDeckCards)
+  local cards = {}
+  local i = 0
+
+  local function deal(entries, zoneId, ownerId, faceUp, autoShuffle)
+    local ids = {}
+    for _, e in ipairs(entries) do
+      if defs[e.definitionId] then
+        for _ = 1, e.quantity do ids[#ids + 1] = e.definitionId end
+      end
+    end
+    if autoShuffle then util.shuffle(ids, opts.rng) end
+    for _, id in ipairs(ids) do
+      cards[#cards + 1] = models.CardInstance.new({
+        instanceId = uuid.v4(), definitionId = id, x = 0.5, y = 0.5, zIndex = i, faceUp = faceUp,
+        zone = "zone", zoneId = zoneId, ownerId = ownerId, unownable = defs[id].unownable,
+      })
+      i = i + 1
+    end
+  end
+
+  for _, player in ipairs(opts.players) do
+    for _, zone in ipairs(game.zones) do
+      if not zone.shared and zone.kind == "card" then
+        local entries
+        if zone.dealsBuiltDeck then
+          if opts.deckConfigsByPlayerId == nil then
+            entries = fullDeckEntries
+          else
+            local deck = opts.deckConfigsByPlayerId[player.id]
+            entries = deck and models.DeckConfig.entriesFor(deck, zone.deckType) or {}
+          end
+        else
+          entries = zone.entries
+        end
+        deal(entries, zone.id, player.id, zone.faceUp, zone.autoShuffle)
+      end
+    end
+  end
+
+  local widgets = {}
+  for _, player in ipairs(opts.players) do
+    for _, zone in ipairs(game.zones) do
+      if not zone.shared and zone.kind == "widget" then
+        widgets[#widgets + 1] = models.BoardWidgetInstance.new({
+          instanceId = uuid.v4(), kind = "simpleCounter", x = 0.5, y = 0.5, zIndex = #widgets,
+          value = zone.counterStartingValue, backgroundColor = zone.counterStartingColor,
+          textColor = zone.counterStartingTextColor, ownerId = player.id, zoneId = zone.id,
+        })
+      end
+    end
+  end
+
+  for _, zone in ipairs(game.zones) do
+    if zone.shared then
+      local entries
+      if zone.standardDeck then
+        entries = standardDeckEntries
+      else
+        local loaded = opts.sharedDeckConfigsByZoneId and opts.sharedDeckConfigsByZoneId[zone.id]
+        if loaded then
+          entries = models.DeckConfig.entriesFor(loaded, "main_deck")
+        elseif #zone.entries > 0 or zone.isDiscardPile then
+          entries = zone.entries
+        else
+          entries = fullDeckEntries
+        end
+      end
+      deal(entries, zone.id, nil, zone.faceUp, zone.autoShuffle)
+    end
+  end
+
+  return Session.new({
+    game = game,
+    localPlayerId = opts.localPlayerId,
+    initialState = models.TableState.new({ gameId = game.id, players = opts.players, cards = cards, widgets = widgets, revision = 0 }),
+    isLocalPractice = opts.isLocalPractice,
+    now = opts.now,
+  })
+end
+
+function Session.localPractice(opts)
+  return Session.dealFromZones({
+    game = opts.game, players = opts.players, localPlayerId = opts.players[1].id,
+    deckConfigsByPlayerId = opts.deckConfigsByPlayerId,
+    sharedDeckConfigsByZoneId = opts.sharedDeckConfigsByZoneId,
+    isLocalPractice = true, now = opts.now, rng = opts.rng,
+  })
+end
+
+---------------------------------------------------------------------------
+-- Helpers
+---------------------------------------------------------------------------
+
+function Session:findCard(id) return models.TableState.cardById(self.state, id) end
+function Session:findWidget(id) return models.TableState.widgetById(self.state, id) end
+
+function Session:definition(definitionId) return self.definitionsById[definitionId] end
+
+function Session:playerName(playerId)
+  local p = models.TableState.playerById(self.state, playerId)
+  return p and p.name or playerId
+end
+
+function Session:zoneDefinition(zoneId)
+  local parsed = dwz.parse(zoneId)
+  local realId = parsed and parsed.realZoneId or zoneId
+  local zone = models.GameDefinition.zoneById(self.game, realId)
+  if not zone then error("unknown zone '" .. tostring(zoneId) .. "'", 2) end
+  return zone
+end
+
+function Session:isPubliclyVisible(card)
+  if not card.faceUp then return false end
+  if card.zone == "table" then return true end
+  if card.zone == "hand" then return false end
+  if card.ownerId == nil then return true end
+  if dwz.isDeckWidgetZoneId(card.zoneId) then return false end
+  return self:zoneDefinition(card.zoneId).visibleToAll
+end
+
+function Session:titleOf(card)
+  local def = card and self.definitionsById[card.definitionId]
+  return def and def.cardTitle or nil
+end
+
+function Session:revealedCardName(oldCard, newCard)
+  local revealed = (oldCard ~= nil and self:isPubliclyVisible(oldCard)) or (newCard ~= nil and self:isPubliclyVisible(newCard))
+  if not revealed then return nil end
+  return self:titleOf(newCard or oldCard)
+end
+
+local function cardText(name) return name and ('"' .. name .. '"') or "a card" end
+
+function Session:elapsedMs()
+  return math.max(0, math.floor((self.now() - self.clockStart) * 1000))
+end
+
+function Session:log(actingPlayerId, action)
+  local log = util.shallowCopy(self.state.log)
+  log[#log + 1] = models.LogEntry.new(self:elapsedMs(), self:playerName(actingPlayerId) .. " " .. action)
+  self.state = util.copyWith(self.state, { log = log })
+end
+
+function Session:logPlayedToTable(actingPlayerId, oldCard, instanceId)
+  local name = self:revealedCardName(oldCard, self:findCard(instanceId))
+  local origin = oldCard.zone == "hand" and "hand" or ("the " .. self:zoneDefinition(oldCard.zoneId).name)
+  self:log(actingPlayerId, "played " .. cardText(name) .. " to the table from " .. origin .. ".")
+end
+
+---------------------------------------------------------------------------
+-- Card operations
+---------------------------------------------------------------------------
+
+function Session:moveCard(instanceId, x, y, actingPlayerId)
+  local old = self:findCard(instanceId)
+  self.state = A.moveCard(self.state, instanceId, x, y)
+  if old and old.zone ~= "table" then self:logPlayedToTable(actingPlayerId, old, instanceId) end
+  self:notify()
+end
+
+function Session:moveStack(rootInstanceId, x, y)
+  self.state = A.moveStack(self.state, rootInstanceId, x, y)
+  self:notify()
+end
+
+function Session:moveGroup(primaryInstanceId, passengerRootIds, x, y, actingPlayerId)
+  local old = self:findCard(primaryInstanceId)
+  self.state = A.moveGroup(self.state, primaryInstanceId, passengerRootIds, x, y)
+  if old and old.zone ~= "table" then self:logPlayedToTable(actingPlayerId, old, primaryInstanceId) end
+  self:notify()
+end
+
+function Session:rotateStack(rootInstanceId, clockwise, actingPlayerId)
+  self.state = A.rotateStack(self.state, rootInstanceId, clockwise)
+  local card = self:findCard(rootInstanceId)
+  if card then
+    local name = self:isPubliclyVisible(card) and self:titleOf(card) or nil
+    self:log(actingPlayerId, name and ('rotated "' .. name .. '".') or "rotated a card.")
+  end
+  self:notify()
+end
+
+function Session:bringToFront(rootInstanceId)
+  self.state = A.bringToFront(self.state, rootInstanceId)
+  self:notify()
+end
+
+function Session:flipCard(instanceId, actingPlayerId)
+  self.state = A.flipCard(self.state, instanceId)
+  local card = self:findCard(instanceId)
+  local direction = (card and card.faceUp) and "face up" or "face down"
+  local name = self:titleOf(card)
+  self:log(actingPlayerId, name and ('flipped "' .. name .. '" ' .. direction .. ".") or ("flipped a card " .. direction .. "."))
+  self:notify()
+end
+
+function Session:giveCard(instanceId, newOwnerId, actingPlayerId)
+  self.state = A.giveCard(self.state, instanceId, newOwnerId)
+  local card = self:findCard(instanceId)
+  local name = (card and self:isPubliclyVisible(card)) and self:titleOf(card) or nil
+  if newOwnerId ~= nil then
+    self:log(actingPlayerId, "gave " .. cardText(name) .. " to " .. self:playerName(newOwnerId) .. ".")
+  else
+    self:log(actingPlayerId, "released " .. cardText(name) .. " back to the table.")
+  end
+  self:notify()
+end
+
+function Session:stackCard(instanceId, ontoInstanceId, actingPlayerId)
+  local old = self:findCard(instanceId)
+  self.state = A.stackCard(self.state, instanceId, ontoInstanceId)
+  if old and old.zone ~= "table" then self:logPlayedToTable(actingPlayerId, old, instanceId) end
+  self:notify()
+end
+
+function Session:reorderHand(instanceId, targetIndex, ownerId)
+  self.state = A.reorderHand(self.state, instanceId, ownerId or self.localPlayerId, targetIndex)
+  self:notify()
+end
+
+function Session:moveToHand(instanceId, ownerId)
+  local acting = ownerId or self.localPlayerId
+  local old = self:findCard(instanceId)
+  self.state = A.moveToHand(self.state, instanceId, acting)
+  local name = (old and self:isPubliclyVisible(old)) and self:titleOf(old) or nil
+  self:log(acting, name and ('picked up "' .. name .. '" into their hand.') or "picked up a card into their hand.")
+  self:notify()
+end
+
+function Session:drawCard(pileInstanceId, ownerId, count)
+  count = count or 1
+  local acting = ownerId or self.localPlayerId
+  self.state = A.drawCard(self.state, pileInstanceId, acting, count)
+  self:log(acting, count == 1 and "drew a card." or ("drew " .. count .. " cards."))
+  self:notify()
+end
+
+function Session:shufflePile(pileRootInstanceId, actingPlayerId)
+  self.state = A.shufflePile(self.state, pileRootInstanceId)
+  self:log(actingPlayerId, "shuffled a pile of cards.")
+  self:notify()
+end
+
+function Session:drawFromZone(zoneId, zoneOwnerId, toOwnerId, count)
+  count = count or 1
+  local acting = toOwnerId or self.localPlayerId
+  local zoneName = self:zoneDefinition(zoneId).name
+  self.state = A.drawFromZone(self.state, zoneId, zoneOwnerId, acting, count)
+  self:log(acting, count == 1 and ("drew a card from the " .. zoneName .. ".")
+    or ("drew " .. count .. " cards from the " .. zoneName .. "."))
+  self:notify()
+end
+
+function Session:returnToZone(instanceId, zoneId, zoneOwnerId, toBottom, actingPlayerId)
+  local zone = self:zoneDefinition(zoneId)
+  local old = self:findCard(instanceId)
+  self.state = A.returnToZone(self.state, instanceId, zoneId, zoneOwnerId, zone.faceUp, toBottom)
+  local name = self:revealedCardName(old, self:findCard(instanceId))
+  if zone.isDiscardPile then
+    self:log(actingPlayerId, "discarded " .. cardText(name) .. ".")
+  else
+    self:log(actingPlayerId, "returned " .. cardText(name) .. " to the " .. zone.name .. ".")
+  end
+  self:notify()
+end
+
+function Session:shuffleZone(zoneId, zoneOwnerId, actingPlayerId)
+  local zone = self:zoneDefinition(zoneId)
+  if not zone.shuffleable then return end
+  self.state = A.shuffleZone(self.state, zoneId, zoneOwnerId)
+  self:log(actingPlayerId, "shuffled the " .. zone.name .. ".")
+  self:notify()
+end
+
+function Session:loadDeckIntoZone(zoneId, deck, actingPlayerId)
+  local zone = self:zoneDefinition(zoneId)
+  local ids = {}
+  for _, e in ipairs(models.DeckConfig.entriesFor(deck, zone.deckType)) do
+    if self.definitionsById[e.definitionId] then
+      for _ = 1, e.quantity do ids[#ids + 1] = e.definitionId end
+    end
+  end
+  if zone.autoShuffle then util.shuffle(ids) end
+  -- Note: Flutter stamps the zone definition's own id here (not a deck
+  -- widget's synthetic id), matching game_session.dart.
+  local newCards = util.map(ids, function(id)
+    return models.CardInstance.new({
+      instanceId = uuid.v4(), definitionId = id, x = 0.5, y = 0.5, zIndex = 0, faceUp = zone.faceUp,
+      zone = "zone", zoneId = zone.id, ownerId = actingPlayerId, unownable = self.definitionsById[id].unownable,
+    })
+  end)
+  self.state = A.dealNewCards(self.state, newCards)
+  self:log(actingPlayerId, "loaded a deck into the " .. zone.name .. ".")
+  self:notify()
+end
+
+---------------------------------------------------------------------------
+-- Searches
+---------------------------------------------------------------------------
+
+function Session:startSearchZone(zoneId, zoneOwnerId, searcherId)
+  local acting = searcherId or self.localPlayerId
+  local zoneName = self:zoneDefinition(zoneId).name
+  self.state = A.startSearch(self.state, acting, "zone", zoneId, zoneOwnerId)
+  self:log(acting, "opened a search on the " .. zoneName .. ".")
+  self:notify()
+end
+
+function Session:startSearchPile(pileRootInstanceId, searcherId)
+  local acting = searcherId or self.localPlayerId
+  self.state = A.startSearch(self.state, acting, "pile", pileRootInstanceId)
+  self:log(acting, "opened a search on a pile of cards.")
+  self:notify()
+end
+
+function Session:stopSearch(searcherId)
+  local acting = searcherId or self.localPlayerId
+  local had = util.any(self.state.searches, function(s) return s.searcherId == acting end)
+  self.state = A.stopSearch(self.state, acting)
+  if had then self:log(acting, "closed their search.") end
+  self:notify()
+end
+
+---------------------------------------------------------------------------
+-- Widgets
+---------------------------------------------------------------------------
+
+function Session:createWidget(instanceId, kind, x, y, actingPlayerId)
+  self.state = A.createWidget(self.state, instanceId, kind, x, y, kind == "deckBuilder" and actingPlayerId or nil)
+  self:notify()
+end
+
+function Session:createArrow(instanceId, x, y, x2, y2, creatorId)
+  self.state = A.createArrow(self.state, instanceId, x, y, x2, y2, creatorId)
+  self:notify()
+  self:after(Session.arrowLifetime, function()
+    if self:findWidget(instanceId) then self:deleteWidget(instanceId) end
+  end)
+end
+
+function Session:moveWidget(instanceId, x, y)
+  self.state = A.moveWidget(self.state, instanceId, x, y)
+  self:notify()
+end
+
+function Session:setWidgetValue(instanceId, value, actingPlayerId)
+  local widget = self:findWidget(instanceId)
+  self.state = A.setWidgetValue(self.state, instanceId, value)
+  if widget and widget.kind == "simpleCounter" then
+    local clamped = util.clamp(value, models.boardWidgetCounterMin, models.boardWidgetCounterMax)
+    local label = widget.zoneId and self:zoneDefinition(widget.zoneId).name or "a counter"
+    self:log(actingPlayerId, "set " .. label .. " to " .. clamped .. ".")
+  end
+  self:notify()
+end
+
+function Session:deleteWidget(instanceId)
+  self.state = A.deleteWidget(self.state, instanceId)
+  self:notify()
+end
+
+function Session:setWidgetColors(instanceId, backgroundColor, textColor)
+  self.state = A.setWidgetColors(self.state, instanceId, backgroundColor, textColor)
+  self:notify()
+end
+
+function Session:duplicateWidget(sourceInstanceId, newInstanceId, x, y)
+  self.state = A.duplicateWidget(self.state, sourceInstanceId, newInstanceId, x, y)
+  self:notify()
+end
+
+local KIND_LABELS = { simpleCounter = "a counter", token = "a token" }
+
+function Session:attachWidgetToCard(instanceId, cardId, x, y, actingPlayerId)
+  local widget = self:findWidget(instanceId)
+  local card = self:findCard(cardId)
+  self.state = A.attachWidgetToCard(self.state, instanceId, cardId, x, y)
+  local kindLabel = widget and KIND_LABELS[widget.kind] or "a widget"
+  local name = (card and self:isPubliclyVisible(card)) and self:titleOf(card) or nil
+  self:log(actingPlayerId, "attached " .. kindLabel .. " to " .. cardText(name) .. ".")
+  self:notify()
+end
+
+function Session:generatePack(setId, actingPlayerId, rng)
+  local set = util.find(self.game.sets, function(s) return s.id == setId end)
+  local setCards = util.filter(self.game.cards, function(c) return c.setId == setId end)
+  local selected = packs.selectPackCards(setCards, set and set.packSettings or {}, rng)
+  local newCards = util.map(selected, function(def)
+    return models.CardInstance.new({
+      instanceId = uuid.v4(), definitionId = def.id, x = 0.5, y = 0.5, zIndex = 0, faceUp = true,
+      zone = "hand", ownerId = actingPlayerId, unownable = def.unownable,
+    })
+  end)
+  self.state = A.dealNewCards(self.state, newCards)
+  self:log(actingPlayerId, "generated a pack from the " .. (set and set.name or setId) .. " set.")
+  self:notify()
+end
+
+function Session:createCardFromLibrary(definitionId, x, y, actingPlayerId)
+  local def = self.definitionsById[definitionId]
+  if not def then return end
+  self.state = A.dealNewCards(self.state, { models.CardInstance.new({
+    instanceId = uuid.v4(), definitionId = definitionId, x = x, y = y, zIndex = 0, faceUp = true,
+    zone = "table", ownerId = actingPlayerId, unownable = def.unownable,
+  }) })
+  self:log(actingPlayerId, 'created "' .. def.cardTitle .. '" from the card library.')
+  self:notify()
+end
+
+---------------------------------------------------------------------------
+-- Networking hooks
+---------------------------------------------------------------------------
+
+-- Client side: adopt a newer host state.
+function Session:applyRemoteState(newState)
+  if newState.revision <= self.state.revision then return end
+  self.state = newState
+  self:notify()
+end
+
+-- Host side: connectedNonHostIds is a set {id -> true}.
+function Session:syncConnectedPlayerIds(connectedNonHostIds)
+  local updated = {}
+  for i, p in ipairs(self.state.players) do
+    local now = p.role == "host" or connectedNonHostIds[p.id] == true
+    if now ~= p.connected then self:log(p.id, now and "connected." or "disconnected.") end
+    updated[i] = util.copyWith(p, { connected = now })
+  end
+  self.state = util.copyWith(self.state, { players = updated, revision = self.state.revision + 1 })
+  self:notify()
+end
+
+return Session

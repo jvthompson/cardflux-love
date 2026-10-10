@@ -1,0 +1,292 @@
+-- Port of test/game_session_test.dart (condensed) plus controller checks.
+local H = require("tests.helpers")
+local models = require("src.core.models")
+local util = require("src.core.util")
+local Session = require("src.game.session")
+local controller = require("src.game.controller")
+local json = require("lib.json")
+
+return function(t)
+  local p1 = H.player("p1", "Alice", "host")
+  local p2 = H.player("p2", "Bob", "client")
+
+  local function zone(f) return models.ZoneDefinition.new(f) end
+  local function game(f)
+    f.id = f.id or "g"
+    f.name = f.name or "G"
+    f.cards = f.cards or { H.cardDef("a"), H.cardDef("b"), H.cardDef("c") }
+    return models.GameDefinition.new(f)
+  end
+  local function deck(subdecks)
+    local list = {}
+    for name, entries in pairs(subdecks) do
+      list[#list + 1] = models.SubDeck.new(name, util.map(entries, function(e) return models.DeckEntry.new(e[1], e[2]) end))
+    end
+    return models.DeckConfig.new("g", list)
+  end
+  local function inZone(s, zoneId, ownerId)
+    return util.filter(s.state.cards, function(c) return c.zone == "zone" and c.zoneId == zoneId and c.ownerId == ownerId end)
+  end
+  local function defIds(cards)
+    local ids = util.map(A and cards or cards, function(c) return c.definitionId end)
+    table.sort(ids)
+    return ids
+  end
+  -- Fake clock so log timestamps are deterministic.
+  local clock = 100
+  local function now() return clock end
+  local function lastLog(s) return s.state.log[#s.state.log].message end
+
+  t.describe("dealFromZones", function()
+    t.it("built decks per player, full-deck fallback, missing optional subdeck", function()
+      local g = game({ zones = {
+        zone({ id = "draw", name = "Draw", dealsBuiltDeck = true }),
+        zone({ id = "side", name = "Side", dealsBuiltDeck = true, deckType = "side", deckOptional = true }),
+      } })
+      local s = Session.dealFromZones({ game = g, players = { p1, p2 }, localPlayerId = "p1", now = now,
+        deckConfigsByPlayerId = { p1 = deck({ main_deck = { { "a", 2 }, { "zzz", 5 } }, side = { { "c", 1 } } }), p2 = deck({ main_deck = { { "b", 1 } } }) } })
+      t.eq(defIds(inZone(s, "draw", "p1")), { "a", "a" })
+      t.eq(defIds(inZone(s, "side", "p1")), { "c" })
+      t.eq(defIds(inZone(s, "draw", "p2")), { "b" })
+      t.eq(#inZone(s, "side", "p2"), 0)
+      t.eq(s.state.revision, 0)
+      local zs = util.map(s.state.cards, function(c) return c.zIndex end)
+      t.eq(zs, { 0, 1, 2, 3 })
+      local full = Session.dealFromZones({ game = g, players = { p1 }, localPlayerId = "p1", now = now })
+      t.eq(defIds(inZone(full, "draw", "p1")), { "a", "b", "c" })
+    end)
+    t.it("static entries, faceUp, widget zones", function()
+      local g = game({ zones = {
+        zone({ id = "z", name = "Z", faceUp = true, entries = { models.DeckEntry.new("b", 2) } }),
+        zone({ id = "life", name = "Life", kind = "widget", counterStartingValue = 20, counterStartingColor = 0xFFD32F2F }),
+      } })
+      local s = Session.dealFromZones({ game = g, players = { p1, p2 }, localPlayerId = "p1", now = now })
+      t.eq(#inZone(s, "z", "p2"), 2)
+      t.ok(inZone(s, "z", "p1")[1].faceUp)
+      t.eq(#s.state.widgets, 2)
+      local w = s.state.widgets[2]
+      t.eq({ w.kind, w.value, w.backgroundColor, w.ownerId, w.zoneId, w.zIndex }, { "simpleCounter", 20, 0xFFD32F2F, "p2", "life", 1 })
+    end)
+    t.it("shared zones: discard empty, default full deck, standard 52, deckName, unownable", function()
+      local g = game({ cards = { H.cardDef("a", {}, { unownable = true }), H.cardDef("b") }, zones = {
+        zone({ id = "discard", name = "Discard", shared = true, isDiscardPile = true }),
+        zone({ id = "pool", name = "Pool", shared = true }),
+        zone({ id = "deck52", name = "Deck", shared = true, standardDeck = true }),
+        zone({ id = "named", name = "Named", shared = true, deckName = "X", entries = { models.DeckEntry.new("a", 9) } }),
+      } })
+      local s = Session.dealFromZones({ game = g, players = { p1 }, localPlayerId = "p1", now = now,
+        sharedDeckConfigsByZoneId = { named = deck({ main_deck = { { "b", 3 } } }) } })
+      t.eq(#inZone(s, "discard", nil), 0)
+      t.eq(defIds(inZone(s, "pool", nil)), { "a", "b" })
+      t.eq(#inZone(s, "deck52", nil), 52)
+      t.eq(defIds(inZone(s, "named", nil)), { "b", "b", "b" })
+      local a = util.find(inZone(s, "pool", nil), function(c) return c.definitionId == "a" end)
+      t.ok(a.unownable)
+    end)
+    t.it("autoShuffle keeps the multiset and sequential zIndex", function()
+      local entries = {}
+      for i = 1, 20 do entries[i] = models.DeckEntry.new(i % 2 == 0 and "a" or "b", 1) end
+      local g = game({ zones = { zone({ id = "z", name = "Z", shared = true, autoShuffle = true, entries = entries }) } })
+      local s = Session.dealFromZones({ game = g, players = { p1 }, localPlayerId = "p1", now = now, rng = util.seededRng(3) })
+      local ids = defIds(s.state.cards)
+      t.eq(#ids, 20)
+      t.eq(ids[10], "a")
+      t.eq(ids[11], "b")
+    end)
+  end)
+
+  t.describe("practice seats", function()
+    t.it("acts as the first player and can switch; no-op outside practice", function()
+      local g = game({ zones = {} })
+      local s = Session.localPractice({ game = g, players = { p1, p2 }, now = now })
+      t.eq(s:actingPlayerId(), "p1")
+      local notified = 0
+      s:addListener(function() notified = notified + 1 end)
+      s:setActiveSeat("p2")
+      t.eq(s:actingPlayerId(), "p2")
+      t.eq(notified, 1)
+      local host = Session.new({ game = g, localPlayerId = "p1", initialState = H.state({}), now = now })
+      host:setActiveSeat("p2")
+      t.eq(host:actingPlayerId(), "p1")
+    end)
+  end)
+
+  t.describe("action log", function()
+    local g = game({ cards = { H.cardDef("a", {}, { cardTitle = "Ace" }), H.cardDef("b", {}, { cardTitle = "Bee" }) }, zones = {
+      zone({ id = "draw", name = "Draw Deck" }),
+      zone({ id = "discard", name = "Discard", isDiscardPile = true, faceUp = true, visibleToAll = true }),
+      zone({ id = "life", name = "Life", kind = "widget" }),
+    }, sets = { models.GameSet.new({ id = "s1", name = "Core" }) } })
+    local function session(cards, widgets)
+      clock = 100
+      return Session.new({ game = g, localPlayerId = "p1", now = now, clockStart = 100,
+        initialState = H.state({ players = { p1, p2 }, cards = cards or {}, widgets = widgets or {} }) })
+    end
+    t.it("plays to table: names visible hand cards, generic for hidden zone cards, none for repositions", function()
+      local s = session({
+        H.card({ id = "h", definitionId = "a", zone = "hand", ownerId = "p1", faceUp = true }),
+        H.card({ id = "z", definitionId = "b", zone = "zone", zoneId = "draw", ownerId = "p1", zIndex = 1 }),
+        H.card({ id = "t", definitionId = "b", faceUp = true, zIndex = 2 }),
+      })
+      clock = 161.5
+      s:moveCard("h", 0.5, 0.5, "p1")
+      t.eq(s.state.log[1], { elapsedMs = 61500, message = 'Alice played "Ace" to the table from hand.' })
+      s:moveCard("z", 0.5, 0.5, "p1")
+      t.eq(lastLog(s), "Alice played a card to the table from the Draw Deck.")
+      s:moveCard("t", 0.2, 0.2, "p1")
+      t.eq(#s.state.log, 2)
+    end)
+    t.it("flip, draw, zone draw, shuffles, discard, return", function()
+      local s = session({
+        H.card({ id = "x", definitionId = "a", zone = "hand", ownerId = "p1" }),
+        H.card({ id = "z1", definitionId = "a", zone = "zone", zoneId = "draw", ownerId = "p1", zIndex = 1 }),
+        H.card({ id = "z2", definitionId = "b", zone = "zone", zoneId = "draw", ownerId = "p1", zIndex = 2 }),
+        H.card({ id = "p", definitionId = "a", zIndex = 3 }),
+        H.card({ id = "q", definitionId = "b", zIndex = 4, stackParentId = "p" }),
+      })
+      s:flipCard("x", "p1")
+      t.eq(lastLog(s), 'Alice flipped "Ace" face up.')
+      s:drawCard("p", "p1", 1)
+      t.eq(lastLog(s), "Alice drew a card.")
+      s:drawFromZone("draw", "p1", "p1", 2)
+      t.eq(lastLog(s), "Alice drew 2 cards from the Draw Deck.")
+      s:shufflePile("p", "p2")
+      t.eq(lastLog(s), "Bob shuffled a pile of cards.")
+      s:returnToZone("x", "discard", "p1", false, "p1")
+      t.eq(lastLog(s), 'Alice discarded "Ace".')
+      s:returnToZone("q", "draw", "p1", false, "p1")
+      t.eq(lastLog(s), "Alice returned a card to the Draw Deck.")
+      s:shuffleZone("draw", "p1", "p1")
+      t.eq(lastLog(s), "Alice shuffled the Draw Deck.")
+    end)
+    t.it("non-shuffleable zones don't shuffle or log", function()
+      local g2 = game({ zones = { zone({ id = "d", name = "D", shuffleable = false }) } })
+      local s = Session.new({ game = g2, localPlayerId = "p1", now = now, initialState = H.state({ players = { p1 }, cards = {
+        H.card({ id = "1", zone = "zone", zoneId = "d", ownerId = "p1" }), H.card({ id = "2", zone = "zone", zoneId = "d", ownerId = "p1", zIndex = 1 }) } }) })
+      s:shuffleZone("d", "p1", "p1")
+      t.eq(#s.state.log, 0)
+      t.eq(s.state.revision, 0)
+    end)
+    t.it("give, pick up, rotate", function()
+      local s = session({ H.card({ id = "c", definitionId = "a", faceUp = true, ownerId = "p1" }) })
+      s:giveCard("c", "p2", "p1")
+      t.eq(lastLog(s), 'Alice gave "Ace" to Bob.')
+      s:giveCard("c", nil, "p2")
+      t.eq(lastLog(s), 'Bob released "Ace" back to the table.')
+      s:rotateStack("c", true, "p1")
+      t.eq(lastLog(s), 'Alice rotated "Ace".')
+      s:moveToHand("c", "p1")
+      t.eq(lastLog(s), 'Alice picked up "Ace" into their hand.')
+    end)
+    t.it("widgets and searches", function()
+      local s = session({ H.card({ id = "c", definitionId = "a" }) }, {
+        H.widget({ id = "zc", kind = "simpleCounter", ownerId = "p1", zoneId = "life" }),
+        H.widget({ id = "fc", kind = "simpleCounter" }),
+        H.widget({ id = "tok", kind = "token" }),
+      })
+      s:setWidgetValue("zc", 120000, "p1")
+      t.eq(lastLog(s), "Alice set Life to 99999.")
+      s:setWidgetValue("fc", 3, "p2")
+      t.eq(lastLog(s), "Bob set a counter to 3.")
+      local n = #s.state.log
+      s:setWidgetValue("tok", 3, "p2")
+      t.eq(#s.state.log, n)
+      s:attachWidgetToCard("tok", "c", 0, 0, "p1")
+      t.eq(lastLog(s), "Alice attached a token to a card.")
+      s:startSearchZone("draw", "p1", "p1")
+      t.eq(lastLog(s), "Alice opened a search on the Draw Deck.")
+      s:stopSearch("p1")
+      t.eq(lastLog(s), "Alice closed their search.")
+      n = #s.state.log
+      s:stopSearch("p1")
+      t.eq(#s.state.log, n)
+    end)
+    t.it("connections: logs only changes, never the host", function()
+      local s = session()
+      s:syncConnectedPlayerIds({ p2 = true })
+      t.eq(#s.state.log, 0)
+      t.eq(s.state.revision, 1)
+      s:syncConnectedPlayerIds({})
+      t.eq(lastLog(s), "Bob disconnected.")
+      t.eq(s.state.players[2].connected, false)
+      t.eq(s.state.players[1].connected, true)
+    end)
+    t.it("packs, card library and deck loading", function()
+      local s = session()
+      s:generatePack("s1", "p1")
+      t.eq(lastLog(s), "Alice generated a pack from the Core set.")
+      t.eq(s.state.revision, 0, "empty set: dealNewCards no-op")
+      s:createCardFromLibrary("b", 0.3, 0.4, "p2")
+      t.eq(lastLog(s), 'Bob created "Bee" from the card library.')
+      local c = s.state.cards[1]
+      t.eq({ c.zone, c.faceUp, c.ownerId, c.x }, { "table", true, "p2", 0.3 })
+      s:loadDeckIntoZone("draw", deck({ main_deck = { { "a", 2 }, { "nope", 1 } }, side = { { "b", 4 } } }), "p1")
+      t.eq(lastLog(s), "Alice loaded a deck into the Draw Deck.")
+      t.eq(defIds(inZone(s, "draw", "p1")), { "a", "a" })
+    end)
+    t.it("deck widget synthetic zones resolve to the real zone and stay generic", function()
+      -- From a hand (private) into a sub-zone of a visibleToAll zone: the
+      -- deck widget's cards stay private, so the name isn't revealed.
+      local s = session({ H.card({ id = "c", definitionId = "a", faceUp = true, zone = "hand", ownerId = "p1" }) },
+        { H.widget({ id = "dw", kind = "deckBuilder", ownerId = "p1" }) })
+      s:returnToZone("c", "deckWidget:dw:discard", "p1", false, "p1")
+      t.eq(lastLog(s), "Alice discarded a card.")
+      local moved = s.state.cards[1]
+      t.eq({ moved.zone, moved.zoneId, moved.ownerId }, { "zone", "deckWidget:dw:discard", "p1" })
+      s:startSearchZone("deckWidget:dw:draw", "p1", "p1")
+      t.eq(lastLog(s), "Alice opened a search on the Draw Deck.")
+    end)
+  end)
+
+  t.describe("arrows", function()
+    t.it("expire after 5 seconds via update()", function()
+      clock = 0
+      local s = Session.new({ game = game({}), localPlayerId = "p1", now = now, initialState = H.state({ players = { p1 } }) })
+      s:createArrow("ar", 0, 0, 1, 1, "p1")
+      clock = 4.9
+      s:update()
+      t.eq(#s.state.widgets, 1)
+      clock = 5
+      s:update()
+      t.eq(#s.state.widgets, 0)
+    end)
+  end)
+
+  t.describe("controllers", function()
+    local g = game({ zones = { zone({ id = "draw", name = "Draw" }), zone({ id = "pool", name = "Pool", shared = true }) } })
+    t.it("host controller enforces ownership and resolves zone owners", function()
+      local s = Session.new({ game = g, localPlayerId = "p1", now = now, isLocalPractice = true, initialState = H.state({ players = { p1, p2 }, cards = {
+        H.card({ id = "mine", ownerId = "p1" }), H.card({ id = "theirs", ownerId = "p2", zIndex = 1 }),
+        H.card({ id = "d1", zone = "zone", zoneId = "draw", ownerId = "p2", zIndex = 2 }),
+        H.card({ id = "s1", zone = "zone", zoneId = "pool", zIndex = 3 }),
+      } }) })
+      local c = controller.Host.new(s)
+      c:moveCard("theirs", 0.9, 0.9)
+      t.eq(s:findCard("theirs").x, 0)
+      c:moveCard("mine", 0.9, 0.9)
+      t.eq(s:findCard("mine").x, 0.9)
+      c:drawFromZone("pool")
+      t.eq(s:findCard("s1").ownerId, "p1")
+      c:drawFromZone("draw")
+      t.eq(s:findCard("d1").zone, "zone", "p1's own draw zone is empty; p2's untouched")
+      s:setActiveSeat("p2")
+      c:drawFromZone("draw")
+      t.eq(s:findCard("d1").ownerId, "p2")
+      t.eq(s:findCard("d1").zone, "hand")
+    end)
+    t.it("client controller sends Flutter-compatible payloads", function()
+      local sent = {}
+      local c = controller.Client.new(function(type, payload) sent[#sent + 1] = { type, json.encode(payload) } end)
+      c:moveCard("i", 0.5, 0.25)
+      c:giveCard("i", nil)
+      c:moveGroup("p", { "a", "b" }, 1, 0)
+      c:returnToZone("i", "z")
+      c:stopSearch()
+      t.eq(sent[1], { "requestMove", '{"instanceId":"i","x":0.5,"y":0.25}' })
+      t.eq(sent[2], { "requestGiveCard", '{"instanceId":"i","newOwnerId":null}' })
+      t.eq(sent[3], { "requestMoveGroup", '{"primaryInstanceId":"p","passengerRootInstanceIds":["a","b"],"x":1,"y":0}' })
+      t.eq(sent[4], { "requestReturnToZone", '{"instanceId":"i","zoneId":"z","toBottom":false}' })
+      t.eq(sent[5], { "requestStopSearch", "{}" })
+    end)
+  end)
+end

@@ -1,0 +1,4 @@
+# Packaging output (tools/build.ps1)
+/build/
+/dist/
+*.love

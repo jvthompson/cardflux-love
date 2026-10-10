@@ -1,0 +1,181 @@
+-- Port of test/models_test.dart plus JSON-format compatibility checks.
+local json = require("lib.json")
+local models = require("src.core.models")
+local util = require("src.core.util")
+local color = require("src.core.color")
+
+return function(t)
+  local function roundTrip(Model, value)
+    local encoded = json.encode(Model.toJson(value))
+    return Model.fromJson(json.decode(encoded)), encoded
+  end
+
+  t.describe("json", function()
+    t.it("keeps large ints integral and doubles shortest", function()
+      t.eq(json.encode({ a = 4283782756 }), '{"a":4283782756}')
+      t.eq(json.encode(json.array({ 0.1, 0.5, 1, -3, 1 / 3 })), "[0.1,0.5,1,-3,0.3333333333333333]")
+    end)
+    t.it("preserves key order and matches Dart's pretty printer", function()
+      local o = json.object({ "z", 1, "a", json.array({ 1, 2 }), "e", json.array(), "m", json.object() })
+      t.eq(json.encode(o, { indent = "  " }), '{\n  "z": 1,\n  "a": [\n    1,\n    2\n  ],\n  "e": [],\n  "m": {}\n}')
+    end)
+    t.it("decodes escapes, unicode and nulls", function()
+      local v = json.decode('{"s":"a\\"b\\n\\u00e9\\ud83d\\ude00","n":null,"l":[1,null]}')
+      t.eq(v.s, 'a"b\n\195\169\240\159\152\128')
+      t.isNil(v.n)
+      t.ok(v.l[2] == json.null)
+      t.ok(json.isArray(json.decode("[]")))
+      t.notOk(json.isArray(json.decode("{}")))
+      t.eq(json.encode(json.decode('{"b":1,"a":2}')), '{"b":1,"a":2}')
+    end)
+    t.it("rejects malformed input", function()
+      t.isNil((json.tryDecode("{")))
+      t.isNil((json.tryDecode("[1,]")))
+      t.isNil((json.tryDecode("1 2")))
+    end)
+  end)
+
+  t.describe("color", function()
+    t.it("hex conversions", function()
+      t.eq(color.hexFromColor(0xFFD32F2F), "D32F2F")
+      t.eq(color.colorFromHex("#d32f2f", 0), 0xFFD32F2F)
+      t.eq(color.colorFromHex("12345", 7), 7)
+      t.eq(color.colorFromHex("zzzzzz", 7), 7)
+    end)
+  end)
+
+  t.describe("CardDefinition", function()
+    t.it("round-trips all fields and omits defaults", function()
+      local c = models.CardDefinition.new({ id = "x", cardTitle = "X", colorHex = "#FFFFFF", suit = "s", rank = "r",
+        imagePath = "x.png", extraFields = { k = "v" }, types = { "A", "B" }, orientation = "left", setId = "s1",
+        unownable = true, cardBackId = "__unique__", uniqueBackOrientation = "right" })
+      local back = roundTrip(models.CardDefinition, c)
+      t.eq(back, c)
+      local _, enc = roundTrip(models.CardDefinition, models.CardDefinition.new({ id = "y", cardTitle = "Y" }))
+      t.eq(enc, '{"id":"y","cardTitle":"Y"}')
+    end)
+    t.it("copyWith clears explicitly with NIL", function()
+      local c = models.CardDefinition.new({ id = "x", cardTitle = "X", setId = "s" })
+      t.isNil(util.copyWith(c, { setId = util.NIL }).setId)
+      t.eq(util.copyWith(c, {}).setId, "s")
+    end)
+  end)
+
+  t.describe("CardInstance", function()
+    t.it("round-trips and writes faceUp false", function()
+      local c = models.CardInstance.new({ instanceId = "i", definitionId = "d", x = 0.25, y = 1, zIndex = 3,
+        faceUp = false, zone = "zone", zoneId = "deck", ownerId = "p1", stackParentId = "s", rotationTurns = -2, unownable = true })
+      local back, enc = roundTrip(models.CardInstance, c)
+      t.eq(back, c)
+      t.ok(enc:find('"faceUp":false', 1, true))
+      local _, enc2 = roundTrip(models.CardInstance, models.CardInstance.new({ instanceId = "i", definitionId = "d",
+        x = 0, y = 0, zIndex = 0, faceUp = true, zone = "table" }))
+      t.eq(enc2, '{"instanceId":"i","definitionId":"d","x":0,"y":0,"zIndex":0,"faceUp":true,"zone":"table"}')
+    end)
+  end)
+
+  t.describe("BoardWidgetInstance", function()
+    t.it("round-trips every field and omits defaults", function()
+      local w = models.BoardWidgetInstance.new({ instanceId = "w", kind = "arrow", x = 0.1, y = 0.2, zIndex = 1,
+        value = 5, backgroundColor = 0xFF000000, textColor = 0xFFD32F2F, attachedCardId = "c", attachOffsetX = 0.01,
+        attachOffsetY = -0.02, x2 = 0.9, y2 = 0.8, creatorId = "p1", ownerId = "p2", zoneId = "z" })
+      t.eq((roundTrip(models.BoardWidgetInstance, w)), w)
+      local _, enc = roundTrip(models.BoardWidgetInstance, models.BoardWidgetInstance.new({ instanceId = "w",
+        kind = "token", x = 0, y = 0, zIndex = 0 }))
+      t.eq(enc, '{"instanceId":"w","kind":"token","x":0,"y":0,"zIndex":0}')
+    end)
+  end)
+
+  t.describe("ZoneDefinition", function()
+    t.it("defaults when absent, omits defaults when writing", function()
+      local z = models.ZoneDefinition.fromJson(json.decode('{"id":"deck","name":"Deck"}'))
+      t.eq({ z.shared, z.shuffleable, z.deckType, #z.entries, z.side, z.kind, z.counterStartingColor },
+        { false, true, "main_deck", 0, "left", "card", 0xFF455A64 })
+      t.eq(json.encode(models.ZoneDefinition.toJson(z)), '{"id":"deck","name":"Deck"}')
+      local z2 = util.copyWith(z, { shuffleable = false, shared = true, side = "right",
+        entries = { models.DeckEntry.new("c1", 2) } })
+      t.eq(json.encode(models.ZoneDefinition.toJson(z2)),
+        '{"id":"deck","name":"Deck","shared":true,"entries":[{"definitionId":"c1","quantity":2}],"shuffleable":false,"side":"right"}')
+      t.eq((roundTrip(models.ZoneDefinition, z2)), z2)
+    end)
+  end)
+
+  t.describe("GameDefinition", function()
+    t.it("nested sets: stamps setId, writes nested without setId", function()
+      local src = '{"id":"g","name":"G","sets":[{"id":"s1","name":"S1","cards":[{"id":"a","cardTitle":"A"}]},'
+        .. '{"id":"s2","name":"S2","packSettings":[{"tag":"Rare","count":1}],"cards":[{"id":"b","cardTitle":"B"}]}]}'
+      local g = models.GameDefinition.fromJson(json.decode(src))
+      t.eq(g.cards[1].setId, "s1")
+      t.eq(g.cards[2].setId, "s2")
+      t.eq(g.sets[2].packSettings[1].tag, "Rare")
+      t.eq(json.encode(models.GameDefinition.toJson(g)), src)
+    end)
+    t.it("flat cards, legacy card back, deck types", function()
+      local g = models.GameDefinition.fromJson(json.decode('{"id":"g","name":"G","cards":[],"cardBackImagePath":"b.png",'
+        .. '"zones":[{"id":"z1","name":"Z1","dealsBuiltDeck":true},{"id":"z2","name":"Z2","dealsBuiltDeck":true,"deckType":"side"},'
+        .. '{"id":"z3","name":"Z3","dealsBuiltDeck":true},{"id":"z4","name":"Z4","shared":true,"dealsBuiltDeck":true,"deckType":"x"}]}'))
+      t.eq(g.cardBacks[1], { id = "default", name = "Default", imagePath = "b.png", orientation = "portrait" })
+      t.eq(models.GameDefinition.deckTypes(g), { "main_deck", "side" })
+      t.ok(models.GameDefinition.needsDeckBuilding(g))
+      local enc = json.encode(models.GameDefinition.toJson(g))
+      t.ok(enc:find('"cards":[]', 1, true))
+      t.ok(enc:find('"cardBacks":[{"id":"default","name":"Default","imagePath":"b.png"}]', 1, true))
+      t.notOk(enc:find("cardBackImagePath", 1, true))
+    end)
+    t.it("round-trips the bundled standard_52 definition", function()
+      -- The asset is hand-authored (e.g. it spells out the default
+      -- "side":"left"), so compare models, then check our own output is a
+      -- byte-stable fixed point.
+      local raw = love.filesystem.read("assets/games/standard_52/standard_52.json")
+      t.ok(raw, "asset present")
+      local g = models.GameDefinition.fromJson(json.decode(raw))
+      local out = json.encode(models.GameDefinition.toJson(g), { indent = "  " })
+      local g2 = models.GameDefinition.fromJson(json.decode(out))
+      t.eq(g2, g)
+      t.eq(json.encode(models.GameDefinition.toJson(g2), { indent = "  " }), out)
+    end)
+  end)
+
+  t.describe("DeckConfig", function()
+    t.it("round-trips, legacy throws, helpers", function()
+      local d = models.DeckConfig.new("g", { models.SubDeck.new("main_deck", { models.DeckEntry.new("a", 2) }) })
+      t.eq((roundTrip(models.DeckConfig, d)), d)
+      local ok, err = pcall(models.DeckConfig.fromJson, json.decode('{"gameId":"g","entries":[]}'))
+      t.notOk(ok)
+      t.ok(err.legacyDeckFormat)
+      t.eq(models.DeckConfig.cardCountFor(d, "main_deck"), 2)
+      t.eq(models.DeckConfig.cardCountFor(d, "side"), 0)
+      local game = models.GameDefinition.new({ id = "g", name = "G", cards = { models.CardDefinition.new({ id = "a", cardTitle = "A" }) } })
+      local full = models.DeckConfig.full(game)
+      t.eq(full.subdecks[1].name, "main_deck")
+      t.eq(full.subdecks[1].entries[1], { definitionId = "a", quantity = 1 })
+    end)
+  end)
+
+  t.describe("TableState / SavedGame / LogEntry / ActiveSearch / PlayerInfo", function()
+    t.it("round-trip", function()
+      local s = models.TableState.new({ gameId = "g", revision = 7,
+        players = { models.PlayerInfo.new({ id = "p", name = "P", role = "host", color = 0xFFD32F2F, connected = false }) },
+        cards = { models.CardInstance.new({ instanceId = "c", definitionId = "d", x = 0.5, y = 0.5, zIndex = 0, faceUp = true, zone = "hand", ownerId = "p" }) },
+        widgets = { models.BoardWidgetInstance.new({ instanceId = "w", kind = "simpleCounter", x = 0, y = 0, zIndex = 0 }) },
+        searches = { models.ActiveSearch.new({ searcherId = "p", targetType = "pile", targetId = "c" }) },
+        log = { models.LogEntry.new(1500, "P drew a card.") } })
+      t.eq((roundTrip(models.TableState, s)), s)
+      local sg = models.SavedGame.new("2026-01-02T03:04:05.678", s)
+      t.eq((roundTrip(models.SavedGame, sg)), sg)
+      local empty = models.TableState.new({ gameId = "g" })
+      t.eq(json.encode(models.TableState.toJson(empty)), '{"gameId":"g","players":[],"cards":[],"revision":0}')
+    end)
+    t.it("formatElapsedTime", function()
+      t.eq(models.formatElapsedTime(3723000), "01:02:03")
+      t.eq(models.formatElapsedTime(999), "00:00:00")
+    end)
+    t.it("standard deck", function()
+      local cards = models.buildStandardDeckCards()
+      t.eq(#cards, 52)
+      t.eq(cards[1].id, "__standard52_hearts_A")
+      t.eq(cards[52].types, { "Spades" })
+      t.eq(cards[27].colorHex, "#212121")
+    end)
+  end)
+end

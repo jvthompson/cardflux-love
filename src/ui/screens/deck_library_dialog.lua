@@ -1,0 +1,203 @@
+-- Port of widgets/deck_library_screen.dart, shown in-game as the 480x560
+-- "Load Deck" dialog: the player's own + built-in decks for a game, with
+-- validation against the zones being loaded.
+local ui = require("src.ui.kit.ui")
+local theme = require("src.ui.kit.theme")
+local overlays = require("src.ui.kit.overlays")
+local models = require("src.core.models")
+local paths = require("src.data.paths")
+local decks = require("src.data.deck_library")
+local fileDialog = require("src.platform.file_dialog")
+local sound = require("src.game.sound")
+local CR = require("src.ui.table.card_render")
+local util = require("src.core.util")
+local saveNameDialog = require("src.ui.kit.save_name_dialog")
+
+local D = {}
+
+-- zones: the ZoneDefinitions being filled; onDeckChosen(deck)
+function D.open(game, zones, onDeckChosen)
+  local st = { directoryPath = paths.decksDir(), busy = true }
+
+  local function refresh()
+    st.busy = true
+    st.folderError = nil
+    local ok, scan = pcall(decks.loadAllDecksForGame, st.directoryPath, game)
+    if not ok then
+      st.scan = { entries = {}, incompatible = {} }
+      st.folderError = "Could not read that folder: " .. tostring(scan)
+    else
+      st.scan = scan
+      if #scan.entries == 0 and #scan.incompatible == 0 then
+        st.folderError = "No decks found for " .. game.name .. " in that folder."
+      end
+    end
+    if st.folderError then sound.play("error") end
+    st.busy = false
+  end
+  refresh()
+
+  local function missingRequired(deck)
+    local out = {}
+    for _, z in ipairs(zones) do
+      if not z.deckOptional and models.DeckConfig.cardCountFor(deck, z.deckType) == 0 then out[#out + 1] = z.name end
+    end
+    return out
+  end
+
+  local dialog
+  local function selectDeck(deck, displayName)
+    local missing = missingRequired(deck)
+    if #missing > 0 then
+      sound.play("error")
+      st.selectionError = "That deck is missing required cards for: " .. table.concat(missing, ", ") .. "."
+      return
+    end
+    st.selectionError = nil
+    st.chosenDeck, st.chosenName = deck, displayName
+    dialog:close()
+    onDeckChosen(deck)
+  end
+
+  local function browse()
+    local path = fileDialog.openFile({ title = "Choose a deck file", filters = fileDialog.jsonFilters })
+    if not path then return end
+    local deck, reason = decks.readDeckFile(path)
+    if not deck then
+      sound.play("error")
+      st.selectionError = reason == "legacy" and models.LegacyDeckFormatError.message or "That file is not a valid deck."
+      return
+    end
+    if deck.gameId ~= game.id then
+      sound.play("error")
+      st.selectionError = "That deck is for a different game (" .. deck.gameId .. ")."
+      return
+    end
+    selectDeck(deck, require("src.data.fs").basename(path))
+  end
+
+  local function chooseDirectory()
+    local path = fileDialog.pickFolder({ title = "Choose your deck library folder", initialDir = st.directoryPath })
+    if not path then return end
+    require("src.ui.screens.game_picker").maybeMoveLibraryFolder(st.directoryPath, path, "deck", function()
+      paths.setDecksDir(path)
+      st.directoryPath = path
+      refresh()
+    end)
+  end
+
+  local TILE_W, TILE_H, GAP = CR.cardWidth + 24, CR.cardHeight + 44, 12
+
+  dialog = overlays.dialog({
+    width = 480,
+    content = function(d, x, y, w)
+      local c = theme.c
+      local h = 560 - 48
+      ui.text("Load your deck for " .. game.name, x, y, { weight = "bold", w = w, align = "center" })
+      local yy = y + 32
+      ui.text(st.directoryPath, x, yy, { size = 12, color = c.onSurfaceVariant, w = w - 96, h = 40, valign = "middle", ellipsis = true })
+      if ui.iconButton("refresh", x + w - 88, yy, { tooltip = "Refresh", disabled = st.busy, id = "dl:refresh" }) then refresh() end
+      if ui.iconButton("folder_open", x + w - 44, yy, { tooltip = "Choose Deck Library Folder...", disabled = st.busy, id = "dl:folder" }) then
+        chooseDirectory()
+      end
+      yy = yy + 52
+      ui.divider(x, yy, w)
+      yy = yy + 12
+      local bodyH = y + h - yy
+      local gridW = w - 240 - 24
+      -- Deck grid.
+      local entries = st.scan and st.scan.entries or {}
+      local incompatible = st.scan and st.scan.incompatible or {}
+      if st.folderError then
+        ui.text(st.folderError, x, yy, { w = gridW, h = bodyH, align = "center", valign = "middle", color = theme.fixed.red })
+      else
+        local cols = math.max(1, math.floor((gridW + GAP) / (TILE_W + GAP)))
+        local total = #entries + #incompatible
+        local off = ui.beginScroll("dl:grid", x, yy, gridW, bodyH)
+        for i = 1, total do
+          local col, row = (i - 1) % cols, math.floor((i - 1) / cols)
+          local tx, ty = x + col * (TILE_W + GAP), yy + 4 + row * (TILE_H + GAP) - off
+          local isIncompat = i > #entries
+          local entry = isIncompat and incompatible[i - #entries] or entries[i]
+          local r = ui.region("dl:tile" .. i, tx, ty, TILE_W, TILE_H, { cursor = "hand",
+            tooltip = isIncompat and "Old format -- rebuild in the Deck Editor" or nil })
+          if r.hovered then ui.rect("fill", tx, ty, TILE_W, TILE_H, 6, theme.alpha(c.onSurface, 0.06)) end
+          if not isIncompat and st.chosenName == entry.displayName then
+            ui.rect("line", tx + 1, ty + 1, TILE_W - 2, TILE_H - 2, 6, c.primary, 2)
+          end
+          love.graphics.push("all")
+          CR.draw({ def = nil, faceUp = false, cx = tx + TILE_W / 2, cy = ty + 4 + CR.cardHeight / 2,
+            cardBacks = game.cardBacks, alpha = isIncompat and 0.35 or 1 })
+          love.graphics.pop()
+          local ny = ty + 4 + CR.cardHeight + 4
+          ui.text(entry.displayName, tx, ny, { size = 11, w = TILE_W, align = "center", ellipsis = true })
+          if isIncompat then
+            ui.text("Old format", tx, ny + 14, { size = 10, w = TILE_W, align = "center", color = theme.fixed.red })
+          else
+            ui.text(decks.cardCount(entry) .. " card(s)", tx, ny + 14, { size = 10, w = TILE_W, align = "center", color = c.onSurfaceVariant })
+            if entry.isBuiltIn then ui.text("Built-in", tx, ny + 27, { size = 10, w = TILE_W, align = "center", color = c.primary }) end
+          end
+          if r.clicked then
+            if isIncompat then
+              sound.play("error")
+              st.selectionError = 'The deck "' .. entry.displayName .. '" was saved in an older format and needs to be rebuilt in the Deck Editor.'
+            else
+              selectDeck(entry.deck, entry.displayName)
+            end
+          end
+        end
+        ui.endScroll("dl:grid", math.ceil(total / cols) * (TILE_H + GAP) + 8)
+      end
+      -- Summary panel.
+      local sx = x + gridW + 24
+      ui.rect("fill", sx - 12, yy, 1, bodyH, 0, c.outlineVariant)
+      local sy = yy
+      ui.text("This game needs", sx, sy, { weight = "medium" })
+      sy = sy + 28
+      for _, z in ipairs(zones) do
+        ui.text(z.name, sx, sy, { weight = "bold", w = 240, ellipsis = true })
+        ui.text(z.deckType .. (z.deckOptional and " (optional)" or " (required)"), sx, sy + 18, { size = 12, color = c.onSurfaceVariant, w = 240, ellipsis = true })
+        sy = sy + 44
+      end
+      ui.divider(sx, sy + 4, 240)
+      sy = sy + 16
+      ui.text("Tap a deck to load it.", sx, sy, { size = 12, color = c.onSurfaceVariant })
+      sy = sy + 24
+      if st.selectionError then
+        local eh = ui.textHeight(st.selectionError, 240, 12)
+        ui.text(st.selectionError, sx, sy, { size = 12, w = 240, color = theme.fixed.red })
+        sy = sy + eh + 12
+      end
+      if ui.button("Browse for file...", sx - 12, sy, nil, nil, { variant = "text", id = "dl:browse" }) then browse() end
+      return h
+    end,
+    actions = {},
+  })
+  return dialog
+end
+
+-- Save Deck dialog (save_deck_dialog.dart promptSaveDeckToLibrary).
+function D.promptSaveDeck(game, deck, onSaved)
+  local root = paths.decksDir()
+  local scan = decks.loadDecksForGame(root, game)
+  saveNameDialog.open({
+    title = "Save Deck", fieldLabel = "Deck Name", emptyNameMessage = "Enter a deck name.",
+    existing = util.map(scan.entries, function(e) return { name = e.displayName, trailing = decks.cardCount(e) .. " card(s)" } end),
+    existingHint = "Existing decks -- tap to reuse a name",
+    emptyListText = "No decks found for " .. game.name .. ".",
+    exists = function(name) return decks.deckExists(root, game.id, name) end,
+    overwriteTitle = "Overwrite Deck?",
+    overwriteMessage = function(name) return 'A deck named "' .. name .. '" already exists in the library. Overwrite it?' end,
+    onSave = function(name)
+      local path, err = decks.writeDeck(root, game.id, name, deck)
+      if path then
+        overlays.toast("Saved to " .. path)
+        if onSaved then onSaved(name, path) end
+      else
+        overlays.toast("Could not save the deck: " .. tostring(err))
+      end
+    end,
+  })
+end
+
+return D
