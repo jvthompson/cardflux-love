@@ -12,7 +12,8 @@
 
 | Action | Effect |
 |--------|--------|
-| Drag a card | Move it. A card with others stacked visually on top of it carries them along as a group, including any tokens attached to them. |
+| Drag a card | Move it. A card with others stacked visually on top of it carries them along as a group, including any tokens attached to them. While dragged, a single card grows to hand size over your hand and shrinks to table size over the table. |
+| Hover a card in your hand | Raise it out of the fan so you can read it |
 | Click a pile (2+ stacked cards) | Draw the top card into your hand |
 | Drag a pile | Peel off just the top card |
 | Alt + drag a pile | Move the whole pile; dropped on your hand, every card is dealt into it |
@@ -24,7 +25,7 @@
 
 **Dropping a dragged card**
 
-- On your hand: adds it to your hand, or reorders it (the drop position decides where).
+- On your hand (including the part of the fan that overlaps the table): inserts it between the cards it was dropped between, whether it came from the table, a zone or elsewhere in your hand. A whole pile (Alt + drag) goes in at that spot, in pile order.
 - On one of your zones: puts it on top of the zone; hold **Alt** to put it on the bottom.
 - On a shared pile on the table: stacks onto it.
 - Near another loose card with **Alt** held: stacks onto it.
@@ -50,7 +51,7 @@ Hotkeys act on the card under the cursor and fire once per key press (holding a 
 | F2 | Toggle zone/hand backgrounds between player-color tint and black | This session only |
 | F12 | Cycle through the game's playmats | |
 | L | Open/close the Game Log (with a Save Log button) | |
-| Esc | Open/close the Game Menu (save game, settings, kick a player, leave/end game) | |
+| Esc | Open/close the Game Menu (save game, settings, controls, kick a player, leave/end game) | |
 | Ctrl (while dropping a token) | Duplicate the token instead of moving it | Token widgets |
 
 ### Right-click menus
@@ -65,6 +66,10 @@ Hotkeys act on the card under the cursor and fire once per key press (holding a 
 | Token | Set Color / Delete |
 | Pack Generator | Open a pack from one of the game's sets / Delete |
 | Your Deck Widget | Delete |
+
+### Your hand
+
+Your hand is drawn as a fan of cards along the bottom of the screen, and opponents' hands as fans of card backs. The shape is adjustable in **Settings > Hand**: card size, card spacing, tilt between cards, maximum fan spread, how far the resting fan sits above the hand area, and how much of a hovered card is shown. Changes apply live and are only on your screen.
 
 ### Board widgets
 

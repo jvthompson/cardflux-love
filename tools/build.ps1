@@ -111,7 +111,7 @@ function Get-RelFiles($baseDir, $items) {
 Step 'Creating game.love'
 if (Test-Path $buildDir) { Remove-Item $buildDir -Recurse -Force }
 New-Item -ItemType Directory -Force $outDir | Out-Null
-$loveFiles = Get-RelFiles $root @('conf.lua', 'main.lua', 'lib', 'src', 'assets') | Where-Object { $_ -ne 'assets\icon.ico' }
+$loveFiles = Get-RelFiles $root @('conf.lua', 'main.lua', 'lib', 'src', 'assets', 'CONTROLS.md') | Where-Object { $_ -ne 'assets\icon.ico' }
 $lovePath = Join-Path $buildDir 'game.love'
 New-Zip $lovePath $root $loveFiles
 

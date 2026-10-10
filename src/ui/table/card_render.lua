@@ -12,7 +12,6 @@ R.cardWidth = 70
 R.cardHeight = 100
 R.radius = 6
 R.pileExtra = 24
-R.handSpacing = 6
 
 local W, H, RAD = R.cardWidth, R.cardHeight, R.radius
 

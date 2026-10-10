@@ -13,6 +13,7 @@ local geometry = require("src.core.geometry")
 local imageCache = require("src.data.image_cache")
 local resolver = require("src.data.image_resolver")
 local CR = require("src.ui.table.card_render")
+local handSettings = require("src.data.hand_settings")
 
 local V = {}
 
@@ -598,13 +599,65 @@ end
 -- Player panels
 ---------------------------------------------------------------------------
 
-local function drawHandBand(T, player, isLocal, x, y, w, rotate)
+-- Fanned hand layout: cards sit on a circular arc whose pivot lies below
+-- the band, each tilted along the radius like a hand held physically.
+-- The shape comes from the user's hand settings (src/data/hand_settings.lua).
+local FAN_LIFT_RATE = 18                 -- lift easing speed (1/s)
+
+-- Current fan parameters, derived from the hand settings.
+function V.handParams()
+  local scale = handSettings.get("cardScale")
+  local P = { scale = scale, cw = CW * scale, ch = CH * scale }
+  P.step = P.cw * handSettings.get("spacing")          -- natural horizontal step between neighbours
+  P.stepAngle = math.rad(handSettings.get("tilt"))     -- tilt between neighbours
+  P.maxSpread = math.rad(handSettings.get("maxSpread")) -- total tilt from first to last card
+  -- Resting cards stick out of the band over the table by `raise`; a
+  -- hovered card rises until `reveal` of its height is visible.
+  P.raise = handSettings.get("raise")
+  local restVisible = BAND_H - 6 + P.raise
+  P.lift = math.max(0, handSettings.get("reveal") * P.ch + 6 - restVisible)
+  P.overhang = P.raise + P.lift            -- how far past the band a card can reach
+  return P
+end
+
+function V.handScale() return handSettings.get("cardScale") end
+
+-- Per-card offsets from the fan center: dx, dy (drop below the apex), angle.
+local function fanLayout(P, count, innerW)
+  if count == 1 then return { { 0, 0, 0 } } end
+  local dTheta = math.min(P.stepAngle, P.maxSpread / (count - 1))
+  local mid = (count + 1) / 2
+  local out = {}
+  if dTheta < 1e-4 then
+    -- No tilt: a straight overlapping row, squeezed to fit.
+    local step = math.min(P.step, math.max(0, (innerW - P.cw) / (count - 1)))
+    for i = 1, count do out[i] = { (i - mid) * step, 0, 0 } end
+    return out
+  end
+  local halfAngle = (count - mid) * dTheta
+  -- Shrink the step until the fan fits, including tilted card corners and
+  -- the outward slide of an outer card lifted along its tilt.
+  local cornerW = P.cw / 2 * math.cos(halfAngle) + P.ch / 2 * math.sin(halfAngle)
+    + P.lift * math.sin(halfAngle)
+  local radius = P.step / math.sin(dTheta)
+  local halfW = radius * math.sin(halfAngle) + cornerW
+  if halfW > innerW / 2 then
+    radius = math.max(0, (innerW / 2 - cornerW) / math.sin(halfAngle))
+  end
+  for i = 1, count do
+    local a = (i - mid) * dTheta
+    out[i] = { radius * math.sin(a), radius * (1 - math.cos(a)), a }
+  end
+  return out
+end
+
+local function drawHandBand(T, player, isLocal, x, y, w, rotate, fanDown)
   local bg = V.zoneBackground(T, player.id)
   ui.rect("fill", x, y, w, BAND_H, 0, bg)
   local border = V.ownerBorderColor(T, player.id)
+  local P = V.handParams()
   withRotated(T, rotate, x, y, w, BAND_H, function()
     local innerX, innerW = x + 8, w - 16
-    local cardsTop = y + 8 + (CH + EXTRA - CH) / 2
     local cards, count
     if isLocal then
       cards = T.derived.localHand
@@ -613,7 +666,10 @@ local function drawHandBand(T, player, isLocal, x, y, w, rotate)
       count = T.derived.handCount[player.id] or 0
     end
     if isLocal then
-      T.handRect = { x = x, y = y, w = w, h = BAND_H, mirror = T.drawMirror }
+      -- Drop target: the band plus the strip of resting cards over the table.
+      local ry = fanDown and y or (y - P.raise)
+      if T.drawMirror then ry = 2 * T.drawMirror.cy - ry - (BAND_H + P.raise) end
+      T.handRect = { x = x, y = ry, w = w, h = BAND_H + P.raise }
       T.handCardCenters = {}
     end
     if count == 0 then
@@ -621,25 +677,56 @@ local function drawHandBand(T, player, isLocal, x, y, w, rotate)
         { w = w, h = BAND_H, valign = "middle", align = "center", color = { 1, 1, 1, 0.7 } })
       return
     end
-    local natural = count * CW + (count - 1) * CR.handSpacing
-    local step = CW + CR.handSpacing
-    if natural > innerW then step = count == 1 and 0 or math.max(0, (innerW - CW) / (count - 1)) end
-    ui.pushClip(innerX, y, innerW, BAND_H)
+    -- fanDown mirrors the arc vertically (pivot above the band) so a hand
+    -- across the table fans toward the table while its cards stay upright.
+    local sign = fanDown and -1 or 1
+    local apexY = fanDown and (y + BAND_H - 6 + P.raise - P.ch / 2) or (y + 6 - P.raise + P.ch / 2)
+    local centerX = innerX + innerW / 2
+    local layout = fanLayout(P, count, innerW)
+    local hovered = isLocal and not (T.drag and T.drag.started) and T.hoverItem
+      and T.hoverItem.kind == "handCard" and T.hoverItem.card.instanceId or nil
+    T.handLift = T.handLift or {}
+    local k = 1 - math.exp(-FAN_LIFT_RATE * love.timer.getDelta())
+    -- Clip the far edge of the band only; the table-side edge stays open
+    -- so a hovered card can rise out over the table.
+    local clipY = fanDown and y or (y - P.overhang)
+    local clipX = innerX
+    if T.drawMirror then
+      clipX, clipY = 2 * T.drawMirror.cx - innerX - innerW, 2 * T.drawMirror.cy - clipY - (BAND_H + P.overhang)
+    end
+    ui.pushClip(clipX, clipY, innerW, BAND_H + P.overhang)
+    local function drawHandCard(c, cx, cy, angle, lift)
+      local id = c.instanceId
+      -- Rise along the card's own up axis.
+      local lx, ly = sign * lift * math.sin(angle), -sign * lift * math.cos(angle)
+      CR.draw({ def = V.def(T, c), faceUp = c.faceUp, cx = cx + lx, cy = cy + ly, angle = angle, scale = P.scale,
+        border = border, alpha = V.ghostAlpha(T, id), cardBacks = T.game.cardBacks })
+      -- Hit box covers the resting and lifted positions so the hover
+      -- does not flicker at the card's lower edge while it rises.
+      local hx, hy = cx + lx / 2, cy + ly / 2
+      V.addItem(T, { kind = "handCard", card = c, hoverId = id, angle = angle,
+        cx = hx, cy = hy, hw = P.cw / 2, hh = P.ch / 2 + lift / 2, scale = P.scale,
+        x = hx - P.cw / 2, y = hy - P.ch / 2 - lift / 2, w = P.cw, h = P.ch + lift,
+        cardCx = cx + lx, cardCy = cy + ly })
+    end
     for i = 1, count do
-      local cx = innerX + (i - 1) * step + CW / 2
-      local cy = cardsTop + CH / 2
+      local dx, dy, a = layout[i][1], layout[i][2], layout[i][3]
+      local cx = centerX + dx
+      local cy = apexY + sign * dy
+      local angle = sign * a
       if isLocal then
         local c = cards[i]
-        CR.draw({ def = V.def(T, c), faceUp = c.faceUp, cx = cx, cy = cy, border = border,
-          alpha = V.ghostAlpha(T, c.instanceId), cardBacks = T.game.cardBacks })
+        local id = c.instanceId
+        local lift = (T.handLift[id] or 0) + ((id == hovered and P.lift or 0) - (T.handLift[id] or 0)) * k
+        T.handLift[id] = lift
         -- Screen-space center (mirrored when the band is rotated).
         local scx = T.drawMirror and (2 * T.drawMirror.cx - cx) or cx
-        T.handCardCenters[#T.handCardCenters + 1] = { id = c.instanceId, cx = scx }
-        local visibleW = (i < count) and math.min(CW, step) or CW
-        V.addItem(T, { kind = "handCard", card = c, hoverId = c.instanceId,
-          x = cx - CW / 2, y = cy - CH / 2, w = visibleW, h = CH, cardCx = cx, cardCy = cy })
+        T.handCardCenters[#T.handCardCenters + 1] = { id = id, cx = scx }
+        -- Drawn and hit-tested in hand order even while lifted, so the
+        -- cards to its right stay on top and remain selectable.
+        drawHandCard(c, cx, cy, angle, lift)
       else
-        CR.draw({ def = nil, faceUp = false, cx = cx, cy = cy, border = border, cardBacks = T.game.cardBacks })
+        CR.draw({ def = nil, faceUp = false, cx = cx, cy = cy, angle = angle, scale = P.scale, border = border, cardBacks = T.game.cardBacks })
       end
     end
     ui.popClip()
@@ -735,7 +822,9 @@ local function drawPlayerRow(T, rowPlayers, isTopRow, x, y, w)
     end
     local handW = math.max(0, panelW - (#zones + 1) * SLOT_W)
     local cx = px
-    local function hand() drawHandBand(T, player, isLocal, cx, y, handW, rotate); cx = cx + handW end
+    -- An unrotated hand in the top row faces the table, so its fan opens downward.
+    local fanDown = isTopRow and not rotate
+    local function hand() drawHandBand(T, player, isLocal, cx, y, handW, rotate, fanDown); cx = cx + handW end
     local function zoneSlots()
       for _, z in ipairs(zones) do
         drawZoneSlot(T, player, z, isLocal, cx, y, rotate)

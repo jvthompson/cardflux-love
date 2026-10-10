@@ -613,6 +613,47 @@ function ui.segmented(id, x, y, w, options, selected, opts)
   return selected
 end
 
+-- Horizontal slider (40px tall hit area, track centered). Returns the new
+-- value and whether the thumb is being dragged. opts: step, disabled
+function ui.slider(id, x, y, w, value, min, max, opts)
+  opts = opts or {}
+  local h = 40
+  local c = theme.c
+  local r = opts.disabled and { hovered = false } or ui.region(id, x - 10, y, w + 20, h, { cursor = "hand" })
+  local held = r.held == true
+  if held then
+    local t = math.max(0, math.min(1, (input.mx - x) / w))
+    local v = min + t * (max - min)
+    if opts.step then v = math.floor((v - min) / opts.step + 0.5) * opts.step + min end
+    value = math.max(min, math.min(max, v))
+  end
+  local t = (max > min) and (value - min) / (max - min) or 0
+  local cy = y + h / 2
+  local tx = x + t * w
+  local active = opts.disabled and c.disabled or c.primary
+  ui.rect("fill", x, cy - 2, w, 4, 2, opts.disabled and theme.alpha(c.onSurface, 0.12) or c.secondaryContainer)
+  ui.rect("fill", x, cy - 2, tx - x, 4, 2, active)
+  if r.hovered or held then
+    setColor(c.primary, 0.12)
+    love.graphics.circle("fill", tx, cy, 18)
+  end
+  setColor(active)
+  love.graphics.circle("fill", tx, cy, held and 10 or 8)
+  return value, held
+end
+
+-- Labelled slider: label left and value text right on one line, slider
+-- below. Height 64. Returns value, held.
+function ui.sliderRow(id, label, x, y, w, value, min, max, opts)
+  opts = opts or {}
+  local c = theme.c
+  ui.text(label, x, y, { w = w, color = opts.disabled and c.disabled or c.onSurface })
+  if opts.format then
+    ui.text(opts.format(value), x, y, { w = w, align = "right", size = 12, color = c.onSurfaceVariant })
+  end
+  return ui.slider(id, x + 10, y + 20, w - 20, value, min, max, opts)
+end
+
 ---------------------------------------------------------------------------
 -- Progress
 ---------------------------------------------------------------------------

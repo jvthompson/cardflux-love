@@ -5,6 +5,7 @@ local theme = require("src.ui.kit.theme")
 local overlays = require("src.ui.kit.overlays")
 local window = require("src.platform.window")
 local profile = require("src.data.profile")
+local handSettings = require("src.data.hand_settings")
 
 local M = {}
 
@@ -57,7 +58,22 @@ function M.open(opts)
         theme.setDark(not theme.isDark)
         profile.setDarkMode(theme.isDark)
       end
-      yy = yy + 32 + (subtitle and ui.textHeight(subtitle, w - 64, 12) + 4 or 0)
+      yy = yy + 32 + (subtitle and ui.textHeight(subtitle, w - 64, 12) + 4 or 0) + 24
+
+      yy = yy + heading("Hand", x, yy)
+      for _, d in ipairs(handSettings.defs) do
+        local v, held = ui.sliderRow("settings:hand:" .. d.id, d.label, x, yy, w, handSettings.get(d.id), d.min, d.max,
+          { step = d.step, format = d.format })
+        -- Applied live while dragging; saved once the slider is released.
+        handSettings.set(d.id, v, held)
+        yy = yy + 64
+      end
+      local label = "Reset hand to defaults"
+      if ui.button(label, x - 12, yy, ui.buttonWidth(label), nil,
+        { variant = "text", disabled = handSettings.isDefault(), id = "settings:hand:reset" }) then
+        handSettings.reset()
+      end
+      yy = yy + ui.BUTTON_H
       return yy - y
     end,
     actions = { { label = "Done", variant = "filled" } },

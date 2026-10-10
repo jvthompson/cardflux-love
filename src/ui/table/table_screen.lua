@@ -449,11 +449,11 @@ function T:handleCardDrop(instanceId, cx, cy)
     for _, c in ipairs(self.derived.localHand) do
       if c.instanceId == instanceId then inHand = true else others[#others + 1] = c.instanceId end
     end
-    if inHand then
-      self.controller:reorderHand(instanceId, self:handDropIndex(others, cx))
-    else
-      self.controller:moveToHand(instanceId)
-    end
+    local index = self:handDropIndex(others, cx)
+    -- A card from elsewhere joins the hand at the end, then moves to the
+    -- slot it was dropped on (two requests keep the wire protocol as-is).
+    if not inHand then self.controller:moveToHand(instanceId) end
+    self.controller:reorderHand(instanceId, index)
     return
   end
   local zoneId = self:dockedZoneIdAt(cx, cy)
@@ -478,7 +478,13 @@ function T:handlePileDrop(rootId, cards, cx, cy)
   if self:isOverLocalHand(cx, cy) then
     local ordered = util.shallowCopy(cards)
     table.sort(ordered, function(a, b) return a.zIndex < b.zIndex end)
-    for _, c in ipairs(ordered) do self.controller:moveToHand(c.instanceId) end
+    local others = {}
+    for _, c in ipairs(self.derived.localHand) do others[#others + 1] = c.instanceId end
+    local index = self:handDropIndex(others, cx)
+    for i, c in ipairs(ordered) do
+      self.controller:moveToHand(c.instanceId)
+      self.controller:reorderHand(c.instanceId, index + i - 1)
+    end
     return
   end
   if not self:isOverTable(cx, cy) then return end
@@ -547,6 +553,7 @@ function T:startDrag()
   local src = p.src
   local d = { started = true, src = src, kind = src.kind, grabX = src.cx - p.pressX, grabY = src.cy - p.pressY,
     scale = src.scale or 1 }
+  d.grabX0, d.grabY0, d.scale0 = d.grabX, d.grabY, d.scale
   if src.kind == "card" or src.kind == "pile" then
     local card = src.card
     d.primaryId = card.instanceId
@@ -563,6 +570,28 @@ function T:startDrag()
   end
   if src.kind == "widget" or src.kind == "token" then d.widgetId = src.widget.instanceId end
   self.drag = d
+end
+
+local GHOST_SCALE_RATE = 18 -- drag ghost resize easing speed (1/s)
+
+-- A single dragged card eases to the size it would have where it is held:
+-- hand size over the hand, table zoom over the table, base size elsewhere.
+-- The grab offset scales with it so the pointer keeps its spot on the card.
+function T:updateDragScale()
+  local d = self.drag
+  if not (d.kind == "card" or d.kind == "pile") or #d.group > 1 then return end
+  local mx, my = ui.mouse()
+  local cx, cy = mx + d.grabX, my + d.grabY
+  local target = 1
+  if self:isOverLocalHand(cx, cy) then
+    target = V.handScale()
+  elseif self:isOverTable(cx, cy) then
+    target = self.zoom
+  end
+  local k = 1 - math.exp(-GHOST_SCALE_RATE * love.timer.getDelta())
+  d.scale = d.scale + (target - d.scale) * k
+  local f = d.scale / d.scale0
+  d.grabX, d.grabY = d.grabX0 * f, d.grabY0 * f
 end
 
 function T:endDrag()
@@ -593,6 +622,7 @@ end
 function T:drawDragFeedback()
   local d = self.drag
   if not d or not d.started then return end
+  self:updateDragScale()
   local mx, my = ui.mouse()
   local cx, cy = mx + d.grabX, my + d.grabY
   local s = d.scale
@@ -890,7 +920,7 @@ function T:sourceFor(item)
   elseif k == "handCard" then
     local cx, cy = item.cardCx, item.cardCy
     if item.mirror then cx, cy = 2 * item.mirror.cx - cx, 2 * item.mirror.cy - cy end
-    return { kind = "card", card = item.card, cx = cx, cy = cy, scale = 1, border = V.ownerBorderColor(self, item.card.ownerId) }
+    return { kind = "card", card = item.card, cx = cx, cy = cy, scale = item.scale or 1, border = V.ownerBorderColor(self, item.card.ownerId) }
   elseif k == "zone" then
     if not item.top or not item.interactable then return nil end
     return { kind = "card", card = item.top, cx = item.x + item.w / 2, cy = item.y + item.h / 2, scale = 1 }
@@ -1076,7 +1106,7 @@ function T:drawGameMenu()
       if p.role ~= "host" and p.connected then kickable[#kickable + 1] = p end
     end
   end
-  local h = 64 + 16 + 40 + (self.onSaveGame and 52 or 0) + 52 + 16
+  local h = 64 + 16 + 40 + (self.onSaveGame and 52 or 0) + 52 + 52 + 16
   if self.onKickPlayer then h = h + 20 + 24 + math.max(1, #kickable) * 48 end
   local x, y, w = panel("gamemenu", 360, h, "Game Menu", close)
   local yy = y + 16
@@ -1095,6 +1125,10 @@ function T:drawGameMenu()
   yy = yy + 12
   if ui.button("Settings", x + 16, yy, w - 32, 40, { variant = "outlined", icon = "settings", color = white, id = "gm:settings" }) then
     require("src.ui.screens.settings_dialog").open({ inGame = true })
+  end
+  yy = yy + 40 + 12
+  if ui.button("Controls", x + 16, yy, w - 32, 40, { variant = "outlined", icon = "keyboard", color = white, id = "gm:controls" }) then
+    require("src.ui.screens.controls_dialog").open()
   end
   yy = yy + 40
   if self.onKickPlayer then

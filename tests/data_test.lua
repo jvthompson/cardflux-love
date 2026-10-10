@@ -11,6 +11,8 @@ local saves = require("src.data.save_files")
 local ops = require("src.data.gamedef_ops")
 local imageUtils = require("src.data.image_utils")
 local profile = require("src.data.profile")
+local handSettings = require("src.data.hand_settings")
+local settings = require("src.data.settings")
 local H = require("tests.helpers")
 
 return function(t)
@@ -387,6 +389,55 @@ return function(t)
       t.eq({ imageUtils.decodeFile(dest):getDimensions() }, { 100, 50 })
       profile.deleteAvatar(fs.join(dir, "av"))
       t.notOk(fs.exists(dest))
+    end)
+  end)
+
+  t.describe("hand settings", function()
+    t.it("clamps, saves non-defaults only and resets", function()
+      handSettings.reset()
+      t.eq(handSettings.get("cardScale"), 3)
+      handSettings.set("cardScale", 99)
+      t.eq(handSettings.get("cardScale"), 4)
+      t.eq(settings.get("hand_cardScale"), 4)
+      handSettings.set("tilt", 5, true)
+      t.eq(handSettings.get("tilt"), 5)
+      t.eq(settings.get("hand_tilt"), nil)
+      t.notOk(handSettings.isDefault())
+      handSettings.reset()
+      t.ok(handSettings.isDefault())
+      t.eq(settings.get("hand_cardScale"), nil)
+    end)
+  end)
+
+  t.describe("controls dialog", function()
+    t.it("parses CONTROLS.md headings, tables, bullets and paragraphs", function()
+      local controls = require("src.ui.screens.controls_dialog")
+      local b = controls.parse([[
+# Title
+
+## Sec
+
+| Key | Effect |
+|-----|--------|
+| **F** | Flip `it` |
+
+**Bold line**
+
+- one
+- two
+
+Some
+text.
+]])
+      local kinds = {}
+      for i, x in ipairs(b) do kinds[i] = x.kind end
+      t.eq(table.concat(kinds, ","), "h1,h2,table,bold,bullet,bullet,p")
+      t.eq(b[3].header[2], "Effect")
+      t.eq(#b[3].rows, 1)
+      t.eq(b[3].rows[1][1], "F")
+      t.eq(b[3].rows[1][2], "Flip it")
+      t.eq(b[7].text, "Some text.")
+      t.ok(love.filesystem.getInfo("CONTROLS.md") ~= nil)
     end)
   end)
 end

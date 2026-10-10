@@ -141,7 +141,7 @@ T.icons = {
   expand_less = 0xe5ce, drag_indicator = 0xe945, dark_mode = 0xe51c, crop_square = 0xe3c6,
   copy_all = 0xe2ec, colorize = 0xe3b8, chevron_right = 0xe5cc, chevron_left = 0xe5cb,
   check_box_outline_blank = 0xe835, check_box = 0xe834, check = 0xe5ca, broken_image = 0xe3ad,
-  arrow_back = 0xe5c4, settings = 0xe8b8, person = 0xe7fd, edit = 0xe3c9, palette = 0xe40a, more_vert = 0xe5d4,
+  keyboard = 0xe312, arrow_back = 0xe5c4, settings = 0xe8b8, person = 0xe7fd, edit = 0xe3c9, palette = 0xe40a, more_vert = 0xe5d4,
 }
 
 local glyphCache = {}
