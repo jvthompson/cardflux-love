@@ -238,6 +238,59 @@ return function(t)
     end)
   end)
 
+  t.describe("stacking", function()
+    local function session()
+      return Session.new({ game = game({}), localPlayerId = "p1", now = now, initialState = H.state({ players = { p1, p2 }, cards = {
+        H.card({ id = "mine", ownerId = "p1", x = 0.1, y = 0.1, zIndex = 1 }),
+        H.card({ id = "mine2", ownerId = "p1", x = 0.3, y = 0.3, zIndex = 2 }),
+        H.card({ id = "free", x = 0.5, y = 0.5, zIndex = 3 }),
+        H.card({ id = "theirs", ownerId = "p2", x = 0.7, y = 0.7, zIndex = 4 }),
+        H.card({ id = "under", ownerId = "p2", x = 0.9, y = 0.9, zIndex = 5 }),
+        H.card({ id = "over", x = 0.9, y = 0.9, stackParentId = "under", zIndex = 6 }),
+      } }) })
+    end
+    t.it("stacks only onto piles with the same owner", function()
+      local s = session()
+      s:stackCard("mine", "mine2", "p1")
+      t.eq(s:findCard("mine").stackParentId, "mine2")
+      s:stackCard("mine2", "free", "p1")
+      t.isNil(s:findCard("mine2").stackParentId, "your card onto an unowned pile")
+      s:stackCard("free", "mine2", "p1")
+      t.isNil(s:findCard("free").stackParentId, "an unowned card onto your pile")
+      t.ok(s:canStackOnto("over", "free"), "unowned onto unowned")
+    end)
+    t.it("treats unownable cards as unowned", function()
+      local s = session()
+      s.state.cards[#s.state.cards + 1] = H.card({ id = "u", ownerId = "p1", unownable = true, zIndex = 7 })
+      t.ok(s:canStackOnto("u", "free"))
+      t.notOk(s:canStackOnto("u", "mine"))
+    end)
+    t.it("silently refuses a pile holding another player's card", function()
+      local s = session()
+      local rev = s.state.revision
+      s:stackCard("mine", "theirs", "p1")
+      t.isNil(s:findCard("mine").stackParentId)
+      t.eq(s:findCard("mine").x, 0.1)
+      -- The top card is unowned, but the pile below it is p2's.
+      s:stackCard("mine", "over", "p1")
+      t.isNil(s:findCard("mine").stackParentId)
+      t.eq(s.state.revision, rev)
+      t.notOk(s:canStackOnto("mine", "over"))
+    end)
+    t.it("won't change the owner of a card in a pile", function()
+      local s = session()
+      s:stackCard("mine", "mine2", "p1")
+      s:giveCard("mine", "p2", "p1")
+      t.eq(s:findCard("mine").ownerId, "p1")
+      s:giveCard("mine2", "p2", "p1")
+      t.eq(s:findCard("mine2").ownerId, "p1")
+      s:giveCard("mine", nil, "p1")
+      t.eq(s:findCard("mine").ownerId, "p1", "nor released")
+      s:giveCard("free", "p2", "p1")
+      t.eq(s:findCard("free").ownerId, "p2", "a loose card can be given")
+    end)
+  end)
+
   t.describe("arrows", function()
     t.it("expire after 5 seconds via update()", function()
       clock = 0

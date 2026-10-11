@@ -18,6 +18,7 @@ S.keys = {
   -- LÖVE port only:
   uiScale = "ui_scale",
   recentServers = "recent_servers",
+  selectionColor = "selection_color",
 }
 
 local FILE = "settings.json"

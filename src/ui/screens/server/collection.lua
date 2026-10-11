@@ -197,9 +197,14 @@ function C:drawCollection(x, y, w, h)
   local c = theme.c
   local game = self.game
   local owned = self.owned
+  -- Free cards are always owned, in unlimited copies (not counted in total).
   local distinct, total = 0, 0
-  for _, n in pairs(owned) do
-    distinct, total = distinct + 1, total + n
+  for _, d in ipairs(game.cards) do
+    if d.isFreeCard and not d.unownable then
+      distinct = distinct + 1
+    elseif not d.unownable and (owned[d.id] or 0) > 0 then
+      distinct, total = distinct + 1, total + owned[d.id]
+    end
   end
   local collectible = #util.filter(game.cards, function(d) return not d.unownable end)
   ui.text("Your Cards", x, y, { size = 18 })
@@ -208,7 +213,7 @@ function C:drawCollection(x, y, w, h)
   self.ownedOnly = ui.checkbox("co:owned", x + w - 130, y + 52 + 7, self.ownedOnly, { label = "Owned only" })
   yy = filterBar.drawSearch("co", self.filters, x, yy + 8, w, { labelBackground = c.surface }) + 4
   local visible = util.filter(filterBar.visible(self.filters, game), function(d)
-    return not d.unownable and (not self.ownedOnly or (owned[d.id] or 0) > 0)
+    return not d.unownable and (not self.ownedOnly or d.isFreeCard or (owned[d.id] or 0) > 0)
   end)
   if #visible == 0 then
     ui.text(self.ownedOnly and distinct == 0 and "You don't own any cards for this game yet. Open a pack above."
@@ -223,17 +228,18 @@ function C:drawCollection(x, y, w, h)
     local tx, ty = x + col * (tileW + gap), yy + 8 + row * (rowH + gap) - off
     if ty + rowH > yy and ty < yy + gh then
       local n = owned[def.id] or 0
+      local have = def.isFreeCard or n > 0
       local cx = tx + tileW / 2
-      CR.draw({ def = def, faceUp = true, cx = cx, cy = ty + CH / 2, alpha = n > 0 and 1 or 0.25,
+      CR.draw({ def = def, faceUp = true, cx = cx, cy = ty + CH / 2, alpha = have and 1 or 0.25,
         angle = CR.orientationTurns(def.orientation) * 2 * math.pi, cardBacks = game.cardBacks })
-      if n > 0 then
+      if have then
         love.graphics.setColor(0, 0, 0, 0.87)
         love.graphics.circle("fill", cx + CW / 2 - 5, ty + 5, 11)
-        ui.text("×" .. n, cx + CW / 2 - 16, ty - 6, { size = 11, weight = "bold", w = 22, h = 22, align = "center", valign = "middle",
+        ui.text(def.isFreeCard and "∞" or ("×" .. n), cx + CW / 2 - 16, ty - 6, { size = 11, weight = "bold", w = 22, h = 22, align = "center", valign = "middle",
           color = theme.fixed.white })
       end
       ui.text(def.cardTitle, tx, ty + CH + 4, { size = 11, w = tileW, align = "center", ellipsis = true,
-        color = n > 0 and c.onSurface or c.onSurfaceVariant })
+        color = have and c.onSurface or c.onSurfaceVariant })
     end
   end
   ui.endScroll("co:grid", 16 + math.ceil(#visible / cols) * (rowH + gap))

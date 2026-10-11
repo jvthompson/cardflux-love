@@ -110,5 +110,17 @@ return function(t)
       t.eq(e:copiesInDeck("c"), 4)
       t.eq(e.quantitiesBySlot.main.qty.b, 2) -- later slots give way first
     end)
+    t.it("treats free cards as always owned and unlimited", function()
+      local e = owned({ a = 1 })
+      e.game.cards[2].isFreeCard = true
+      for _ = 1, 6 do e:addCopy("b") end
+      t.eq(e:copiesInDeck("b"), 6)
+      local ids = {}
+      for _, d in ipairs(e:visibleCards()) do ids[#ids + 1] = d.id end
+      table.sort(ids)
+      t.eq(table.concat(ids, ","), "a,b,c")
+      e:loadDeck(models.DeckConfig.new("g", { models.SubDeck.new("main", { models.DeckEntry.new("b", 20) }) }))
+      t.eq(e:copiesInDeck("b"), 20)
+    end)
   end)
 end

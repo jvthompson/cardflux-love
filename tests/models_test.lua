@@ -48,7 +48,7 @@ return function(t)
     t.it("round-trips all fields and omits defaults", function()
       local c = models.CardDefinition.new({ id = "x", cardTitle = "X", colorHex = "#FFFFFF", suit = "s", rank = "r",
         imagePath = "x.png", extraFields = { k = "v" }, types = { "A", "B" }, orientation = "left", setId = "s1",
-        unownable = true, cardBackId = "__unique__", uniqueBackOrientation = "right" })
+        unownable = true, isFreeCard = true, cardBackId = "__unique__", uniqueBackOrientation = "right" })
       local back = roundTrip(models.CardDefinition, c)
       t.eq(back, c)
       local _, enc = roundTrip(models.CardDefinition, models.CardDefinition.new({ id = "y", cardTitle = "Y" }))

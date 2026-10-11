@@ -14,6 +14,7 @@ local imageCache = require("src.data.image_cache")
 local resolver = require("src.data.image_resolver")
 local CR = require("src.ui.table.card_render")
 local handSettings = require("src.data.hand_settings")
+local selection = require("src.ui.table.selection")
 
 local V = {}
 
@@ -124,6 +125,18 @@ function V.screenToCanonical(T, sx, sy, clampHeight)
   local wx, wy = V.screenToWorld(T, sx, sy)
   if clampHeight then wy = geometry.clampCardCenterY(wy, WH, clampHeight) end
   return geometry.localPixelToCanonical(wx, wy, WW, WH, T.isMirrored)
+end
+
+function V.worldToCanonical(T, wx, wy)
+  return geometry.localPixelToCanonical(wx, wy, WW, WH, T.isMirrored)
+end
+
+-- Screen point -> canonical, clamped so an item with the given half
+-- extents (world pixels) stays fully on the table.
+function V.screenToCanonicalClamped(T, sx, sy, halfW, halfH)
+  local wx, wy = V.screenToWorld(T, sx, sy)
+  wx, wy = selection.clampWorldCenter(wx, wy, halfW, halfH)
+  return V.worldToCanonical(T, wx, wy)
 end
 
 ---------------------------------------------------------------------------
@@ -300,7 +313,7 @@ local function drawPileBox(T, opts)
   else
     local wig = opts.wiggleKey and V.wiggleAngle(T, opts.wiggleKey) or 0
     CR.draw({ def = opts.def, faceUp = opts.faceUp, cx = cx, cy = cy, scale = s, angle = (opts.angle or 0) + wig,
-      border = opts.border, alpha = opts.alpha, cardBacks = T.game.cardBacks })
+      border = opts.border, alpha = opts.alpha, tint = opts.tint, cardBacks = T.game.cardBacks })
     CR.drawCountBadge(bx + boxW - 12 * s, by + 12 * s, opts.count, s)
     if opts.shuffle then
       local scx, scy = cx, by + boxH + 8 * s - 14 * s
@@ -336,10 +349,11 @@ local function drawTablePiles(T)
     local def = V.def(T, top)
     local border = V.ownerBorderColor(T, top.ownerId)
     local interactable = not ownedByOpponent and not T.tabDown
+    local tint = T:isRootSelected(rootId) and T:selectionTint() or nil
     if #cards > 1 then
       drawPileBox(T, {
         cx = px, cy = py, scale = T.zoom, count = #cards, def = def, faceUp = top.faceUp, angle = angle,
-        border = border, alpha = alpha, wiggleKey = "pile:" .. rootId,
+        border = border, alpha = alpha, tint = tint, wiggleKey = "pile:" .. rootId,
         searched = D.pileSearched[rootId],
         shuffle = interactable and { key = "pile:" .. rootId, onClick = function() T:shufflePile(rootId) end } or nil,
       })
@@ -354,7 +368,7 @@ local function drawTablePiles(T)
       })
     elseif not (T.flight and T.flight.instanceId == top.instanceId) then
       CR.draw({ def = def, faceUp = top.faceUp, cx = px, cy = py, scale = T.zoom, angle = angle, border = border,
-        alpha = alpha, cardBacks = T.game.cardBacks })
+        alpha = alpha, tint = tint, cardBacks = T.game.cardBacks })
       V.addItem(T, {
         kind = "tableCard", card = top, rootId = rootId, hoverId = top.instanceId,
         cx = px, cy = py, hw = CW * T.zoom / 2, hh = CH * T.zoom / 2, angle = angle,
@@ -502,13 +516,22 @@ local function drawTableWidgets(T)
       local x, y = px - ww * s / 2, py - wh * s / 2
       local alpha = 1
       if w.attachedCardId and (V.isDragging(T, w.attachedCardId) or V.ghostAlpha(T, w.attachedCardId) < 1) then alpha = 0.3 end
-      if T.drag and T.drag.started and T.drag.widgetId == w.instanceId then alpha = 0.3 end
+      if T.drag and T.drag.started and (T.drag.widgetId == w.instanceId or (T.drag.tokenIds and T.drag.tokenIds[w.instanceId])) then
+        alpha = 0.3
+      end
       local interactable = not T.tabDown
       if w.kind == "simpleCounter" then
         counterFace(w, x, y, ww * s, alpha)
         V.addItem(T, { kind = "counter", widget = w, x = x, y = y, w = ww * s, h = wh * s, interactable = interactable })
       elseif w.kind == "token" then
         tokenFace(w, px, py, ww * s, alpha)
+        if T:isTokenSelected(w.instanceId) then
+          local c = T:selectionColor()
+          love.graphics.setColor(c[1], c[2], c[3], alpha)
+          love.graphics.setLineWidth(2)
+          love.graphics.circle("line", px, py, ww * s / 2 + 2)
+          love.graphics.setLineWidth(1)
+        end
         V.addItem(T, { kind = "token", widget = w, cx = px, cy = py, circle = math.max(ww * s / 2, 6), interactable = interactable })
       elseif w.kind == "packGenerator" then
         packFace(T, w, x, y, ww * s, alpha)
@@ -569,6 +592,21 @@ local function drawRemoteGhosts(T)
   end
 end
 
+-- The box being dragged out for a selection (anchored in world pixels).
+local function drawSelectionBox(T)
+  local b = T.boxSelect
+  if not b or not b.cx then return end
+  local x1, y1 = V.worldToScreen(T, b.sx, b.sy)
+  local x2, y2 = V.worldToScreen(T, b.cx, b.cy)
+  local c = T:selectionColor()
+  love.graphics.setColor(c[1], c[2], c[3], 0.15)
+  love.graphics.rectangle("fill", math.min(x1, x2), math.min(y1, y2), math.abs(x2 - x1), math.abs(y2 - y1))
+  love.graphics.setColor(c[1], c[2], c[3], 0.9)
+  love.graphics.setLineWidth(1.5)
+  love.graphics.rectangle("line", math.min(x1, x2), math.min(y1, y2), math.abs(x2 - x1), math.abs(y2 - y1))
+  love.graphics.setLineWidth(1)
+end
+
 local function drawFlight(T)
   local f = T.flight
   if not f then return end
@@ -592,6 +630,7 @@ function V.drawTable(T)
   drawArrows(T)
   drawRemoteGhosts(T)
   drawFlight(T)
+  drawSelectionBox(T)
   ui.popClip()
 end
 

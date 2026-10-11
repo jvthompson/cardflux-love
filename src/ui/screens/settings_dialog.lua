@@ -6,6 +6,8 @@ local overlays = require("src.ui.kit.overlays")
 local window = require("src.platform.window")
 local profile = require("src.data.profile")
 local handSettings = require("src.data.hand_settings")
+local tableSettings = require("src.data.table_settings")
+local colorpicker = require("src.ui.kit.colorpicker")
 
 local M = {}
 
@@ -72,6 +74,20 @@ function M.open(opts)
       if ui.button(label, x - 12, yy, ui.buttonWidth(label), nil,
         { variant = "text", disabled = handSettings.isDefault(), id = "settings:hand:reset" }) then
         handSettings.reset()
+      end
+      yy = yy + ui.BUTTON_H + 16
+
+      yy = yy + heading("Table", x, yy)
+      ui.text("Selection color", x, yy, { size = 12, color = c.onSurfaceVariant })
+      yy = yy + 20
+      local picked, ph = colorpicker.field("settings:selectionColor", x, yy, w, tableSettings.selectionColor(),
+        { labelBackground = c.surfaceContainerHigh })
+      tableSettings.setSelectionColor(picked)
+      yy = yy + ph + 4
+      label = "Reset selection color"
+      if ui.button(label, x - 12, yy, ui.buttonWidth(label), nil,
+        { variant = "text", disabled = tableSettings.isDefault(), id = "settings:selectionColor:reset" }) then
+        tableSettings.reset()
       end
       yy = yy + ui.BUTTON_H
       return yy - y

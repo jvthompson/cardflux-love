@@ -101,6 +101,7 @@ function CardDefinition.new(f)
     orientation = f.orientation or "portrait",
     setId = f.setId,
     unownable = f.unownable or false,
+    isFreeCard = f.isFreeCard or false,
     cardBackId = f.cardBackId,
     uniqueBackOrientation = f.uniqueBackOrientation or "portrait",
   }
@@ -123,6 +124,7 @@ function CardDefinition.fromJson(t)
     orientation = enumValue(t.orientation, M.CardOrientation, "portrait", "CardDefinition.orientation"),
     setId = t.setId,
     unownable = t.unownable == true,
+    isFreeCard = t.isFreeCard == true,
     cardBackId = t.cardBackId,
     uniqueBackOrientation = enumValue(t.uniqueBackOrientation, M.CardOrientation, "portrait",
       "CardDefinition.uniqueBackOrientation"),
@@ -156,6 +158,7 @@ function CardDefinition.toJson(c, omitSetId)
     "orientation", unlessDefault(c.orientation, "portrait"),
     "setId", (not omitSetId) and c.setId or nil,
     "unownable", c.unownable and true or nil,
+    "isFreeCard", c.isFreeCard and true or nil,
     "cardBackId", c.cardBackId,
     "uniqueBackOrientation", unlessDefault(c.uniqueBackOrientation, "portrait")
   )

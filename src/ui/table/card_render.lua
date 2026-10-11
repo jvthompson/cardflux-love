@@ -240,7 +240,7 @@ end
 -- Full card draw.
 -- opts: def (CardDefinition or nil), faceUp, cx, cy (screen center), scale,
 --       angle (radians), border (rgba color table or nil), alpha, cardBacks,
---       forceFaceUp
+--       forceFaceUp, tint (rgba laid over the card, e.g. the selection color)
 function R.draw(opts)
   local scale = opts.scale or 1
   local alpha = opts.alpha or 1
@@ -253,6 +253,10 @@ function R.draw(opts)
   textScale = math.max(0.5, math.floor(scale * 4 + 0.5) / 4)
   love.graphics.translate(-W / 2, -H / 2)
   if showFace then R.drawFaceBase(def, alpha) else R.drawBackBase(opts.cardBacks, def, alpha) end
+  if opts.tint then
+    love.graphics.setColor(opts.tint[1], opts.tint[2], opts.tint[3], (opts.tint[4] or 1) * alpha)
+    love.graphics.rectangle("fill", 0, 0, W, H, RAD, RAD)
+  end
   if opts.border then
     love.graphics.setColor(opts.border[1], opts.border[2], opts.border[3], (opts.border[4] or 1) * alpha)
     love.graphics.setLineWidth(2)

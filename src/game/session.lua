@@ -9,6 +9,7 @@ local models = require("src.core.models")
 local util = require("src.core.util")
 local uuid = require("src.core.uuid")
 local A = require("src.core.table_actions")
+local stacks = require("src.core.stack_utils")
 local dwz = require("src.core.deck_widget_zones")
 local packs = require("src.core.pack_generator")
 
@@ -294,7 +295,17 @@ function Session:flipCard(instanceId, actingPlayerId)
   self:notify()
 end
 
+-- Whether the card sits in a table pile with other cards.
+function Session:isInPile(instanceId)
+  local c = self:findCard(instanceId)
+  if not c or c.zone ~= "table" then return false end
+  return #stacks.stackOf(self.state.cards, stacks.rootIdOf(self.state.cards, c)) > 1
+end
+
+-- A card in a pile can't change owner (refused silently): piles never mix
+-- owners, so neither giving it away nor releasing it is allowed.
 function Session:giveCard(instanceId, newOwnerId, actingPlayerId)
+  if self:isInPile(instanceId) then return end
   self.state = A.giveCard(self.state, instanceId, newOwnerId)
   local card = self:findCard(instanceId)
   local name = (card and self:isPubliclyVisible(card)) and self:titleOf(card) or nil
@@ -306,7 +317,23 @@ function Session:giveCard(instanceId, newOwnerId, actingPlayerId)
   self:notify()
 end
 
+-- Whether card instanceId may join the pile containing ontoInstanceId.
+-- Piles never mix owners: the card's owner once stacked (unownable cards
+-- become unowned) must match every card in the pile, so your cards only go
+-- onto your piles and unowned cards only onto unowned piles.
+function Session:canStackOnto(instanceId, ontoInstanceId)
+  local card, onto = self:findCard(instanceId), self:findCard(ontoInstanceId)
+  if not card or not onto then return false end
+  local owner = (not card.unownable) and card.ownerId or nil
+  for _, c in ipairs(stacks.stackOf(self.state.cards, stacks.rootIdOf(self.state.cards, onto))) do
+    if c.instanceId ~= instanceId and c.ownerId ~= owner then return false end
+  end
+  return true
+end
+
+-- Fails silently (nothing moves) when the pile's owner differs.
 function Session:stackCard(instanceId, ontoInstanceId, actingPlayerId)
+  if not self:canStackOnto(instanceId, ontoInstanceId) then return end
   local old = self:findCard(instanceId)
   self.state = A.stackCard(self.state, instanceId, ontoInstanceId)
   if old and old.zone ~= "table" then self:logPlayedToTable(actingPlayerId, old, instanceId) end

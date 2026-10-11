@@ -444,6 +444,9 @@ function T:drawForm(card, x, y, w, h)
   card.unownable, th = common.toggleRow(k .. ":unownable", "Unownable",
     "Always stays unowned on the table -- any player can interact with it", fx, yy, fw, card.unownable)
   yy = yy + th + pad
+  card.isFreeCard, th = common.toggleRow(k .. ":freecard", "Free Card",
+    "On collection-mode servers, every player always has unlimited copies", fx, yy, fw, card.isFreeCard)
+  yy = yy + th + pad
   ui.endScroll("cv:form", yy + off - y)
 end
 

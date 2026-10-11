@@ -26,8 +26,11 @@ local fs = require("src.data.fs")
 local saves = require("src.data.save_files")
 local imageCache = require("src.data.image_cache")
 local sound = require("src.game.sound")
+local color = require("src.core.color")
+local tableSettings = require("src.data.table_settings")
 local CR = require("src.ui.table.card_render")
 local V = require("src.ui.table.table_view")
+local selection = require("src.ui.table.selection")
 
 local T = {}
 T.__index = T
@@ -56,6 +59,10 @@ function T.new(opts)
   self.playmats, self.playmatIndex = {}, 0
   self:loadPlaymats()
   self.library = filterBar.newState(self.game)
+  -- Box selection: selected card instance ids (whole piles) and token ids.
+  -- selRoots/selCount are rebuilt each frame by refreshSelection().
+  self.selection = { cards = {}, tokens = {} }
+  self.selRoots, self.selCount = {}, 0
   return self
 end
 
@@ -153,6 +160,218 @@ function T:isSharedZone(zoneId)
 end
 
 ---------------------------------------------------------------------------
+-- Selection (box select; geometry helpers in selection.lua)
+---------------------------------------------------------------------------
+
+function T:selectionColor() return { color.toRgba(tableSettings.selectionColor()) } end
+
+function T:selectionTint()
+  local c = self:selectionColor()
+  return { c[1], c[2], c[3], 0.35 }
+end
+
+function T:isRootSelected(rootId) return self.selRoots[rootId] == true end
+function T:isTokenSelected(id) return self.selection.tokens[id] == true end
+
+function T:clearSelection()
+  self.selection = { cards = {}, tokens = {} }
+  self.selRoots, self.selCount = {}, 0
+end
+
+-- A token that can be selected: yours and loose on the table.
+function T:isSelectableToken(w)
+  return w ~= nil and w.kind == "token" and w.zoneId == nil and w.attachedCardId == nil
+    and w.ownerId == self.session:actingPlayerId()
+end
+
+-- Drops whatever left the table or changed hands, then works out which
+-- table piles are selected (a pile counts when any of its cards is selected
+-- and its top card is yours).
+function T:refreshSelection()
+  local sel, D = self.selection, self.derived
+  local acting = self.session:actingPlayerId()
+  for id in pairs(sel.cards) do
+    local c = D.cardsById[id]
+    if not c or c.zone ~= "table" or (c.ownerId ~= nil and c.ownerId ~= acting) then sel.cards[id] = nil end
+  end
+  for id in pairs(sel.tokens) do
+    if not self:isSelectableToken(models.TableState.widgetById(self.state, id)) then sel.tokens[id] = nil end
+  end
+  local roots, n = {}, 0
+  for rootId, cards in pairs(D.pileGroups) do
+    if stacks.topOf(cards).ownerId == acting then
+      for _, c in ipairs(cards) do
+        if sel.cards[c.instanceId] then
+          roots[rootId], n = true, n + 1
+          break
+        end
+      end
+    end
+  end
+  for _ in pairs(sel.tokens) do n = n + 1 end
+  self.selRoots, self.selCount = roots, n
+end
+
+-- Selected pile roots, bottom-most first.
+function T:selectedRootList()
+  local out = {}
+  for _, rootId in ipairs(self.derived.sortedRoots) do
+    if self.selRoots[rootId] then out[#out + 1] = rootId end
+  end
+  return out
+end
+
+-- Every card of the selected piles (opponents' cards left out), by zIndex.
+function T:selectedCards()
+  local acting = self.session:actingPlayerId()
+  local out = {}
+  for _, rootId in ipairs(self:selectedRootList()) do
+    for _, c in ipairs(self.derived.pileGroups[rootId]) do
+      if c.ownerId == nil or c.ownerId == acting then out[#out + 1] = c end
+    end
+  end
+  return require("src.core.table_actions").sortedByZ(out)
+end
+
+function T:selectedTokenIds()
+  local out = {}
+  for _, w in ipairs(self.state.widgets) do
+    if self.selection.tokens[w.instanceId] then out[#out + 1] = w.instanceId end
+  end
+  return out
+end
+
+-- Ctrl+click: a whole pile (or a token) in or out of the selection.
+function T:toggleSelected(item)
+  local sel = self.selection
+  if item.kind == "token" then
+    local id = item.widget.instanceId
+    sel.tokens[id] = (not sel.tokens[id]) or nil
+  else
+    local on = not self.selRoots[item.rootId]
+    for _, c in ipairs(self.derived.pileGroups[item.rootId] or {}) do sel.cards[c.instanceId] = on or nil end
+  end
+  self:refreshSelection()
+end
+
+-- Mouse released after dragging out a box from empty table.
+function T:finishBoxSelect(b)
+  if not b.additive then self:clearSelection() end
+  local x1, y1 = V.worldToScreen(self, b.sx, b.sy)
+  local x2, y2 = V.worldToScreen(self, b.cx or b.sx, b.cy or b.sy)
+  if math.abs(x2 - x1) <= DRAG_THRESHOLD and math.abs(y2 - y1) <= DRAG_THRESHOLD then return end
+  local rect = selection.rectFromPoints(x1, y1, x2, y2)
+  local acting = self.session:actingPlayerId()
+  local sel = self.selection
+  for _, it in ipairs(self.prevItems) do
+    if (it.kind == "tableCard" or it.kind == "pile") and it.card.ownerId == acting and selection.boxHits(rect, it) then
+      for _, c in ipairs(self.derived.pileGroups[it.rootId] or {}) do sel.cards[c.instanceId] = true end
+    elseif it.kind == "token" and self:isSelectableToken(it.widget) and selection.boxHits(rect, it) then
+      sel.tokens[it.widget.instanceId] = true
+    end
+  end
+  self:refreshSelection()
+end
+
+-- Half extents (world px) of a table card as it is currently shown.
+function T:cardHalfExtents(card)
+  return selection.halfExtents(CW, CH, V.cardTurns(self, card, false))
+end
+
+-- Moves table piles and loose tokens by a world-pixel delta, keeping their
+-- layout. Anything that would end up (partly) off the table is pulled back
+-- fully onto it instead, even if it then overlaps other cards.
+function T:moveItemsBy(rootIds, tokenIds, dwx, dwy)
+  local C, D = self.controller, self.derived
+  local inBounds, primary, pfx, pfy = {}, nil, nil, nil
+  for _, rootId in ipairs(rootIds) do
+    local root, group = D.cardsById[rootId], D.pileGroups[rootId]
+    if root and group then
+      local wx, wy = V.canonicalToWorld(self, root.x, root.y)
+      local nx, ny = wx + dwx, wy + dwy
+      local cx, cy = selection.clampWorldCenter(nx, ny, self:cardHalfExtents(stacks.topOf(group)))
+      if cx == nx and cy == ny then
+        inBounds[#inBounds + 1] = rootId
+        if not primary then
+          primary = rootId
+          pfx, pfy = V.worldToCanonical(self, nx, ny)
+        end
+      else
+        C:moveStack(rootId, V.worldToCanonical(self, cx, cy))
+      end
+    end
+  end
+  -- The primary is a pile root listed among the passengers too, so its
+  -- whole pile travels with it.
+  if primary then C:moveGroup(primary, inBounds, pfx, pfy) end
+  local half = V.tokenSize / 2
+  for _, id in ipairs(tokenIds) do
+    local w = models.TableState.widgetById(self.state, id)
+    if w then
+      local wx, wy = V.canonicalToWorld(self, w.x, w.y)
+      C:moveWidget(id, V.worldToCanonical(self, selection.clampWorldCenter(wx + dwx, wy + dwy, half, half)))
+    end
+  end
+end
+
+-- Sends cards to a zone keeping their order (bottom-most first; to the
+-- bottom of the zone the top-most goes first).
+function T:sendCardsToZone(cards, zoneId, toBottom)
+  local C = self.controller
+  if toBottom then
+    for i = #cards, 1, -1 do C:returnToZone(cards[i].instanceId, zoneId, true) end
+  else
+    for _, c in ipairs(cards) do C:returnToZone(c.instanceId, zoneId, false) end
+  end
+end
+
+-- "Create Pile Here": every selected card stacked into one pile at the
+-- clicked point, in their current order; selected tokens attach to it.
+function T:createPileAt(mx, my)
+  local cards = self:selectedCards()
+  if #cards < 2 then return end
+  local C = self.controller
+  local bottom = cards[1]
+  local fx, fy = V.screenToCanonicalClamped(self, mx, my, self:cardHalfExtents(bottom))
+  C:moveCard(bottom.instanceId, fx, fy)
+  for i = 2, #cards do C:stackCard(cards[i].instanceId, bottom.instanceId) end
+  for _, id in ipairs(self:selectedTokenIds()) do C:attachWidgetToCard(id, cards[#cards].instanceId, fx, fy) end
+end
+
+-- Selected roots when the hovered card belongs to the selection (hotkeys
+-- then act on all of it), else nil.
+function T:hoveredSelectionRoots()
+  local c = self:ownedHoveredTableCard()
+  if not c or not self.selRoots[stacks.rootIdOf(self.state.cards, c)] then return nil end
+  return self:selectedRootList()
+end
+
+local function cardCountText(n) return n == 1 and "1 card" or (n .. " cards") end
+
+-- Confirms before cards leave your ownership.
+function T:confirmGive(cards, newOwnerId)
+  local C = self.controller
+  local what
+  if #cards == 1 then
+    local c = cards[1]
+    local def = c.faceUp and V.def(self, c)
+    what = def and ('"' .. def.cardTitle .. '"') or "this card"
+  else
+    what = cardCountText(#cards)
+  end
+  local function apply()
+    for _, c in ipairs(cards) do C:giveCard(c.instanceId, newOwnerId) end
+  end
+  if newOwnerId then
+    local p = V.playerById(self, newOwnerId)
+    overlays.confirm("Give Cards", "Give " .. what .. " to " .. (p and p.name or "that player") .. "?", "Give", apply)
+  else
+    overlays.confirm("Remove Ownership", "Remove your ownership of " .. what .. "? Any player will be able to move "
+      .. (#cards == 1 and "it" or "them") .. ".", "Remove", apply)
+  end
+end
+
+---------------------------------------------------------------------------
 -- Playmats (<gameFolder>/_playmats, cycled with F12)
 ---------------------------------------------------------------------------
 
@@ -192,6 +411,12 @@ function T:ownedHoveredTableCard()
 end
 
 function T:rotateHovered(clockwise)
+  local roots = self:hoveredSelectionRoots()
+  if roots then
+    for _, rootId in ipairs(roots) do self.controller:rotateStack(rootId, clockwise) end
+    sound.play(clockwise and "tap" or "untap")
+    return
+  end
   local c = self:ownedHoveredTableCard()
   if not c then return end
   self.controller:rotateStack(stacks.rootIdOf(self.state.cards, c), clockwise)
@@ -199,12 +424,22 @@ function T:rotateHovered(clockwise)
 end
 
 function T:bringHoveredToFront()
+  local roots = self:hoveredSelectionRoots()
+  if roots then
+    for _, rootId in ipairs(roots) do self.controller:bringToFront(rootId) end
+    return
+  end
   local c = self:ownedHoveredTableCard()
   if not c then return end
   self.controller:bringToFront(stacks.rootIdOf(self.state.cards, c))
 end
 
 function T:flipHovered()
+  local roots = self:hoveredSelectionRoots()
+  if roots then
+    for _, rootId in ipairs(roots) do self.controller:flipCard(stacks.topOf(self.derived.pileGroups[rootId]).instanceId) end
+    return
+  end
   local c = self:hoveredCard()
   if not c then return end
   local acting = self.session:actingPlayerId()
@@ -218,6 +453,17 @@ function T:discardHovered()
   if not c then return end
   local zoneId = self:localDiscardZoneId()
   if not zoneId then return end
+  if self:hoveredSelectionRoots() then
+    for _, sc in ipairs(self:selectedCards()) do
+      if sc.instanceId == c.instanceId then
+        self:startDiscardFlight(sc, zoneId)
+      else
+        self.controller:returnToZone(sc.instanceId, zoneId, false)
+      end
+    end
+    self.hoveredId = nil
+    return
+  end
   self:startDiscardFlight(c, zoneId)
   self.hoveredId = nil
 end
@@ -278,6 +524,7 @@ end
 
 function T:releaseHeldKeys()
   self.spaceDown, self.tabDown = false, false
+  self.boxSelect = nil
   if self.arrowDrag then self.controller:endArrowDragPreview() end
   self.arrowDrag = nil
 end
@@ -300,7 +547,14 @@ end
 
 function T:keypressed(key, _, isrepeat)
   if key == "escape" then
-    if not isrepeat then self:toggleGameMenu() end
+    if isrepeat then return end
+    -- A selection (or a box being dragged) is cleared before Esc opens the menu.
+    if not self.gameMenuOpen and not self.logOpen and (self.boxSelect or self.selCount > 0) then
+      self.boxSelect = nil
+      self:clearSelection()
+      return
+    end
+    self:toggleGameMenu()
     return
   end
   if self.gameMenuOpen then return end
@@ -390,11 +644,13 @@ function T:handDropIndex(otherIds, x)
   return #otherIds
 end
 
--- Nearest table top (other than `excludingId`) within 42 world px.
-function T:findStackTarget(excludingId, wx, wy)
+-- Nearest table top within 42 world px, other than `excluding` (an
+-- instance id, or a set of them).
+function T:findStackTarget(excluding, wx, wy)
   local best, bestDist
   for _, c in ipairs(self.derived.tops) do
-    if c.instanceId ~= excludingId then
+    local excluded = type(excluding) == "table" and excluding[c.instanceId] or c.instanceId == excluding
+    if not excluded then
       local cx, cy = V.canonicalToWorld(self, c.x, c.y)
       local d = math.sqrt((cx - wx) ^ 2 + (cy - wy) ^ 2)
       if d < STACK_HIT_RADIUS and (not bestDist or d < bestDist) then best, bestDist = c, d end
@@ -447,12 +703,17 @@ function T:handleCardDrop(instanceId, cx, cy)
     local group = alt and self:pickupGroup(dragged) or { dragged }
     if #group > 1 then
       if not self:isOverTable(cx, cy) then return end
-      local fx, fy = V.screenToCanonical(self, cx, cy, CH)
-      local passengers = {}
+      local roots, seen = {}, {}
       for _, c in ipairs(group) do
-        if c.instanceId ~= instanceId then passengers[#passengers + 1] = stacks.rootIdOf(self.state.cards, c) end
+        local rootId = stacks.rootIdOf(self.state.cards, c)
+        if not seen[rootId] then
+          seen[rootId] = true
+          roots[#roots + 1] = rootId
+        end
       end
-      self.controller:moveGroup(instanceId, passengers, fx, fy)
+      local ox, oy = V.canonicalToWorld(self, dragged.x, dragged.y)
+      local wx, wy = V.screenToWorld(self, cx, cy)
+      self:moveItemsBy(roots, {}, wx - ox, wy - oy)
       return
     end
   end
@@ -478,11 +739,70 @@ function T:handleCardDrop(instanceId, cx, cy)
   local target = self:findStackTarget(instanceId, wx, wy)
   if originZone == "hand" then sound.play("playCard") end
   if target and alt then
-    self.controller:stackCard(instanceId, target.instanceId)
+    -- A pile with a different owner refuses it; the card stays put.
+    if self.session:canStackOnto(instanceId, target.instanceId) then
+      self.controller:stackCard(instanceId, target.instanceId)
+    end
   else
-    local fx, fy = V.screenToCanonical(self, cx, cy, CH)
+    local hw, hh = CW / 2, CH / 2
+    if origin then hw, hh = self:cardHalfExtents(origin) end
+    local fx, fy = V.screenToCanonicalClamped(self, cx, cy, hw, hh)
     self.controller:moveCard(instanceId, fx, fy)
   end
+end
+
+-- Drop of a dragged selection; (cx, cy) is where the anchor item landed.
+function T:handleSelectionDrop(d, cx, cy)
+  if d.primaryId then self.controller:endCardDragPreview() end
+  local C = self.controller
+  local cards = self:selectedCards()
+  local alt = love.keyboard.isDown("lalt", "ralt")
+  if self:isOverLocalHand(cx, cy) then
+    local others = {}
+    for _, c in ipairs(self.derived.localHand) do others[#others + 1] = c.instanceId end
+    local index = self:handDropIndex(others, cx)
+    for i, c in ipairs(cards) do
+      C:moveToHand(c.instanceId)
+      C:reorderHand(c.instanceId, index + i - 1)
+    end
+    if #cards > 0 then sound.play("draw") end
+    return
+  end
+  local zoneId = self:dockedZoneIdAt(cx, cy)
+  if zoneId then
+    self:sendCardsToZone(cards, zoneId, alt)
+    return
+  end
+  if not self:isOverTable(cx, cy) then return end
+  local wx, wy = V.screenToWorld(self, cx, cy)
+  local tokenIds = self:selectedTokenIds()
+  if alt then
+    local target = self:findStackTarget(d.groupIds, wx, wy)
+    if target then
+      -- Piles never mix owners: if any card would be refused, nothing moves.
+      for _, c in ipairs(cards) do
+        if not self.session:canStackOnto(c.instanceId, target.instanceId) then return end
+      end
+      for _, c in ipairs(cards) do C:stackCard(c.instanceId, target.instanceId) end
+      for _, id in ipairs(tokenIds) do C:attachWidgetToCard(id, target.instanceId, target.x, target.y) end
+      return
+    end
+  end
+  local ax, ay = self:selectionAnchorWorld(d)
+  if ax then self:moveItemsBy(self:selectedRootList(), tokenIds, wx - ax, wy - ay) end
+end
+
+-- World position of the item a selection drag was started from.
+function T:selectionAnchorWorld(d)
+  if d.anchorTokenId then
+    local w = models.TableState.widgetById(self.state, d.anchorTokenId)
+    if w then return V.canonicalToWorld(self, w.x, w.y) end
+    return nil
+  end
+  local top = d.group[1]
+  if not top then return nil end
+  local c = self.derived.cardsById[top.instanceId] or top
+  return V.canonicalToWorld(self, c.x, c.y)
 end
 
 function T:handlePileDrop(rootId, cards, cx, cy)
@@ -500,14 +820,14 @@ function T:handlePileDrop(rootId, cards, cx, cy)
     return
   end
   if not self:isOverTable(cx, cy) then return end
-  local fx, fy = V.screenToCanonical(self, cx, cy, CH)
+  local fx, fy = V.screenToCanonicalClamped(self, cx, cy, self:cardHalfExtents(stacks.topOf(cards)))
   self.controller:moveStack(rootId, fx, fy)
 end
 
 function T:handleWidgetDrop(widgetId, kind, cx, cy)
   if not self:isOverTable(cx, cy) then return end
-  local _, wh = V.widgetSize(self, kind)
-  local fx, fy = V.screenToCanonical(self, cx, cy, wh)
+  local ww, wh = V.widgetSize(self, kind)
+  local fx, fy = V.screenToCanonicalClamped(self, cx, cy, ww / 2, wh / 2)
   self.controller:moveWidget(widgetId, fx, fy)
 end
 
@@ -515,7 +835,7 @@ function T:handleTokenDrop(widgetId, cx, cy)
   local ctrl = love.keyboard.isDown("lctrl", "rctrl")
   local wx, wy = V.screenToWorld(self, cx, cy)
   local target = self:findStackTarget(widgetId, wx, wy)
-  local fx, fy = V.screenToCanonical(self, cx, cy, V.tokenSize)
+  local fx, fy = V.screenToCanonicalClamped(self, cx, cy, V.tokenSize / 2, V.tokenSize / 2)
   if ctrl then
     if not self:isOverTable(cx, cy) then return end
     local newId = uuid.v4()
@@ -532,7 +852,9 @@ end
 
 function T:handleLibraryDrop(definitionId, cx, cy)
   if not self:isOverTable(cx, cy) then return end
-  local fx, fy = V.screenToCanonical(self, cx, cy, CH)
+  local def = self.session.definitionsById[definitionId]
+  local hw, hh = selection.halfExtents(CW, CH, def and CR.orientationTurns(def.orientation) or 0)
+  local fx, fy = V.screenToCanonicalClamped(self, cx, cy, hw, hh)
   self.controller:createCardFromLibrary(definitionId, fx, fy)
 end
 
@@ -567,6 +889,24 @@ function T:startDrag()
   local d = { started = true, src = src, kind = src.kind, grabX = src.cx - p.pressX, grabY = src.cy - p.pressY,
     scale = src.scale or 1 }
   d.grabX0, d.grabY0, d.scale0 = d.grabX, d.grabY, d.scale
+  if src.kind == "selection" then
+    -- group: the top card of each selected pile, the anchor's first;
+    -- groupIds: every card of those piles (ghosted while dragged).
+    d.anchorRootId, d.anchorTokenId = src.anchorRootId, src.anchorTokenId
+    d.group, d.groupIds, d.tokenIds = {}, {}, {}
+    for _, rootId in ipairs(self:selectedRootList()) do
+      local cards = self.derived.pileGroups[rootId]
+      local top = stacks.topOf(cards)
+      if rootId == src.anchorRootId then table.insert(d.group, 1, top) else d.group[#d.group + 1] = top end
+      for _, c in ipairs(cards) do d.groupIds[c.instanceId] = true end
+    end
+    d.drawOrder = require("src.core.table_actions").sortedByZ(d.group)
+    for _, id in ipairs(self:selectedTokenIds()) do d.tokenIds[id] = true end
+    d.primaryId = d.group[1] and d.group[1].instanceId
+    self.drag = d
+    if d.primaryId then self:sendCardPreview(true) end
+    return
+  end
   if src.kind == "card" or src.kind == "pile" then
     local card = src.card
     d.primaryId = card.instanceId
@@ -628,6 +968,8 @@ function T:endDrag()
     self:handleTokenDrop(src.widget.instanceId, cx, cy)
   elseif d.kind == "library" then
     self:handleLibraryDrop(src.definitionId, cx, cy)
+  elseif d.kind == "selection" then
+    self:handleSelectionDrop(d, cx, cy)
   end
 end
 
@@ -661,6 +1003,24 @@ function T:drawDragFeedback()
       local c = d.group[1]
       CR.draw({ def = V.def(self, c), faceUp = c.faceUp or d.src.forceFaceUp, cx = cx, cy = cy, scale = s, angle = d.angle,
         border = d.src.border, cardBacks = self.game.cardBacks })
+    end
+  elseif d.kind == "selection" then
+    -- Everything keeps its offset from the anchor, at table size.
+    local awx, awy = self:selectionAnchorWorld(d)
+    if not awx then return end
+    local ax, ay = V.worldToScreen(self, awx, awy)
+    local z, tint = self.zoom, self:selectionTint()
+    for _, c in ipairs(d.drawOrder) do
+      local x, y = V.toScreen(self, c.x, c.y)
+      local angle = V.cardTurns(self, c, self:cardFacesAwayFromMe(c.ownerId)) * 2 * math.pi
+      CR.draw({ def = V.def(self, c), faceUp = c.faceUp, cx = cx + x - ax, cy = cy + y - ay, scale = z, angle = angle,
+        tint = tint, cardBacks = self.game.cardBacks })
+    end
+    for _, w in ipairs(self.state.widgets) do
+      if d.tokenIds[w.instanceId] or (w.attachedCardId and d.groupIds[w.attachedCardId]) then
+        local wx, wy = V.toScreen(self, w.x, w.y)
+        self:drawWidgetFace(w, cx + wx - ax, cy + wy - ay, z)
+      end
     end
   elseif d.kind == "widget" or d.kind == "token" then
     self:drawWidgetFace(d.src.widget, cx, cy, s)
@@ -720,13 +1080,84 @@ function T:cardMenuItems(card, onSearch)
   end
   if onSearch then items[#items + 1] = { label = "Search...", onSelect = onSearch } end
   if isOwner and isTable then
-    for _, p in ipairs(self.state.players) do
-      if p.id ~= acting and p.connected then
-        items[#items + 1] = { label = "Give to " .. p.name, onSelect = function() C:giveCard(card.instanceId, p.id) end }
+    local rootId = stacks.rootIdOf(self.state.cards, card)
+    items[#items + 1] = { label = "Flip", onSelect = function() C:flipCard(card.instanceId) end }
+    items[#items + 1] = { label = "Rotate", submenu = self:rotateMenu({ rootId }) }
+    -- Cards in a pile can't change owner (piles never mix owners).
+    if not self.session:isInPile(card.instanceId) then
+      for _, p in ipairs(self.state.players) do
+        if p.id ~= acting and p.connected then
+          items[#items + 1] = { label = "Give to " .. p.name, onSelect = function() self:confirmGive({ card }, p.id) end }
+        end
       end
+      items[#items + 1] = { label = "Remove Ownership", onSelect = function() self:confirmGive({ card }, nil) end }
     end
-    items[#items + 1] = { label = "Remove Ownership", onSelect = function() C:giveCard(card.instanceId, nil) end }
   end
+  return items
+end
+
+function T:rotateMenu(rootIds)
+  local function rotate(clockwise)
+    return function()
+      for _, rootId in ipairs(rootIds) do self.controller:rotateStack(rootId, clockwise) end
+      sound.play(clockwise and "tap" or "untap")
+    end
+  end
+  return { { label = "Clockwise", onSelect = rotate(true) }, { label = "Counterclockwise", onSelect = rotate(false) } }
+end
+
+-- Right-click on a selected pile or card while 2+ items are selected:
+-- everything acts on all selected cards. (mx, my): where the menu opened.
+function T:selectionMenuItems(mx, my)
+  local C = self.controller
+  local cards, roots = self:selectedCards(), self:selectedRootList()
+  local tokenCount = #self:selectedTokenIds()
+  local header = cardCountText(#cards)
+  if tokenCount > 0 then header = header .. ", " .. tokenCount .. " token" .. (tokenCount == 1 and "" or "s") end
+  local items = { { label = header .. " selected", disabled = true }, { divider = true } }
+  if #cards == 0 then return items end
+  local function placementMenu(zone)
+    local sub = { { label = "Top", onSelect = function() self:sendCardsToZone(cards, zone.id, false) end } }
+    if zone.shuffleable then
+      sub[#sub + 1] = { label = "Shuffle Into", onSelect = function()
+        self:sendCardsToZone(cards, zone.id, false)
+        C:shuffleZone(zone.id)
+      end }
+    end
+    sub[#sub + 1] = { label = "Bottom", onSelect = function() self:sendCardsToZone(cards, zone.id, true) end }
+    return sub
+  end
+  local send = { { label = "Hand", onSelect = function()
+    for _, c in ipairs(cards) do C:moveToHand(c.instanceId) end
+    sound.play("draw")
+  end } }
+  local discardId = self:localDiscardZoneId()
+  local discard = discardId and models.GameDefinition.zoneById(self.game, discardId)
+  if discard then send[#send + 1] = { label = "Discard", submenu = placementMenu(discard) } end
+  for _, zone in ipairs(self.game.zones) do
+    if zone.kind == "card" and not zone.isDiscardPile then
+      send[#send + 1] = { label = zone.name, submenu = placementMenu(zone) }
+    end
+  end
+  items[#items + 1] = { label = "Send to...", submenu = send }
+  if #cards >= 2 then
+    items[#items + 1] = { label = "Create Pile Here", onSelect = function() self:createPileAt(mx, my) end }
+  end
+  items[#items + 1] = { label = "Flip", onSelect = function()
+    for _, rootId in ipairs(roots) do C:flipCard(stacks.topOf(self.derived.pileGroups[rootId]).instanceId) end
+  end }
+  items[#items + 1] = { label = "Rotate", submenu = self:rotateMenu(roots) }
+  local acting = self.session:actingPlayerId()
+  -- Ownership changes are only offered when no selected card is in a pile.
+  for _, rootId in ipairs(roots) do
+    if #self.derived.pileGroups[rootId] > 1 then return items end
+  end
+  for _, p in ipairs(self.state.players) do
+    if p.id ~= acting and p.connected then
+      items[#items + 1] = { label = "Give to " .. p.name, onSelect = function() self:confirmGive(cards, p.id) end }
+    end
+  end
+  items[#items + 1] = { label = "Remove Ownership", onSelect = function() self:confirmGive(cards, nil) end }
   return items
 end
 
@@ -770,6 +1201,10 @@ function T:openItemMenu(item, mx, my)
   if self.spectator then return true end
   local C = self.controller
   local k = item.kind
+  if (k == "tableCard" or k == "pile") and self.selRoots[item.rootId] and self.selCount >= 2 then
+    overlays.menu(mx, my, self:selectionMenuItems(mx, my))
+    return true
+  end
   if k == "tableCard" or k == "handCard" then
     local items = self:cardMenuItems(item.card)
     if items then overlays.menu(mx, my, items) return true end
@@ -960,6 +1395,35 @@ function T:sourceFor(item)
   return nil
 end
 
+-- A press on a table card, pile or token, given the selection:
+-- Ctrl+click toggles it (Ctrl+drag still drags, e.g. to duplicate a token),
+-- a selected item drags the whole selection, and an unselected one clears
+-- the selection before acting as usual.
+function T:applySelectionToPress(item, src)
+  local k = item.kind
+  if k ~= "tableCard" and k ~= "pile" and k ~= "token" then return src end
+  local isToken = k == "token"
+  local selectable
+  if isToken then
+    selectable = self:isSelectableToken(item.widget)
+  else
+    selectable = item.card.ownerId == self.session:actingPlayerId()
+  end
+  if selectable and love.keyboard.isDown("lctrl", "rctrl") then
+    src.onClick = function() self:toggleSelected(item) end
+    return src
+  end
+  local selected
+  if isToken then selected = self:isTokenSelected(item.widget.instanceId) else selected = self.selRoots[item.rootId] end
+  if selected and self.selCount >= 2 then
+    return { kind = "selection", anchorRootId = (not isToken) and item.rootId or nil,
+      anchorTokenId = isToken and item.widget.instanceId or nil, cx = src.cx, cy = src.cy, scale = self.zoom,
+      onClick = src.onClick }
+  end
+  if not selected and self.selCount > 0 then self:clearSelection() end
+  return src
+end
+
 function T:processInput()
   local mx, my = ui.mouse()
   local free = ui.baseHasMouse()
@@ -996,6 +1460,22 @@ function T:processInput()
     ui.consumeWheel()
   end
 
+  -- Middle-button drag pans the table (alongside WASD).
+  if self.midPan then
+    if ui.mouseDown(3) then
+      local p = self.midPan
+      local maxX, maxY = V.maxPan(self)
+      self.camX = util.clamp(p.camX + (mx - p.x) / self.zoom, -maxX, maxX)
+      self.camY = util.clamp(p.camY + (my - p.y) / self.zoom, -maxY, maxY)
+      ui.setCursor("sizeall")
+    else
+      self.midPan = nil
+    end
+  elseif free and ui.mousePressed(3) and self:isOverTable(mx, my) and not self.libraryOpen then
+    local cx, cy = V.clampedCamera(self)
+    self.midPan = { x = mx, y = my, camX = cx, camY = cy }
+  end
+
   -- Arrow drawing (Tab + drag on the table).
   if self.arrowDrag then
     local wx, wy2 = V.screenToWorld(self, mx, my)
@@ -1014,6 +1494,17 @@ function T:processInput()
         local fx2, fy2 = geometry.localPixelToCanonical(a.cx, a.cy, geometry.worldWidth, geometry.worldHeight, self.isMirrored)
         self.controller:createArrow(uuid.v4(), fx, fy, fx2, fy2)
       end
+    end
+    return
+  end
+
+  -- Box selection being dragged out.
+  if self.boxSelect then
+    local b = self.boxSelect
+    b.cx, b.cy = V.screenToWorld(self, mx, my)
+    if ui.mouseReleased(1) or not ui.mouseDown(1) then
+      self.boxSelect = nil
+      self:finishBoxSelect(b)
     end
     return
   end
@@ -1048,7 +1539,12 @@ function T:processInput()
       return
     end
     local k = item.kind
-    if k == "shuffle" or k == "deckSave" or k == "avatar" then
+    if k == "table" and not self.spectator then
+      -- Empty felt: drag out a selection box (Shift adds to the selection).
+      local wx, wy2 = V.screenToWorld(self, mx, my)
+      self.boxSelect = { sx = wx, sy = wy2, additive = love.keyboard.isDown("lshift", "rshift") }
+      return
+    elseif k == "shuffle" or k == "deckSave" or k == "avatar" then
       self.clickItem = item
     elseif (k == "counter" or k == "dockedCounter") and ui.clickCount(1) >= 2 and item.interactable then
       local rightSide
@@ -1065,7 +1561,7 @@ function T:processInput()
           local rootId = item.rootId
           src.onClick = function() self.controller:drawCard(rootId, 1) end
         end
-        self:pressSource(src, mx, my)
+        self:pressSource(self:applySelectionToPress(item, src), mx, my)
       end
     end
   end
@@ -1336,6 +1832,7 @@ end
 
 function T:draw(x, y, w, h)
   self:derive()
+  self:refreshSelection()
   if self.tableRect then self:processInput() end
   self.libraryHoverDef = nil
   V.draw(self, x, y, w, h)

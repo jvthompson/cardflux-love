@@ -166,7 +166,7 @@ end
 -- opts (optional, for a Cardflux server):
 --   store     a src/data/deck_store.lua store for Open/Save
 --   ownedQty  definitionId -> copies owned (collection mode): the pool shows
---             only owned and unownable cards, and copies are capped
+--             only owned, unownable and free cards, and copies are capped
 function E.new(game, opts)
   opts = opts or {}
   local self = setmetatable({ title = "Deck Editor", game = game, store = opts.store, ownedQty = opts.ownedQty }, E)
@@ -191,7 +191,7 @@ end
 function E:ownedLimit(id)
   if not self.ownedQty then return nil end
   local def = models.GameDefinition.cardById(self.game, id)
-  if def and def.unownable then return nil end
+  if def and (def.unownable or def.isFreeCard) then return nil end
   return self.ownedQty[id] or 0
 end
 
@@ -296,11 +296,11 @@ function E:openDeck()
   openDeckPicker(self.game, function(deck) self:loadDeck(deck) end)
 end
 
--- The pool: every card, or (collection mode) the ones owned or unownable.
+-- The pool: every card, or (collection mode) the ones owned, unownable or free.
 function E:visibleCards()
   local visible = filterBar.visible(self.filters, self.game)
   if not self.ownedQty then return visible end
-  return util.filter(visible, function(def) return def.unownable or (self.ownedQty[def.id] or 0) > 0 end)
+  return util.filter(visible, function(def) return def.unownable or def.isFreeCard or (self.ownedQty[def.id] or 0) > 0 end)
 end
 
 function E:drawPool(x, y, w, h)
