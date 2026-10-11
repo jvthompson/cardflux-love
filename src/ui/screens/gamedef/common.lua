@@ -74,33 +74,95 @@ function C.chooseImage(destFolder, correctCardOrientation)
   return fileName
 end
 
--- Grey helper text wrapped to w; returns its height.
-function C.helpText(text, x, y, w)
-  ui.text(text, x, y, { w = w, size = 12, color = theme.c.onSurfaceVariant })
-  return ui.textHeight(text, w, 12)
+-- Shared layout scale for the editor's tabs.
+C.PAD = 24          -- page gutter
+C.GAP = 12          -- between fields / rows
+C.SECTION_GAP = 32  -- between sections
+C.FIELD_H = 48
+C.MAX_CONTENT = 760 -- single-column pages are capped and centered
+
+-- The centered content column for a page of width w: (x, w).
+function C.column(x, w)
+  local cw = math.min(C.MAX_CONTENT, w - 2 * C.PAD)
+  return x + math.floor((w - cw) / 2), cw
 end
 
--- A bold section heading; returns its height.
-function C.heading(text, x, y, w)
-  ui.text(text, x, y, { weight = "bold", w = w, ellipsis = true })
+-- A small (i) icon whose tooltip holds the help text. Returns its width.
+function C.infoIcon(id, x, y, text)
+  local s = 18
+  local r = ui.region(id, x - 3, y - 3, s + 6, s + 6, { tooltip = text })
+  ui.icon("info_outline", x, y, s, r.hovered and theme.c.primary or theme.c.outline)
+  return s
+end
+
+-- A page section title (16 medium) with an optional (i) help tooltip, a
+-- count, and a right-aligned button. opts: info, count, action = {label,
+-- icon, id, disabled, variant}. Returns (height, actionClicked).
+function C.sectionHeader(id, title, x, y, w, opts)
+  opts = opts or {}
+  local c = theme.c
+  local h = 40
+  local tx = x
+  ui.text(title, tx, y, { size = 16, weight = "medium", h = h, valign = "middle" })
+  tx = tx + ui.textWidth(title, 16, "medium") + 8
+  if opts.count then
+    local label = tostring(opts.count)
+    local bw = ui.textWidth(label, 12, "medium") + 14
+    ui.rect("fill", tx, y + (h - 20) / 2, bw, 20, 10, c.surfaceContainerHighest)
+    ui.text(label, tx, y, { w = bw, h = h, size = 12, weight = "medium", align = "center", valign = "middle",
+      color = c.onSurfaceVariant })
+    tx = tx + bw + 8
+  end
+  if opts.info then C.infoIcon(id .. ":info", tx, y + (h - 18) / 2, opts.info) end
+  local clicked = false
+  local a = opts.action
+  if a then
+    local bw = ui.buttonWidth(a.label, { icon = a.icon })
+    clicked = ui.button(a.label, x + w - bw, y, bw, h, { variant = a.variant or "tonal", icon = a.icon,
+      id = a.id or (id .. ":action"), disabled = a.disabled })
+  end
+  return h, clicked
+end
+
+-- A small grey group label inside a section (e.g. "Behavior"). Returns its height.
+function C.groupLabel(text, x, y, w)
+  ui.text(text, x, y, { size = 12, weight = "medium", w = w, color = theme.c.primary })
   return 20
 end
 
--- Port of SwitchListTile: title and optional wrapped subtitle on the left,
--- a switch on the right. Returns (value, height).
-function C.switchTile(id, title, subtitle, x, y, w, value, opts)
+-- A compact on/off row: label, optional (i) tooltip, switch at the right.
+-- Returns (value, height).
+C.TOGGLE_H = 44
+function C.toggleRow(id, label, help, x, y, w, value, opts)
   opts = opts or {}
   local c = theme.c
-  local tw = w - 52 - 16
-  local subH = subtitle and ui.textHeight(subtitle, tw, 12) or 0
-  local h = math.max(48, 8 + 20 + subH + 8)
+  local h = C.TOGGLE_H
   local disabled = opts.disabled
-  ui.text(title, x, y + 8, { w = tw, color = disabled and c.disabled or c.onSurface })
-  if subtitle then
-    ui.text(subtitle, x, y + 28, { w = tw, size = 12, color = disabled and c.disabled or c.onSurfaceVariant })
-  end
+  local lw = math.min(ui.textWidth(label, 14), w - 52 - 16 - (help and 26 or 0))
+  ui.text(label, x, y, { w = lw + 1, h = h, valign = "middle", ellipsis = true,
+    color = disabled and c.disabled or c.onSurface })
+  if help then C.infoIcon(id .. ":info", x + lw + 8, y + (h - 18) / 2, help) end
   value = ui.switch(id, x + w - 52, y + (h - 32) / 2, value, { disabled = disabled })
   return value, h
+end
+
+-- Lays toggle rows out in one or two columns (two when w allows).
+-- rows = { {id=, label=, help=, get=fn, set=fn(v), disabled=}, ... }.
+-- Returns the height used.
+function C.toggleGrid(rows, x, y, w)
+  if #rows == 0 then return 0 end
+  local cols = w >= 560 and 2 or 1
+  local gap = 32
+  local colW = (w - (cols - 1) * gap) / cols
+  local perCol = math.ceil(#rows / cols)
+  for i, r in ipairs(rows) do
+    local col = math.floor((i - 1) / perCol)
+    local row = (i - 1) % perCol
+    local v = C.toggleRow(r.id, r.label, r.help, x + col * (colW + gap), y + row * C.TOGGLE_H, colW, r.get(),
+      { disabled = r.disabled })
+    if v ~= r.get() then r.set(v) end
+  end
+  return perCol * C.TOGGLE_H
 end
 
 -- Draws an image into a box: "contain" (whole image, letterboxed) or
@@ -135,10 +197,20 @@ function C.imagePreviewBox(path, x, y, w, h)
   ui.rect("line", x + 0.5, y + 0.5, w - 1, h - 1, 6, c.outline)
 end
 
--- ExpansionTile-style header. Returns (clicked, hovered).
-function C.expansionHeader(id, x, y, w, h)
+-- A clickable row that toggles a collapsible group: chevron, title, and
+-- optional grey trailing text. Returns true when clicked.
+function C.collapseHeader(id, title, x, y, w, h, expanded, trailing)
+  local c = theme.c
   local r = ui.region(id, x, y, w, h, { cursor = "hand" })
-  if r.hovered then ui.rect("fill", x, y, w, h, 8, theme.alpha(theme.c.onSurface, 0.04)) end
+  if r.hovered then ui.rect("fill", x, y, w, h, 6, theme.alpha(c.onSurface, 0.05)) end
+  ui.iconCentered(expanded and "expand_more" or "chevron_right", x, y, 28, h, 20, c.onSurfaceVariant)
+  local tw = w - 32 - (trailing and 8 or 0)
+  ui.text(title, x + 28, y, { weight = "medium", h = h, valign = "middle", w = tw, ellipsis = true })
+  if trailing then
+    local nw = ui.textWidth(title, 14, "medium")
+    ui.text(trailing, x + 28 + nw + 8, y, { size = 12, h = h, valign = "middle", w = math.max(0, tw - nw - 8),
+      ellipsis = true, color = c.onSurfaceVariant })
+  end
   return r.clicked == true
 end
 

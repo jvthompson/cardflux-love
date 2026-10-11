@@ -136,12 +136,15 @@ T.icons = {
   refresh = 0xe5d5, filter_alt_off = 0xeb32, shuffle = 0xe043, search = 0xe8b6, remove = 0xe15b,
   clear = 0xe14c, arrow_drop_down = 0xe5c5, warning_amber = 0xf083, visibility = 0xe8f4,
   visibility_off = 0xe8f5, system_update = 0xe62a, style = 0xe41d, save_alt = 0xe171,
-  person_remove = 0xef66, note_add = 0xe89c, merge_type = 0xe252, logout = 0xe9ba,
+  person_remove = 0xef66, note_add = 0xe89c, merge_type = 0xe252, logout = 0xe9ba, power_settings_new = 0xe8ac,
   light_mode = 0xe518, image_not_supported = 0xf116, filter_none = 0xe3e0, expand_more = 0xe5cf,
   expand_less = 0xe5ce, drag_indicator = 0xe945, dark_mode = 0xe51c, crop_square = 0xe3c6,
   copy_all = 0xe2ec, colorize = 0xe3b8, chevron_right = 0xe5cc, chevron_left = 0xe5cb,
   check_box_outline_blank = 0xe835, check_box = 0xe834, check = 0xe5ca, broken_image = 0xe3ad,
   keyboard = 0xe312, arrow_back = 0xe5c4, settings = 0xe8b8, person = 0xe7fd, edit = 0xe3c9, palette = 0xe40a, more_vert = 0xe5d4,
+  info_outline = 0xe88f, build = 0xe869, layers = 0xe53b, widgets = 0xe1bd, image = 0xe3f4,
+  send = 0xe163, shield = 0xe9e0, toll = 0xe8e0, block = 0xe14b, vpn_key = 0xe0da, card_giftcard = 0xe8f6,
+  sports_esports = 0xea28, group = 0xe7ef,
 }
 
 local glyphCache = {}

@@ -1,5 +1,8 @@
 -- Port of lib/networking/game_client.dart.
---   status: "connecting" | "connected" | "failed" | "disconnected"
+--   status: "connecting" | "connected" | "failed" | "disconnected" | "server"
+-- "server" means the address is a Cardflux server rather than a peer host:
+-- it answered hello with serverInfo, and the connection (self.conn) is
+-- handed to src/net/server_client.lua.
 -- Callbacks: onMessage(msg) for everything except ping/welcome/disconnect,
 --            onStatus(status).
 -- The last lobbyRosterUpdate / gameData / fullState are cached so a screen
@@ -42,6 +45,7 @@ function C:update()
     local payload = json.object({ "name", h.name, "color", h.color })
     if h.avatarBytes then payload.avatar = love.data.encode("string", "base64", h.avatarBytes) end
     if h.rejoinPlayerId then payload.rejoinPlayerId = h.rejoinPlayerId end
+    payload.serverProtocol = P.serverProtocolVersion
     self.conn:send("hello", payload)
   end
   if not self.conn then return end
@@ -51,6 +55,11 @@ function C:update()
   for _, m in ipairs(msgs) do
     if m.type == "ping" then
       self:send("pong")
+    elseif m.type == "serverInfo" then
+      self.serverInfo = m.payload
+      P.unregister(self)
+      self:setStatus("server")
+      return
     elseif m.type == "welcome" then
       local p = m.payload
       self.opponentName = p.hostName

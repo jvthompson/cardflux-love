@@ -72,4 +72,43 @@ return function(t)
       t.eq(models.DeckConfig.cardCountFor(after, "side"), 0)
     end)
   end)
+  t.describe("collection limits", function()
+    local function owned(qty)
+      local g = game({ zone({ id = "z1", name = "Main", deckType = "main" }), zone({ id = "z2", name = "Side", deckType = "side", deckOptional = true }) })
+      g.cards[3].unownable = true
+      return DE.Editor.new(g, { ownedQty = qty })
+    end
+    t.it("caps copies at the owned count across every slot", function()
+      local e = owned({ a = 2 })
+      e:addCopy("a"); e:addCopy("a"); e:addCopy("a")
+      t.eq(e:copiesInDeck("a"), 2)
+      e.activeDeckType = "side"
+      e:addCopy("a")
+      t.eq(e:copiesInDeck("a"), 2)
+      e:addCopy("b")
+      t.eq(e:copiesInDeck("b"), 0)
+    end)
+    t.it("treats unownable cards as unlimited", function()
+      local e = owned({})
+      for _ = 1, 5 do e:addCopy("c") end
+      t.eq(e:copiesInDeck("c"), 5)
+    end)
+    t.it("pool shows only owned and unownable cards", function()
+      local ids = {}
+      for _, d in ipairs(owned({ a = 1 }):visibleCards()) do ids[#ids + 1] = d.id end
+      table.sort(ids)
+      t.eq(table.concat(ids, ","), "a,c")
+    end)
+    t.it("loading a deck trims copies the collection lacks", function()
+      local e = owned({ a = 1, b = 3 })
+      e:loadDeck(models.DeckConfig.new("g", {
+        models.SubDeck.new("main", { models.DeckEntry.new("a", 3), models.DeckEntry.new("b", 2) }),
+        models.SubDeck.new("side", { models.DeckEntry.new("b", 2), models.DeckEntry.new("c", 4) }),
+      }))
+      t.eq(e:copiesInDeck("a"), 1)
+      t.eq(e:copiesInDeck("b"), 3)
+      t.eq(e:copiesInDeck("c"), 4)
+      t.eq(e.quantitiesBySlot.main.qty.b, 2) -- later slots give way first
+    end)
+  end)
 end

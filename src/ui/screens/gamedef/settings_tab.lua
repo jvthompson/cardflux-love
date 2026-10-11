@@ -1,6 +1,7 @@
--- Port of widgets/game_settings_tab.dart: the game's name, its card backs
--- (the first is the default), its tag groups, and the duplicate-card
--- checks. Edits apply straight to the editor's working GameDefinition.
+-- Port of widgets/game_settings_tab.dart (the "General" tab): the game's
+-- name, its card backs (the first is the default) and its tag groups. The
+-- duplicate-card checks live in the editor toolbar's Tools menu. Edits
+-- apply straight to the editor's working GameDefinition.
 local ui = require("src.ui.kit.ui")
 local theme = require("src.ui.kit.theme")
 local widgets = require("src.ui.kit.widgets")
@@ -10,7 +11,6 @@ local uuid = require("src.core.uuid")
 local fs = require("src.data.fs")
 local resolver = require("src.data.image_resolver")
 local common = require("src.ui.screens.gamedef.common")
-local dialogs = require("src.ui.screens.gamedef.dialogs")
 local CR = require("src.ui.table.card_render")
 
 local keyOf = common.keyOf
@@ -22,105 +22,177 @@ function T.new(editor)
   return setmetatable({ editor = editor, newGroupName = "", expanded = {}, newTag = {}, duplicateTag = {} }, T)
 end
 
-local PAD = 24
-local ROW_PAD = 12
+local THUMB_W, THUMB_H = math.floor(CR.cardWidth * 0.7), math.floor(CR.cardHeight * 0.7)
+local ORIENT_W = 150
 
--- One card back's row: drag handle, thumbnail, name / image / orientation,
--- delete. Returns its height.
+-- One card back's row: drag handle, thumbnail (click to choose an image),
+-- name and orientation side by side, delete. Returns its height.
 function T:drawCardBackRow(ro, i, back, x, y, w)
   local c = theme.c
   local folder = self.editor.folderPath
   local k = "gs:back:" .. keyOf(back)
-  local h = ROW_PAD + 48 + 8 + 40 + 8 + 48 + ROW_PAD
-  widgets.card(x, y, w, h, { radius = 12 })
-  ro:handle(i, x + 4, y + (h - 40) / 2, y, h)
-  local tx = x + 48
+  local h = THUMB_H + 16
+  ro:handle(i, x - 4, y + (h - 40) / 2, y, h)
+
+  -- Thumbnail: click to choose; a small clear button on hover.
+  local tx, ty = x + 40, y + 8
   local path = back.imagePath and resolver.resolveBareImagePath(folder, back.imagePath)
-  common.imagePreviewBox(path, tx, y + ROW_PAD, CR.cardWidth, CR.cardHeight)
-  local fx = tx + CR.cardWidth + 16
-  local fw = x + w - 56 - fx
-  back.name = ui.textField(k .. ":name", fx, y + ROW_PAD, fw, back.name, {
-    label = i == 1 and "Name (Default)" or "Name", labelBackground = c.surfaceContainer })
-  local by = y + ROW_PAD + 48 + 8
-  if ui.button("Choose Image...", fx, by, nil, 40, { variant = "outlined", id = k .. ":choose" }) then
+  local thumb = ui.region(k .. ":thumb", tx, ty, THUMB_W, THUMB_H, { cursor = "hand", tooltip = "Choose Image..." })
+  common.imagePreviewBox(path, tx, ty, THUMB_W, THUMB_H)
+  if thumb.hovered then ui.rect("fill", tx, ty, THUMB_W, THUMB_H, 6, theme.alpha(c.onSurface, 0.08)) end
+  local cleared = false
+  if back.imagePath ~= nil and ui.hoverIgnoringLayer(tx, ty, THUMB_W, THUMB_H) then
+    cleared = ui.iconButton("close", tx + THUMB_W - 22, ty + 2, { size = 20, id = k .. ":clear", tooltip = "Clear Image",
+      background = c.surface })
+  end
+  if cleared then
+    back.imagePath = nil
+  elseif thumb.clicked then
     local name = common.chooseImage(folder)
     if name then back.imagePath = name end
   end
-  if back.imagePath ~= nil then
-    local bw = ui.buttonWidth("Choose Image...")
-    if ui.button("Clear", fx + bw + 4, by, nil, 40, { variant = "text", id = k .. ":clear" }) then back.imagePath = nil end
+
+  local fx = tx + THUMB_W + 16
+  local fy = y + (h - common.FIELD_H) / 2
+  local right = x + w - 44
+  local badgeW = 0
+  if i == 1 then
+    badgeW = ui.textWidth("Default", 12, "medium") + 16
+    local bx = right - badgeW - 8
+    ui.rect("fill", bx, y + (h - 24) / 2, badgeW, 24, 12, c.secondaryContainer)
+    ui.text("Default", bx, y, { w = badgeW, h = h, size = 12, weight = "medium", align = "center", valign = "middle",
+      color = c.onSecondaryContainer })
+    badgeW = badgeW + 8
   end
-  back.orientation = ui.dropdown(k .. ":orient", fx, by + 48, fw, common.orientationOptions, back.orientation,
-    { label = "Orientation", labelBackground = c.surfaceContainer })
-  if ui.iconButton("delete_outline", x + w - 48, y + ROW_PAD, { id = k .. ":del", tooltip = "Remove Card Back" }) then
+  local fw = right - badgeW - 8 - fx - ORIENT_W - common.GAP
+  back.name = ui.textField(k .. ":name", fx, fy, fw, back.name, { label = "Name" })
+  back.orientation = ui.dropdown(k .. ":orient", fx + fw + common.GAP, fy, ORIENT_W, common.orientationOptions,
+    back.orientation, { label = "Orientation" })
+  if ui.iconButton("delete_outline", x + w - 40, y + (h - 40) / 2, { id = k .. ":del", tooltip = "Remove Card Back" }) then
     self.pendingRemoveBack = back
   end
   return h
 end
 
--- One tag group: header (handle, name, delete, chevron) and, when
--- expanded, its name field, reorderable tags and a new-tag row.
+-- A group's tags as removable chips, drag-to-reorder. Returns the height.
+local CHIP_H, CHIP_GAP = 32, 8
+local function chipWidth(tag) return ui.textWidth(tag, 14) + 12 + 28 end
+
+function T:drawTagChips(k, tags, x, y, w)
+  local c = theme.c
+  local st = ui.state(k .. ":chips")
+  -- Layout first, so drag targets know every chip's rect.
+  local rects = {}
+  local place, bottom = widgets.flow(x, y, w, CHIP_H, CHIP_GAP)
+  for i, tag in ipairs(tags) do
+    local cw = math.min(chipWidth(tag), w)
+    local px, py = place(cw)
+    rects[i] = { x = px, y = py, w = cw }
+  end
+  local mx, my = ui.mouse()
+  local removeTag
+  for i, tag in ipairs(tags) do
+    local r = rects[i]
+    local body = ui.region(k .. ":chip" .. i, r.x, r.y, r.w - 28, CHIP_H, { cursor = "sizeall", tooltip = "Drag to reorder" })
+    if body.pressed and ui.mousePressed(1) then st.press, st.px, st.py = i, mx, my end
+    local dragged = st.dragging == i
+    ui.rect("fill", r.x, r.y, r.w, CHIP_H, 8, dragged and theme.alpha(c.primary, 0.16) or c.surfaceContainerHigh)
+    if body.hovered and not st.dragging then ui.rect("fill", r.x, r.y, r.w, CHIP_H, 8, theme.alpha(c.onSurface, 0.06)) end
+    ui.text(tag, r.x + 12, r.y, { h = CHIP_H, valign = "middle", w = r.w - 12 - 28, ellipsis = true })
+    if ui.iconButton("close", r.x + r.w - 28, r.y + 4, { size = 24, id = k .. ":rmtag:" .. i, tooltip = "Remove Tag" }) then
+      removeTag = i
+    end
+  end
+  -- A press becomes a drag once the mouse moves a little.
+  if st.press and not st.dragging then
+    if not ui.mouseDown(1) then
+      st.press = nil
+    elseif math.abs(mx - st.px) + math.abs(my - st.py) > 4 then
+      st.dragging = st.press
+    end
+  end
+  if st.dragging then
+    ui.setCursor("sizeall")
+    -- Insertion slot: before the nearest chip if the mouse is on its left half.
+    local best, bestD = nil, math.huge
+    for i, r in ipairs(rects) do
+      local cx, cy = r.x + r.w / 2, r.y + CHIP_H / 2
+      local d = (mx - cx) ^ 2 + ((my - cy) * 3) ^ 2
+      if d < bestD then best, bestD = i, d end
+    end
+    local p = best and (mx < rects[best].x + rects[best].w / 2 and best or best + 1) or 1
+    local lr = rects[math.min(p, #rects)]
+    if lr then
+      local lx = p <= #rects and lr.x - CHIP_GAP / 2 - 1 or lr.x + lr.w + CHIP_GAP / 2 - 1
+      ui.rect("fill", lx, lr.y, 3, CHIP_H, 1.5, c.primary)
+    end
+    if not ui.mouseDown(1) then
+      local from = st.dragging
+      st.dragging, st.press = nil, nil
+      local to = p > from and p - 1 or p
+      if to ~= from and tags[from] then widgets.moveItem(tags, from, to) end
+    end
+  end
+  if removeTag then table.remove(tags, removeTag) end
+  if #tags == 0 then return 0 end
+  return bottom() - y
+end
+
+-- One tag group: handle, collapse toggle, name (editable while expanded),
+-- delete; expanded, its chips and a new-tag field. Returns its height.
 function T:drawTagGroup(ro, i, group, x, y, w)
   local c = theme.c
   local gk = keyOf(group)
   local k = "gs:group:" .. gk
   local expanded = self.expanded[gk]
   local headerH = 56
-  -- Body first (its height sizes the border), drawn below the header.
-  local bodyY = y + headerH
-  local inner = x + 12
-  local iw = w - 24
-  local bodyH = 0
+  local st = ui.state(k)
+  local h = headerH + (expanded and (st.bodyH or 0) or 0)
+  ro:handle(i, x - 4, y + 8, y, h)
+
+  local hx = x + 40
+  local hw = w - 40 - 44
+  local count = #group.tags .. (#group.tags == 1 and " tag" or " tags")
   if expanded then
-    local by = bodyY
-    group.name = ui.textField(k .. ":name", inner, by, iw, group.name, { label = "Group Name", h = 44 })
-    by = by + 44 + 8
-    local tro = widgets.reorder(k .. ":tags")
-    local removeTag
-    for ti, tag in ipairs(group.tags) do
-      local th = 48
-      ui.rect("line", inner + 0.5, by + 0.5, iw - 1, th - 1, 6, c.outlineVariant)
-      tro:handle(ti, inner + 4, by + 4, by, th)
-      ui.text(tag, inner + 48, by, { h = th, valign = "middle", w = iw - 48 - 48, ellipsis = true })
-      if ui.iconButton("close", inner + iw - 44, by + 4, { id = k .. ":rmtag:" .. ti, tooltip = "Remove Tag" }) then removeTag = ti end
-      by = by + th + 4
-    end
-    local from, to = tro:finish(inner, iw)
-    if from then widgets.moveItem(group.tags, from, to) end
-    if removeTag then table.remove(group.tags, removeTag) end
-    by = by + 4
-    local err = self.duplicateTag[gk] and "Tag already exists" or nil
-    local text, changed, submitted = ui.textField(k .. ":newtag", inner, by, iw - 48, self.newTag[gk] or "",
-      { label = "New tag", h = 44, error = err })
-    self.newTag[gk] = text
-    if changed then self.duplicateTag[gk] = nil end
-    local add = ui.iconButton("add", inner + iw - 40, by + 2, { id = k .. ":addtag", tooltip = "Add Tag" })
-    if submitted or add then
-      local trimmed = util.trim(text)
-      if trimmed ~= "" then
-        if util.contains(group.tags, trimmed) then
-          self.duplicateTag[gk] = true
-        else
-          group.tags[#group.tags + 1] = trimmed
-          self.newTag[gk] = ""
-          self.duplicateTag[gk] = nil
-        end
+    if ui.iconButton("expand_more", hx, y + 8, { id = k .. ":exp", tooltip = "Collapse" }) then self.expanded[gk] = false end
+    local nw = math.min(360, hw - 48 - 80)
+    group.name = ui.textField(k .. ":name", hx + 44, y + 4, nw, group.name, { label = "Group Name" })
+    ui.text(count, hx + 44 + nw + 12, y, { size = 12, h = headerH, valign = "middle", color = c.onSurfaceVariant })
+  else
+    local title = group.name == "" and "(unnamed group)" or group.name
+    if common.collapseHeader(k .. ":hdr", title, hx + 6, y + 8, hw - 6, 40, false, count) then self.expanded[gk] = true end
+  end
+  if ui.iconButton("delete_outline", x + w - 40, y + 8, { id = k .. ":del", tooltip = "Delete Group" }) then
+    self.pendingRemoveGroup = group
+  end
+  if not expanded then return h end
+
+  local bx, bw = hx + 44, w - 40 - 44 - 44
+  local by = y + headerH + 4
+  local chipsH = self:drawTagChips(k, group.tags, bx, by, bw)
+  if chipsH > 0 then by = by + chipsH + common.GAP end
+  local err = self.duplicateTag[gk] and "Tag already exists" or nil
+  local fw = math.min(320, bw - 48)
+  local text, changed, submitted = ui.textField(k .. ":newtag", bx, by, fw, self.newTag[gk] or "",
+    { label = "New tag", h = 40, error = err })
+  self.newTag[gk] = text
+  if changed then self.duplicateTag[gk] = nil end
+  local add = ui.iconButton("add", bx + fw + 4, by, { id = k .. ":addtag", tooltip = "Add Tag" })
+  if submitted or add then
+    local trimmed = util.trim(text)
+    if trimmed ~= "" then
+      if util.contains(group.tags, trimmed) then
+        self.duplicateTag[gk] = true
+      else
+        group.tags[#group.tags + 1] = trimmed
+        self.newTag[gk] = ""
+        self.duplicateTag[gk] = nil
       end
     end
-    by = by + ui.textFieldHeight({ h = 44, error = err }) + 12
-    bodyH = by - bodyY
   end
-  local h = headerH + bodyH
-  ui.rect("line", x + 0.5, y + 0.5, w - 1, h - 1, 8, c.outlineVariant)
-  -- Header.
-  if common.expansionHeader(k .. ":hdr", x + 48, y, w - 48 - 96, headerH) then self.expanded[gk] = not expanded end
-  ro:handle(i, x + 4, y + 8, y, h)
-  ui.text(group.name == "" and "(unnamed group)" or group.name, x + 56, y, { h = headerH, valign = "middle", w = w - 56 - 104, ellipsis = true })
-  if ui.iconButton("delete_outline", x + w - 96, y + 8, { id = k .. ":del", tooltip = "Delete Group" }) then self.pendingRemoveGroup = group end
-  if ui.iconButton(expanded and "expand_less" or "expand_more", x + w - 48, y + 8, { id = k .. ":exp" }) then
-    self.expanded[gk] = not expanded
-  end
-  return h
+  by = by + ui.textFieldHeight({ h = 40, error = err }) + common.GAP
+  st.bodyH = by - (y + headerH)
+  return headerH + st.bodyH
 end
 
 function T:addGroup()
@@ -140,63 +212,59 @@ function T:addCardBack()
 end
 
 function T:draw(x, y, w, h)
-  local editor = self.editor
-  local game = editor.game
+  local game = self.editor.game
+  local c = theme.c
   self.pendingRemoveBack, self.pendingRemoveGroup = nil, nil
   local off = ui.beginScroll("gs:scroll", x, y, w, h)
-  local cx, cw = x + PAD, w - 2 * PAD
-  local yy = y + PAD - off
+  local cx, cw = common.column(x, w)
+  local yy = y + common.PAD - off
 
   game.name = ui.textField("gs:name", cx, yy, cw, game.name, { label = "Game Name" })
-  yy = yy + 48 + 24
+  yy = yy + common.FIELD_H + common.SECTION_GAP
 
   -- Card backs.
-  yy = yy + common.heading("Card Backs", cx, yy, cw)
-  yy = yy + common.helpText('The first one is this game\'s default -- drag to reorder and change which one that '
-    .. 'is. Each card can then pick a specific back (or "Unique") on the Card View tab.', cx, yy, cw) + 8
+  local hh, add = common.sectionHeader("gs:backs", "Card Backs", cx, yy, cw, {
+    count = #game.cardBacks,
+    info = 'The first one is this game\'s default -- drag to reorder and change which one that is. Each card can '
+      .. 'then pick a specific back (or "Unique") on the Cards tab.',
+    action = { label = "Add Card Back...", icon = "add", id = "gs:addback" } })
+  if add then self:addCardBack() end
+  yy = yy + hh + 4
   local ro = widgets.reorder("gs:backs")
   for i, back in ipairs(game.cardBacks) do
-    yy = yy + self:drawCardBackRow(ro, i, back, cx, yy, cw) + 8
+    if i > 1 then ui.divider(cx + 40, yy, cw - 40) end
+    yy = yy + self:drawCardBackRow(ro, i, back, cx, yy, cw)
   end
   local from, to = ro:finish(cx, cw)
   if from then widgets.moveItem(game.cardBacks, from, to) end
   if self.pendingRemoveBack then util.removeValue(game.cardBacks, self.pendingRemoveBack) end
-  if ui.button("Add Card Back...", cx, yy, nil, 40, { variant = "outlined", icon = "add", id = "gs:addback" }) then
-    self:addCardBack()
+  if #game.cardBacks == 0 then
+    ui.text("No card backs yet.", cx, yy, { h = 32, valign = "middle", color = c.onSurfaceVariant })
+    yy = yy + 32
   end
-  yy = yy + 40 + 24
+  yy = yy + common.SECTION_GAP
 
   -- Tag groups.
-  yy = yy + common.heading("Tag Groups", cx, yy, cw)
-  yy = yy + common.helpText("Drag to reorder groups or the tags within them -- this also reorders their filter buttons "
-    .. "and the Types fields on each card.", cx, yy, cw) + 8
+  hh = common.sectionHeader("gs:groups", "Tag Groups", cx, yy, cw, {
+    count = #game.tagGroups,
+    info = "Drag to reorder groups or the tags within them -- this also reorders their filter buttons "
+      .. "and the tag sections on each card." })
+  yy = yy + hh + 4
   local gro = widgets.reorder("gs:groups")
   for i, group in ipairs(game.tagGroups) do
-    yy = yy + self:drawTagGroup(gro, i, group, cx, yy, cw) + 12
+    if i > 1 then ui.divider(cx + 40, yy, cw - 40) end
+    yy = yy + self:drawTagGroup(gro, i, group, cx, yy, cw)
   end
   from, to = gro:finish(cx, cw)
   if from then widgets.moveItem(game.tagGroups, from, to) end
   if self.pendingRemoveGroup then util.removeValue(game.tagGroups, self.pendingRemoveGroup) end
-  local text, _, submitted = ui.textField("gs:newgroup", cx, yy, cw - 48, self.newGroupName, { label = "New tag group" })
+  yy = yy + 8
+  local fw = math.min(360, cw - 40 - 48)
+  local text, _, submitted = ui.textField("gs:newgroup", cx + 40, yy, fw, self.newGroupName, { label = "New tag group", h = 40 })
   self.newGroupName = text
-  local add = ui.iconButton("add", cx + cw - 44, yy + 4, { id = "gs:addgroup", tooltip = "Add Tag Group" })
-  if submitted or add then self:addGroup() end
-  yy = yy + 48 + 24
-
-  -- Duplicate checks.
-  yy = yy + common.heading("Card IDs", cx, yy, cw)
-  yy = yy + common.helpText("Every card needs a unique ID. New imports are checked automatically, but this "
-    .. "looks across all cards for any that still collide, so you can fix them by hand.", cx, yy, cw) + 8
-  if ui.button("Check for Duplicate Card IDs...", cx, yy, nil, 40, { variant = "outlined", icon = "copy_all", id = "gs:dupids" }) then
-    dialogs.showDuplicateCardIds(editor)
-  end
-  yy = yy + 40 + 16
-  yy = yy + common.helpText("A different kind of duplicate: cards in the same set that share the exact same image "
-    .. "file. This offers to merge each such group into one card, combining their tags.", cx, yy, cw) + 8
-  if ui.button("Merge Duplicate Card Images...", cx, yy, nil, 40, { variant = "outlined", icon = "merge_type", id = "gs:dupimg" }) then
-    dialogs.showMergeDuplicateImages(editor)
-  end
-  yy = yy + 40 + PAD
+  local addGroup = ui.iconButton("add", cx + 40 + fw + 4, yy, { id = "gs:addgroup", tooltip = "Add Tag Group" })
+  if submitted or addGroup then self:addGroup() end
+  yy = yy + 40 + common.PAD
   ui.endScroll("gs:scroll", yy + off - y)
 end
 

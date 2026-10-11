@@ -1,7 +1,7 @@
 -- Ports of game_definition_editor_entry_screen.dart and
 -- game_definition_editor_screen.dart: pick (or create) a game definition,
--- then edit it across four tabs -- Game Settings / Zones / Sets / Card
--- View -- and save it back to its folder's gamedef.json.
+-- then edit it across four tabs -- General / Zones / Sets / Cards -- and
+-- save it back to its folder's gamedef.json.
 --
 -- The editor's GameDefinition is loaded WITHOUT resolving image paths (see
 -- gamedef_ops.loadGameDefFile), so saving writes the bare file names back
@@ -88,7 +88,7 @@ local Editor = {}
 Editor.__index = Editor
 M.Editor = Editor
 
-local TAB_LABELS = { "Game Settings", "Zones", "Sets", "Card View" }
+local TAB_LABELS = { "General", "Zones", "Sets", "Cards" }
 
 function Editor.new(folderPath, game)
   local self = setmetatable({ title = "Game Definition Editor", tab = 1 }, Editor)
@@ -123,7 +123,7 @@ function Editor:save()
   overlays.confirm("Cards Without a Set",
     #lost .. " " .. plural .. " in any set (" .. table.concat(names, ", ") .. more .. "). "
       .. "This game uses sets, so cards outside one are not saved and will be lost. "
-      .. "Assign them a set on the Card View tab to keep them.",
+      .. "Assign them a set on the Cards tab to keep them.",
     "Save Anyway", function() self:write() end, { width = 480, danger = true })
 end
 
@@ -135,6 +135,16 @@ function Editor:write()
   else
     overlays.toast("Could not save: " .. tostring(ok and err or written))
   end
+end
+
+-- The duplicate-card checks, under the toolbar's Tools button.
+function Editor:openToolsMenu()
+  local dialogs = require("src.ui.screens.gamedef.dialogs")
+  local mx, my = ui.mouse()
+  overlays.menu(mx - 280, my + 16, {
+    { label = "Check for Duplicate Card IDs...", icon = "copy_all", onSelect = function() dialogs.showDuplicateCardIds(self) end },
+    { label = "Merge Duplicate Card Images...", icon = "merge_type", onSelect = function() dialogs.showMergeDuplicateImages(self) end },
+  }, { width = 300 })
 end
 
 function Editor:update(dt)
@@ -158,6 +168,7 @@ function Editor:draw(x, y, w, h)
     { icon = "folder_open", tooltip = "Open Existing...", id = "gde:open", disabled = busy, onClick = function()
       M.openExistingGameDefinition(function(folder, game) self:load(folder, game) end)
     end },
+    { icon = "build", tooltip = "Tools", id = "gde:tools", disabled = busy, onClick = function() self:openToolsMenu() end },
     { icon = "save", tooltip = "Save", id = "gde:save", disabled = busy, onClick = function() self:save() end },
   })
   local tabY = y + tbH + 1

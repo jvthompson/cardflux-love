@@ -329,7 +329,11 @@ drawTooltip = function()
   ui._tooltipSeen = false
   if tooltipId and frameTime - tooltipSince > 0.5 and tooltipText then
     local f = theme.font(12)
-    local w, h = f:getWidth(tooltipText) + 16, f:getHeight() + 8
+    -- Long help text wraps instead of running across the screen.
+    local maxW = 360
+    local tw = math.min(f:getWidth(tooltipText), maxW)
+    local _, lines = f:getWrap(tooltipText, tw)
+    local w, h = tw + 16, #lines * f:getHeight() + 8
     local sw, sh = ui.screenSize()
     local x = math.min(input.mx + 12, sw - w - 4)
     local y = input.my + 20
@@ -339,7 +343,7 @@ drawTooltip = function()
     love.graphics.rectangle("fill", x, y, w, h, 4, 4)
     love.graphics.setColor(1, 1, 1)
     love.graphics.setFont(f)
-    love.graphics.print(tooltipText, x + 8, y + 4)
+    love.graphics.printf(tooltipText, x + 8, y + 4, tw)
   end
 end
 
@@ -790,7 +794,12 @@ local function wordRight(text, pos)
   return p
 end
 
-function ui.focusField(id) pendingFocus = id end
+-- selectAll: the field selects its whole text when it next draws.
+local selectAllRequests = {}
+function ui.focusField(id, selectAll)
+  pendingFocus = id
+  if selectAll then selectAllRequests[id] = true end
+end
 function ui.blur() pendingFocus = false end
 
 -- Single-line outlined text field with a floating label.
@@ -812,6 +821,10 @@ function ui.textField(id, x, y, w, text, opts)
   if opts.autofocus and st.lastFrame ~= frameIndex - 1 then pendingFocus = id end
   st.lastFrame = frameIndex
   local n = utf8Len(text)
+  if selectAllRequests[id] then
+    selectAllRequests[id] = nil
+    st.anchor, st.caret, st.scrollX = 0, n, 0
+  end
   if st.caret > n then st.caret = n end
   if st.anchor and st.anchor > n then st.anchor = n end
   if not opts.disabled then focusOrder[#focusOrder + 1] = id end

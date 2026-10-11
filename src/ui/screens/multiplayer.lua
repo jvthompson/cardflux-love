@@ -545,6 +545,13 @@ function Join:connect()
   local A = app()
   self.client = GameClient.new()
   self.client.onStatus = function(status)
+    if status == "server" and not self.navigated then
+      -- The address is a Cardflux server: sign in and go to its lobby.
+      self.navigated = true
+      local sc = require("src.net.server_client").adopt(self.client.conn, host, port, self.client.serverInfo)
+      app().replace(require("src.ui.screens.server.login").new(sc))
+      return
+    end
     if status == "connected" and not self.navigated and self.client.assignedPlayerId then
       self.navigated = true
       profile.saveReconnect(hostKey, self.client.assignedPlayerId)
@@ -561,7 +568,7 @@ function Join:draw(x, y, w, h)
   local client = self.client
   if not client or client.status == "idle" then
     local submitted
-    self.ip, _, submitted = ui.textField("join:ip", cx, yy, colW, self.ip, { label = "Host IP address", hint = "e.g. 192.168.1.42 -- blank = 127.0.0.1", autofocus = true })
+    self.ip, _, submitted = ui.textField("join:ip", cx, yy, colW, self.ip, { label = "Host or server IP address", hint = "e.g. 192.168.1.42 -- blank = 127.0.0.1", autofocus = true })
     yy = yy + 60
     local s2
     self.port, _, s2 = ui.textField("join:port", cx, yy, colW, self.port, { label = "Port", filter = function(t) return t:match("^%d+$") ~= nil end })
@@ -584,8 +591,12 @@ function Join:draw(x, y, w, h)
       self.client = nil
     end
   else
-    local msg = client.disconnectReason == "seatUnavailable"
+    local reason = client.disconnectReason
+    local msg = reason == "seatUnavailable"
       and "This game is already in progress and your seat couldn't be found. Make sure you're reconnecting to the same host."
+      or reason == "versionMismatch" and "That Cardflux server needs a different version of Cardflux."
+      or reason == "serverRequiresUpdate" and "That Cardflux server needs a newer version of Cardflux."
+      or reason == "serverShuttingDown" and "That Cardflux server is shutting down and isn't accepting connections."
       or "Disconnected from host."
     ui.text(msg, cx, yy, { w = colW, align = "center", color = theme.fixed.red })
   end
@@ -606,18 +617,29 @@ local DISCONNECT_MESSAGES = {
   seatUnavailable = "This game is already in progress and your seat couldn't be found. Make sure you're reconnecting to the same host.",
 }
 
-function ClientGame.new(client, localPlayerId)
+-- opts (optional; used for games on a Cardflux server, where `client` is
+-- server_client:gameChannel()):
+--   localGame        the server's game as cached locally (for card images)
+--   onExit(message)  called instead of going home (back to the server lobby)
+--   spectator, collectionMode, deckStore   passed to TableScreen
+--   avatarKeys()     -> {playerId -> image cache key}, polled every frame
+--   leaveMessage     Leave Game confirmation text
+--   disconnectMessage()  text when the connection drops
+function ClientGame.new(client, localPlayerId, opts)
   local self = setmetatable({ title = "Game", showBack = false, forceLightTheme = true, client = client,
-    localPlayerId = localPlayerId, roster = {}, maxPlayers = 2, avatarBytes = {} }, ClientGame)
+    localPlayerId = localPlayerId, roster = {}, maxPlayers = 2, avatarBytes = {}, opts = opts or {} }, ClientGame)
   client.onMessage = function(m) self:handleMessage(m) end
   client.onStatus = function(status)
     if status == "disconnected" then
       sound.play("error")
-      self:returnHome(DISCONNECT_MESSAGES[client.disconnectReason or ""] or "Disconnected from host.")
+      local o = self.opts
+      self:returnHome(o.disconnectMessage and o.disconnectMessage()
+        or DISCONNECT_MESSAGES[client.disconnectReason or ""] or "Disconnected from host.")
     end
   end
-  for _, cached in ipairs({ client.lastGameData, client.lastLobbyRosterUpdate, client.lastFullState }) do
-    if cached then self:handleMessage(cached) end
+  -- (Not ipairs: any of these may be nil, e.g. servers send no roster update.)
+  for _, key in ipairs({ "lastGameData", "lastLobbyRosterUpdate", "lastFullState" }) do
+    if client[key] then self:handleMessage(client[key]) end
   end
   return self
 end
@@ -626,7 +648,11 @@ function ClientGame:returnHome(message)
   if self.navigatedHome then return end
   self.navigatedHome = true
   self.client:disconnect()
-  app().popToHome(message)
+  if self.opts.onExit then
+    self.opts.onExit(message)
+  else
+    app().popToHome(message)
+  end
 end
 
 function ClientGame:quit() self.client:disconnect() end
@@ -644,6 +670,7 @@ end
 function ClientGame:leave() discord.setIdle() end
 
 function ClientGame:resolveLocalImages(remote)
+  if self.opts.localGame then return resolver.mergeLocalImagePaths(remote, self.opts.localGame) end
   local ok, games = pcall(loader.loadGamesFromDirectory, paths.gamesDir())
   if not ok then return remote end
   for _, g in ipairs(games) do
@@ -702,8 +729,12 @@ function ClientGame:handleMessage(m)
         localAvatarPath = app().profile.avatarPath,
         avatarKeys = avatarKeys(self.avatarBytes),
         leaveButtonLabel = "Leave Game",
-        leaveConfirmationMessage = "Leave the game? If the host is still hosting, you can rejoin in the same seat later.",
+        leaveConfirmationMessage = self.opts.leaveMessage
+          or "Leave the game? If the host is still hosting, you can rejoin in the same seat later.",
         onLeaveGame = function() self:returnHome("You left the game.") end,
+        spectator = self.opts.spectator,
+        collectionMode = self.opts.collectionMode,
+        deckStore = self.opts.deckStore,
       })
       self.session:addListener(function() self:publishPresence() end)
       self:publishPresence()
@@ -725,6 +756,7 @@ end
 
 function ClientGame:update(dt)
   if self.table then
+    if self.opts.avatarKeys then self.table.avatarKeys = self.opts.avatarKeys() end
     self.table.isMirrored = self:isMirrored()
     self.table:update(dt)
   end
@@ -734,7 +766,7 @@ function ClientGame:draw(x, y, w, h)
   if not self.table then
     local cx, cy = x + w / 2, y + h / 2
     ui.spinner(cx, cy - 30, 18)
-    ui.text("Waiting for host to start the game...", x, cy, { w = w, align = "center" })
+    ui.text(self.opts.onExit and "Loading the game..." or "Waiting for host to start the game...", x, cy, { w = w, align = "center" })
     if #self.roster > 1 then
       ui.text(#self.roster .. "/" .. self.maxPlayers .. " players joined", x, cy + 28, { w = w, align = "center" })
     end

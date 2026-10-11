@@ -30,6 +30,7 @@ function T.new(editor)
   self.filters = filterBar.newState(editor.game)
   self.poolFraction, self.previewFraction = 0.5, 0.25
   self.tabNavigatesInsideForm = false
+  self.tabFocusesTitle = false -- Tab to a card also focuses its title, text selected
   self.hiddenTagGroups = {} -- tag group id -> true while its chips are collapsed
   return self
 end
@@ -89,10 +90,19 @@ function T:selectRelative(delta)
   end
 end
 
+-- Tab / Shift+Tab to the next / previous card; with tabFocusesTitle on,
+-- the new card's title field is focused with its text selected.
+function T:tabToCard(delta)
+  self:selectRelative(delta)
+  if self.tabFocusesTitle and self.selected then
+    ui.focusField("cv:form:" .. keyOf(self.selected) .. ":title", true)
+  end
+end
+
 -- Tab / Shift+Tab with no field focused: next / previous card.
 function T:keypressed(key)
   if key == "tab" then
-    self:selectRelative(love.keyboard.isDown("lshift", "rshift") and -1 or 1)
+    self:tabToCard(love.keyboard.isDown("lshift", "rshift") and -1 or 1)
     return true
   end
   return false
@@ -128,10 +138,7 @@ end
 function T:drawPool(x, y, w, h, visible)
   local folder = self.editor.folderPath
   local cardBacks = self.displayBacks
-  if ui.button("Add Card", x + 12, y + 12, nil, 40, { variant = "outlined", icon = "add", id = "cv:add" }) then
-    self:addBlankCard()
-  end
-  local gy = y + 12 + 40
+  local gy = y + 4
   local gh = y + h - gy
   local maxExtent, rowH, gap = CW + 24, CH + 28, 12
   local inner = w - 24
@@ -147,7 +154,10 @@ function T:drawPool(x, y, w, h, visible)
       CR.draw({ def = common.displayCard(folder, card), faceUp = true, cx = cx, cy = ty + CH / 2,
         angle = CR.orientationTurns(card.orientation) * 2 * math.pi, cardBacks = cardBacks })
       if card == self.selected then
-        ui.rect("line", cx - CW / 2 - 4, ty - 4, CW + 8, CH + 8, 8, theme.fixed.blue, 2)
+        -- Match the card's footprint: turned cards are landscape around the same center.
+        local turned = CR.orientationTurns(card.orientation) ~= 0
+        local hw, hh = turned and CH or CW, turned and CW or CH
+        ui.rect("line", cx - hw / 2 - 4, ty + CH / 2 - hh / 2 - 4, hw + 8, hh + 8, 8, theme.fixed.blue, 2)
       end
       ui.text(card.cardTitle, cx - CW / 2, ty + CH + 6, { size = 11, w = CW, align = "center", ellipsis = true })
       if r.clicked then
@@ -198,7 +208,7 @@ end
 function T:drawPreview(x, y, w, h, visible)
   local c = theme.c
   local card = self.selected
-  local controlsH = 8 + 40 + 8 + 40
+  local controlsH = 8 + 40 + 28 + 8
   local ph = h - controlsH
   if not card then
     ui.text("Select a card to preview", x, y, { w = w, h = ph, align = "center", valign = "middle", color = c.onSurfaceVariant })
@@ -212,19 +222,36 @@ function T:drawPreview(x, y, w, h, visible)
     self:drawBackPane(card, x + pw + 12, y, pw, ph - labelH)
     ui.text("Back", x + pw + 12, y + ph - 16, { w = pw, size = 12, align = "center", color = c.onSurfaceVariant })
   end
+  -- Previous / position / next on the left, the Tab options on the right.
   local by = y + ph + 8
-  local bw = (w - 16 - 8) / 2
   local i = indexOf(visible, card)
   local canPrev = i > 1
   local canNext = #visible > 0 and (i == -1 or i < #visible)
-  if ui.button("Previous Card", x + 8, by, bw, 40, { variant = "outlined", icon = "chevron_left", id = "cv:prev", disabled = not canPrev }) then
+  if ui.iconButton("chevron_left", x + 4, by, { id = "cv:prev", tooltip = "Previous Card", disabled = not canPrev }) then
     self:selectRelative(-1)
   end
-  if ui.button("Next Card", x + 8 + bw + 8, by, bw, 40, { variant = "outlined", icon = "chevron_right", id = "cv:next", disabled = not canNext }) then
+  local pos = (i > 0 and i or "-") .. " / " .. #visible
+  local posW = math.max(56, ui.textWidth(pos, 12) + 12)
+  ui.text(pos, x + 44, by, { w = posW, h = 40, size = 12, align = "center", valign = "middle", color = c.onSurfaceVariant })
+  if ui.iconButton("chevron_right", x + 44 + posW, by, { id = "cv:next", tooltip = "Next Card", disabled = not canNext }) then
     self:selectRelative(1)
   end
-  ui.text("Tab navigates inside form fields", x + 8, by + 48, { size = 12, w = w - 16 - 60, h = 32, valign = "middle" })
-  self.tabNavigatesInsideForm = ui.switch("cv:tabnav", x + w - 8 - 52, by + 48, self.tabNavigatesInsideForm)
+  -- The two Tab options, right-aligned: one beside the arrows, one below.
+  local options = {
+    { id = "cv:tabnav", key = "tabNavigatesInsideForm", label = "Tab navigates inside form fields" },
+    { id = "cv:tabtitle", key = "tabFocusesTitle", label = "Tab focuses and selects Card Title" },
+  }
+  local minX = x + 44 + posW + 40 + 16
+  for oi, o in ipairs(options) do
+    local oy = oi == 1 and by + 11 or by + 40 + 5
+    local cbW = 18 + 8 + ui.textWidth(o.label, 14)
+    local fits = (oi == 1 and minX or x + 8) + cbW <= x + w - 8
+    if fits then
+      self[o.key] = ui.checkbox(o.id, x + w - 8 - cbW, oy, self[o.key], { label = o.label })
+    else
+      self[o.key] = ui.checkbox(o.id, x + w - 8 - 18, oy, self[o.key], { tooltip = o.label })
+    end
+  end
 end
 
 ---------------------------------------------------------------------------
@@ -279,78 +306,93 @@ function T:drawForm(card, x, y, w, h)
   local editor = self.editor
   local game = editor.game
   local k = "cv:form:" .. keyOf(card)
+  local G = common.GAP
+  local nextCard = function(shift) self:tabToCard(shift and -1 or 1) end
   local fieldOpts = function(label)
-    return { label = label, h = 44,
-      onTab = self.tabNavigatesInsideForm and function(shift) self:selectRelative(shift and -1 or 1) end or nil }
+    return { label = label, h = 44, onTab = self.tabNavigatesInsideForm and nextCard or nil }
   end
+  -- With tabFocusesTitle on, Tab in the title moves on to the next card too.
+  local titleOpts = fieldOpts("Card Title")
+  if self.tabFocusesTitle then titleOpts.onTab = nextCard end
   local off = ui.beginScroll("cv:form", x, y, w, h)
   local pad = 16
   local fx, fw = x + pad, w - 2 * pad
+  local hw = (fw - G) / 2
   local yy = y + pad - off
 
-  card.cardTitle = ui.textField(k .. ":title", fx, yy, fw, card.cardTitle, fieldOpts("Card Title"))
-  yy = yy + 44 + 12
-  card.orientation = ui.dropdown(k .. ":orient", fx, yy, fw, common.orientationOptions, card.orientation,
+  -- Title and delete.
+  card.cardTitle = ui.textField(k .. ":title", fx, yy, fw - 48, card.cardTitle, titleOpts)
+  if ui.iconButton("delete_outline", fx + fw - 40, yy + 2, { id = k .. ":delete", tooltip = "Delete Card" }) then
+    self:confirmDelete(card)
+  end
+  yy = yy + 44 + G
+
+  -- Orientation and set side by side.
+  local hasSets = #game.sets > 0
+  card.orientation = ui.dropdown(k .. ":orient", fx, yy, hasSets and hw or fw, common.orientationOptions, card.orientation,
     { label = "Orientation", h = 44 })
-  yy = yy + 44
-  if #game.sets > 0 then
-    yy = yy + 12
+  if hasSets then
     local options = { { value = nil, label = "(none)" } }
     for _, s in ipairs(game.sets) do options[#options + 1] = { value = s.id, label = s.name } end
-    card.setId = ui.dropdown(k .. ":set", fx, yy, fw, options, card.setId, { label = "Set", h = 44 })
-    yy = yy + 44
+    card.setId = ui.dropdown(k .. ":set", fx + hw + G, yy, hw, options, card.setId, { label = "Set", h = 44 })
   end
+  yy = yy + 44 + G
 
-  yy = yy + 16
-  ui.text("Image", fx, yy, { weight = "bold" })
-  yy = yy + 20 + 8
-  ui.text(card.imagePath or "(no image)", fx, yy, { w = fw, ellipsis = true })
-  yy = yy + 20 + 8
-  if ui.button("Choose Image...", fx, yy, nil, 40, { variant = "outlined", id = k .. ":choose" }) then
+  -- Image: file name, Choose, and Clear on one line.
+  local chooseW = ui.buttonWidth("Choose...")
+  local nameW = fw - chooseW - 4 - (card.imagePath and 44 or 0)
+  ui.rect("line", fx + 0.5, yy + 0.5, nameW - 1, 43, 4, c.outline)
+  local lf = theme.font(12)
+  ui.rect("fill", fx + 8, yy - 2, lf:getWidth("Image") + 8, 4, 0, c.surface)
+  ui.text("Image", fx + 12, yy - lf:getHeight() / 2, { font = lf, color = c.onSurfaceVariant })
+  ui.text(card.imagePath or "(no image)", fx + 12, yy, { w = nameW - 24, h = 44, valign = "middle", ellipsis = true,
+    color = card.imagePath and c.onSurface or c.onSurfaceVariant })
+  if ui.button("Choose...", fx + nameW + 4, yy + 2, chooseW, 40, { variant = "outlined", id = k .. ":choose",
+    tooltip = "Choose Image..." }) then
     local dest = card.setId == nil and editor.folderPath or fs.join(editor.folderPath, card.setId)
     local name = common.chooseImage(dest, true)
     if name then card.imagePath = name end
   end
   if card.imagePath ~= nil then
-    if ui.button("Clear", fx + ui.buttonWidth("Choose Image...") + 4, yy, nil, 40, { variant = "text", id = k .. ":clear" }) then
+    if ui.iconButton("close", fx + fw - 40, yy + 2, { id = k .. ":clear", tooltip = "Clear Image" }) then
       card.imagePath = nil
     end
   end
-  yy = yy + 40 + 12
+  yy = yy + 44 + G
 
+  -- Card back, plus its orientation when Unique.
   local backOptions = { { value = nil, label = "(Default)" } }
   for _, b in ipairs(game.cardBacks) do backOptions[#backOptions + 1] = { value = b.id, label = b.name } end
   backOptions[#backOptions + 1] = { value = models.uniqueCardBackId, label = "Unique" }
-  card.cardBackId = ui.dropdown(k .. ":back", fx, yy, fw, backOptions, card.cardBackId, { label = "Card Back", h = 44 })
-  yy = yy + 44
-  if card.cardBackId == models.uniqueCardBackId then
-    yy = yy + 12
-    card.uniqueBackOrientation = ui.dropdown(k .. ":backorient", fx, yy, fw, common.orientationOptions,
+  local unique = card.cardBackId == models.uniqueCardBackId
+  card.cardBackId = ui.dropdown(k .. ":back", fx, yy, unique and hw or fw, backOptions, card.cardBackId,
+    { label = "Card Back", h = 44 })
+  if unique then
+    card.uniqueBackOrientation = ui.dropdown(k .. ":backorient", fx + hw + G, yy, hw, common.orientationOptions,
       card.uniqueBackOrientation, { label = "Back Orientation", h = 44 })
-    yy = yy + 44
   end
+  yy = yy + 44
 
-  -- One chip section per non-empty tag group (each collapsible).
+  -- One collapsible chip section per non-empty tag group.
   for _, group in ipairs(game.tagGroups) do
     if #group.tags > 0 then
-      yy = yy + 16
+      yy = yy + G
       local hidden = self.hiddenTagGroups[group.id] == true
-      local label = hidden and "Show" or "Hide"
-      local chipOpts = { icon = hidden and "visibility_off" or "visibility", id = k .. ":vis:" .. group.id }
-      local chipW = widgets.chipWidth(label, not hidden, chipOpts)
-      ui.text(group.name, fx, yy, { weight = "bold", w = fw - chipW - 8, h = 32, valign = "middle", ellipsis = true })
-      if widgets.chip(label, fx + fw - chipW, yy, not hidden, chipOpts) then
+      local on = 0
+      for _, tag in ipairs(group.tags) do if util.contains(card.types, tag) then on = on + 1 end end
+      if common.collapseHeader(k .. ":vis:" .. group.id, group.name, fx - 4, yy, fw + 4, 32, not hidden,
+        on > 0 and (on .. " selected") or nil) then
         self.hiddenTagGroups[group.id] = not hidden or nil
       end
       yy = yy + 32
       if not hidden then
-        yy = yy + 8
+        yy = yy + 6
         local place, bottom = widgets.flow(fx, yy, fw, widgets.chipHeight, 8)
         for ti, tag in ipairs(group.tags) do
-          local on = util.contains(card.types, tag)
-          local px, py = place(widgets.chipWidth(tag, on))
-          if widgets.chip(tag, px, py, on, { id = k .. ":tag:" .. group.id .. ":" .. ti }) then
-            if on then util.removeValue(card.types, tag) else card.types[#card.types + 1] = tag end
+          local isOn = util.contains(card.types, tag)
+          local px, py = place(widgets.chipWidth(tag, isOn))
+          if widgets.chip(tag, px, py, isOn, { id = k .. ":tag:" .. group.id .. ":" .. ti }) then
+            if isOn then util.removeValue(card.types, tag) else card.types[#card.types + 1] = tag end
           end
         end
         yy = bottom()
@@ -358,9 +400,10 @@ function T:drawForm(card, x, y, w, h)
     end
   end
 
-  yy = yy + 16
-  ui.text("Extra Fields", fx, yy, { weight = "bold" })
-  yy = yy + 20 + 8
+  -- Extra fields.
+  yy = yy + 20
+  ui.text("Extra Fields", fx, yy, { weight = "medium", h = 24, valign = "middle" })
+  yy = yy + 24 + 8
   local extra = self:extraRows(card)
   local removeRow
   local kw = (fw - 8 - 48) / 2
@@ -390,16 +433,12 @@ function T:drawForm(card, x, y, w, h)
     extra.rows[#extra.rows + 1] = { key = newKey, value = "" }
     writeExtraFields(card, extra)
   end
-  yy = yy + 40 + 16
+  yy = yy + 40 + 12
 
-  local hh
-  card.unownable, hh = common.switchTile(k .. ":unownable", "Unownable",
+  local th
+  card.unownable, th = common.toggleRow(k .. ":unownable", "Unownable",
     "Always stays unowned on the table -- any player can interact with it", fx, yy, fw, card.unownable)
-  yy = yy + hh + 8
-  if ui.button("Delete Card", fx, yy, nil, 40, { variant = "tonal", icon = "delete_outline", id = k .. ":delete" }) then
-    self:confirmDelete(card)
-  end
-  yy = yy + 40 + pad
+  yy = yy + th + pad
   ui.endScroll("cv:form", yy + off - y)
 end
 
@@ -430,7 +469,8 @@ function T:draw(x, y, w, h)
   if self.selected and indexOf(game.cards, self.selected) == -1 then self.selected = nil end
   self.displayBacks = common.displayCardBacks(self.editor.folderPath, game.cardBacks)
 
-  local yy = filterBar.drawFilters("cv", self.filters, game, x + 12, y, w - 24)
+  local yy = filterBar.drawFilters("cv", self.filters, game, x + 12, y, w - 24, { compact = true,
+    leading = { { label = "Add Card", icon = "add", id = "cv:add", onClick = function() self:addBlankCard() end } } })
   if yy > y then yy = yy + 4 end
   local visible = self:visibleCards()
   local bh = y + h - yy

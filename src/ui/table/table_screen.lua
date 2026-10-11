@@ -6,6 +6,10 @@
 --       avatarKeys {playerId -> image cache key}, leaveButtonLabel,
 --       leaveConfirmationMessage, onLeaveGame(), onSaveGame() (or nil),
 --       onKickPlayer(playerId) (or nil)
+-- Server games (src/ui/screens/server/) also pass:
+--       deckStore (src/data/deck_store.lua) for Load Deck / Save Deck,
+--       collectionMode (hides the Pack Generator and Card Library),
+--       spectator (watch only: no drags, menus or card hotkeys)
 local ui = require("src.ui.kit.ui")
 local theme = require("src.ui.kit.theme")
 local overlays = require("src.ui.kit.overlays")
@@ -305,6 +309,14 @@ function T:keypressed(key, _, isrepeat)
     return
   end
   if isrepeat then return end
+  if self.spectator then
+    if key == "home" or key == "h" then self.camX, self.camY, self.zoom = 0, 0, 1
+    elseif key == "f1" then self.bordersHidden = not self.bordersHidden
+    elseif key == "f2" then self.colorTintEnabled = not self.colorTintEnabled
+    elseif key == "f12" then self:cyclePlaymat()
+    elseif key == "l" then self:toggleLog() end
+    return
+  end
   if key == "q" then self:rotateHovered(false)
   elseif key == "e" then self:rotateHovered(true)
   elseif key == "x" then self:discardHovered()
@@ -531,6 +543,7 @@ end
 -- A press on a draggable source records a pending drag; it starts once the
 -- mouse moves past the threshold. src: { kind, card, ..., cx, cy, scale }
 function T:pressSource(src, mx, my)
+  if self.spectator then return end
   self.pending = { src = src, pressX = mx, pressY = my }
 end
 
@@ -714,21 +727,26 @@ function T:cardMenuItems(card, onSearch)
 end
 
 function T:openBoardMenu(mx, my)
+  if self.spectator then return end
   local fx, fy = V.screenToCanonical(self, mx, my)
   local C = self.controller
   local function create(kind) return function() C:createWidget(uuid.v4(), kind, fx, fy) end end
   local widgetItems = {
     { label = "Simple Counter", onSelect = create("simpleCounter") },
     { label = "Token", onSelect = create("token") },
-    { label = "Pack Generator", onSelect = create("packGenerator") },
   }
+  -- Collection-mode games only use cards players own.
+  if not self.collectionMode then
+    widgetItems[#widgetItems + 1] = { label = "Pack Generator", onSelect = create("packGenerator") }
+  end
   if #models.GameDefinition.deckBuildingZones(self.game) > 0 then
     widgetItems[#widgetItems + 1] = { label = "Deck Widget", onSelect = create("deckBuilder") }
   end
-  overlays.menu(mx, my, {
-    { label = "Widgets", submenu = widgetItems },
-    { label = "Card Library", onSelect = function() self.libraryOpen = true end },
-  })
+  local menu = { { label = "Widgets", submenu = widgetItems } }
+  if not self.collectionMode then
+    menu[#menu + 1] = { label = "Card Library", onSelect = function() self.libraryOpen = true end }
+  end
+  overlays.menu(mx, my, menu)
 end
 
 function T:openCounterMenu(mx, my, w, includeDelete)
@@ -745,6 +763,7 @@ end
 
 -- Right-click on an item; returns true when handled.
 function T:openItemMenu(item, mx, my)
+  if self.spectator then return true end
   local C = self.controller
   local k = item.kind
   if k == "tableCard" or k == "handCard" then
@@ -779,8 +798,10 @@ function T:openItemMenu(item, mx, my)
     return true
   elseif k == "packGenerator" and item.interactable then
     local menu = {}
-    for _, set in ipairs(self.game.sets) do
-      menu[#menu + 1] = { label = set.name, onSelect = function() C:generatePack(set.id) end }
+    if not self.collectionMode then
+      for _, set in ipairs(self.game.sets) do
+        menu[#menu + 1] = { label = set.name, onSelect = function() C:generatePack(set.id) end }
+      end
     end
     menu[#menu + 1] = { label = "Delete", onSelect = function() C:deleteWidget(item.widget.instanceId) end }
     overlays.menu(mx, my, menu)
@@ -861,7 +882,7 @@ end
 function T:promptLoadDeck(zone)
   require("src.ui.screens.deck_library_dialog").open(self.game, { zone }, function(deck)
     self.controller:loadDeckIntoZone(zone.id, deck)
-  end)
+  end, { store = self.deckStore })
 end
 
 function T:saveDeckWidget(w)
@@ -878,7 +899,7 @@ function T:saveDeckWidget(w)
     subdecks[#subdecks + 1] = models.SubDeck.new(zone.deckType, util.map(order, function(id) return models.DeckEntry.new(id, tally[id]) end))
   end
   local deck = models.DeckConfig.new(self.game.id, subdecks)
-  require("src.ui.screens.deck_library_dialog").promptSaveDeck(self.game, deck)
+  require("src.ui.screens.deck_library_dialog").promptSaveDeck(self.game, deck, nil, { store = self.deckStore })
 end
 
 function T:saveLog()

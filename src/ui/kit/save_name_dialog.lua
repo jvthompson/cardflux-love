@@ -15,6 +15,7 @@ local D = {}
 --   exists(name) -> bool
 --   overwriteTitle, overwriteMessage(name)
 --   onSave(name)
+--   footer(x, y, w), footerH  optional extra row under the list
 function D.open(spec)
   local st = { name = "", error = nil, confirming = false }
   local existing = type(spec.existing) == "function" and spec.existing() or spec.existing or {}
@@ -59,7 +60,9 @@ function D.open(spec)
       yy = yy + 20
       ui.divider(x, yy, w)
       yy = yy + 4
-      local listH = 400 - (yy - y)
+      local footerH = spec.footer and (spec.footerH or 40) or 0
+      local listH = 400 - footerH - (yy - y)
+      if spec.footer then spec.footer(x, yy + listH + 8, w) end
       if #existing == 0 then
         ui.text(spec.emptyListText, x, yy, { w = w, h = listH, align = "center", valign = "middle", color = c.onSurfaceVariant })
       else

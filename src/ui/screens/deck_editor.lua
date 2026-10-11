@@ -159,8 +159,13 @@ local function total(q)
   return n
 end
 
-function E.new(game)
-  local self = setmetatable({ title = "Deck Editor", game = game }, E)
+-- opts (optional, for a Cardflux server):
+--   store     a src/data/deck_store.lua store for Open/Save
+--   ownedQty  definitionId -> copies owned (collection mode): the pool shows
+--             only owned and unownable cards, and copies are capped
+function E.new(game, opts)
+  opts = opts or {}
+  local self = setmetatable({ title = "Deck Editor", game = game, store = opts.store, ownedQty = opts.ownedQty }, E)
   self.slots = buildSlots(game)
   self.quantitiesBySlot = {}
   for _, s in ipairs(self.slots) do self.quantitiesBySlot[s.deckType] = newQuantities() end
@@ -171,7 +176,27 @@ end
 
 function E:active() return self.quantitiesBySlot[self.activeDeckType] end
 
+-- Copies of a card across every slot (collection limits are per deck).
+function E:copiesInDeck(id)
+  local n = 0
+  for _, q in pairs(self.quantitiesBySlot) do n = n + (q.qty[id] or 0) end
+  return n
+end
+
+-- Copies a collection allows, or nil when unlimited.
+function E:ownedLimit(id)
+  if not self.ownedQty then return nil end
+  local def = models.GameDefinition.cardById(self.game, id)
+  if def and def.unownable then return nil end
+  return self.ownedQty[id] or 0
+end
+
 function E:addCopy(id)
+  local limit = self:ownedLimit(id)
+  if limit and self:copiesInDeck(id) >= limit then
+    overlays.toast("You only own " .. limit .. (limit == 1 and " copy" or " copies") .. " of that card.")
+    return
+  end
   local q = self:active()
   if not q.qty[id] then q.order[#q.order + 1] = id end
   q.qty[id] = (q.qty[id] or 0) + 1
@@ -208,7 +233,7 @@ function E:saveDeck()
     overlays.toast("Add at least one card to: " .. table.concat(missing, ", ") .. " before saving.")
     return
   end
-  deckLibraryDialog.promptSaveDeck(self.game, self:buildDeckConfig())
+  deckLibraryDialog.promptSaveDeck(self.game, self:buildDeckConfig(), nil, { store = self.store })
 end
 
 -- Replaces every slot with the deck's entries, skipping cards this game
@@ -228,10 +253,50 @@ function E:loadDeck(deck)
     end
     self.quantitiesBySlot[s.deckType] = q
   end
+  self:clampToCollection()
+end
+
+-- Trims copies beyond what the collection owns (later slots give way first).
+function E:clampToCollection()
+  if not self.ownedQty then return end
+  local trimmed = 0
+  for i = #self.slots, 1, -1 do
+    local q = self.quantitiesBySlot[self.slots[i].deckType]
+    for j = #q.order, 1, -1 do
+      local id = q.order[j]
+      local limit = self:ownedLimit(id)
+      if limit then
+        local over = self:copiesInDeck(id) - limit
+        if over > 0 then
+          local cut = math.min(over, q.qty[id])
+          trimmed = trimmed + cut
+          q.qty[id] = q.qty[id] - cut
+          if q.qty[id] <= 0 then
+            q.qty[id] = nil
+            table.remove(q.order, j)
+          end
+        end
+      end
+    end
+  end
+  if trimmed > 0 then
+    overlays.toast("Removed " .. trimmed .. " card(s) your collection doesn't have.")
+  end
 end
 
 function E:openDeck()
+  if self.store and self.store.kind == "server" then
+    deckLibraryDialog.open(self.game, {}, function(deck) self:loadDeck(deck) end, { store = self.store })
+    return
+  end
   openDeckPicker(self.game, function(deck) self:loadDeck(deck) end)
+end
+
+-- The pool: every card, or (collection mode) the ones owned or unownable.
+function E:visibleCards()
+  local visible = filterBar.visible(self.filters, self.game)
+  if not self.ownedQty then return visible end
+  return util.filter(visible, function(def) return def.unownable or (self.ownedQty[def.id] or 0) > 0 end)
 end
 
 -- Draws a card scaled to fit (w, h), turned to its orientation.
@@ -252,8 +317,12 @@ function E:drawPool(x, y, w, h)
   local game = self.game
   local yy = filterBar.drawFilters("de", self.filters, game, x + 12, y, w - 24)
   yy = filterBar.drawSearch("de", self.filters, x + 12, yy + 12, w - 24, { labelBackground = theme.c.surface })
-  local visible = filterBar.visible(self.filters, game)
+  local visible = self:visibleCards()
   local gx, gy, gw, gh = x, yy, w, y + h - yy
+  if #visible == 0 and self.ownedQty then
+    ui.text("Your collection has no cards matching these filters. Open packs from the server lobby's Collection screen.",
+      gx + 24, gy, { w = gw - 48, h = math.min(gh, 200), align = "center", valign = "middle", color = theme.c.onSurfaceVariant })
+  end
   local maxExtent, rowH, gap = CW + 24, CH + 28, 12
   local inner = gw - 24
   local cols = math.max(1, math.ceil((inner + gap) / (maxExtent + gap)))
@@ -274,7 +343,9 @@ function E:drawPool(x, y, w, h)
         love.graphics.circle("fill", cx + CW / 2 + 6 - 11, ty - 6 + 11, 11)
         ui.text(tostring(n), cx + CW / 2 - 16, ty - 6, { size = 11, weight = "bold", w = 22, h = 22, align = "center", valign = "middle", color = theme.fixed.white })
       end
-      ui.text(def.cardTitle, cx - CW / 2, ty + CH + 4, { size = 11, w = CW, align = "center", ellipsis = true })
+      local limit = self:ownedLimit(def.id)
+      local label = limit and (def.cardTitle .. " (" .. self:copiesInDeck(def.id) .. "/" .. limit .. ")") or def.cardTitle
+      ui.text(label, cx - CW / 2, ty + CH + 4, { size = 11, w = CW, align = "center", ellipsis = true })
       if r.hovered then self.hoveredId = def.id end
       if r.clicked then self:addCopy(def.id) end
       if r.rightClicked then self:removeCopy(def.id) end

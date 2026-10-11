@@ -16,12 +16,28 @@ local saveNameDialog = require("src.ui.kit.save_name_dialog")
 local D = {}
 
 -- zones: the ZoneDefinitions being filled; onDeckChosen(deck)
-function D.open(game, zones, onDeckChosen)
-  local st = { directoryPath = paths.decksDir(), busy = true }
+-- opts.store: a src/data/deck_store.lua store (default: the local folder).
+function D.open(game, zones, onDeckChosen, opts)
+  local store = opts and opts.store
+  local remote = store and store.kind == "server"
+  local st = { directoryPath = remote and store.label or paths.decksDir(), busy = true }
 
   local function refresh()
     st.busy = true
     st.folderError = nil
+    if remote then
+      store:list(game, function(scan, err)
+        st.scan = scan
+        if err then
+          st.folderError = err
+        elseif #scan.entries == 0 and #scan.incompatible == 0 then
+          st.folderError = "You haven't saved any decks for " .. game.name .. " on this server yet."
+        end
+        if st.folderError then sound.play("error") end
+        st.busy = false
+      end)
+      return
+    end
     local ok, scan = pcall(decks.loadAllDecksForGame, st.directoryPath, game)
     if not ok then
       st.scan = { entries = {}, incompatible = {} }
@@ -97,7 +113,7 @@ function D.open(game, zones, onDeckChosen)
       local yy = y + 32
       ui.text(st.directoryPath, x, yy, { size = 12, color = c.onSurfaceVariant, w = w - 96, h = 40, valign = "middle", ellipsis = true })
       if ui.iconButton("refresh", x + w - 88, yy, { tooltip = "Refresh", disabled = st.busy, id = "dl:refresh" }) then refresh() end
-      if ui.iconButton("folder_open", x + w - 44, yy, { tooltip = "Choose Deck Library Folder...", disabled = st.busy, id = "dl:folder" }) then
+      if not remote and ui.iconButton("folder_open", x + w - 44, yy, { tooltip = "Choose Deck Library Folder...", disabled = st.busy, id = "dl:folder" }) then
         chooseDirectory()
       end
       yy = yy + 52
@@ -108,7 +124,9 @@ function D.open(game, zones, onDeckChosen)
       -- Deck grid.
       local entries = st.scan and st.scan.entries or {}
       local incompatible = st.scan and st.scan.incompatible or {}
-      if st.folderError then
+      if st.busy and remote then
+        ui.spinner(x + gridW / 2, yy + bodyH / 2, 14)
+      elseif st.folderError then
         ui.text(st.folderError, x, yy, { w = gridW, h = bodyH, align = "center", valign = "middle", color = theme.fixed.red })
       else
         local cols = math.max(1, math.floor((gridW + GAP) / (TILE_W + GAP)))
@@ -168,7 +186,7 @@ function D.open(game, zones, onDeckChosen)
         ui.text(st.selectionError, sx, sy, { size = 12, w = 240, color = theme.fixed.red })
         sy = sy + eh + 12
       end
-      if ui.button("Browse for file...", sx - 12, sy, nil, nil, { variant = "text", id = "dl:browse" }) then browse() end
+      if not remote and ui.button("Browse for file...", sx - 12, sy, nil, nil, { variant = "text", id = "dl:browse" }) then browse() end
       return h
     end,
     actions = {},
@@ -177,7 +195,11 @@ function D.open(game, zones, onDeckChosen)
 end
 
 -- Save Deck dialog (save_deck_dialog.dart promptSaveDeckToLibrary).
-function D.promptSaveDeck(game, deck, onSaved)
+-- opts.store: a deck_store store; a server store lists its decks first and
+-- offers to keep a local copy too.
+function D.promptSaveDeck(game, deck, onSaved, opts)
+  local store = opts and opts.store
+  if store and store.kind == "server" then return D.promptSaveServerDeck(game, deck, onSaved, store) end
   local root = paths.decksDir()
   local scan = decks.loadDecksForGame(root, game)
   saveNameDialog.open({
@@ -198,6 +220,45 @@ function D.promptSaveDeck(game, deck, onSaved)
       end
     end,
   })
+end
+
+function D.promptSaveServerDeck(game, deck, onSaved, store)
+  store:list(game, function(scan, err)
+    if err then
+      overlays.toast("Could not load your decks: " .. err)
+      return
+    end
+    local mine, names = {}, {}
+    for _, e in ipairs(scan.entries) do
+      if not e.isBuiltIn then
+        mine[#mine + 1] = { name = e.displayName, trailing = decks.cardCount(e) .. " card(s)" }
+        names[e.displayName:lower()] = true
+      end
+    end
+    saveNameDialog.open({
+      title = "Save Deck to " .. store.label, fieldLabel = "Deck Name", emptyNameMessage = "Enter a deck name.",
+      existing = mine,
+      existingHint = "Your decks on this server -- tap to reuse a name",
+      emptyListText = "No decks saved on this server for " .. game.name .. ".",
+      exists = function(name) return names[name:lower()] == true end,
+      overwriteTitle = "Overwrite Deck?",
+      overwriteMessage = function(name) return 'You already have a deck named "' .. name .. '" on this server. Overwrite it?' end,
+      footerH = 32,
+      footer = function(x, y)
+        store.alsoLocal = ui.checkbox("savename:local", x + 2, y + 7, store.alsoLocal, { label = "Also save a copy to my local deck library" })
+      end,
+      onSave = function(name)
+        store:write(game, name, deck, function(ok, werr)
+          if ok then
+            overlays.toast(werr or ('Saved "' .. name .. '" to ' .. store.label))
+            if onSaved then onSaved(name) end
+          else
+            overlays.toast("Could not save the deck: " .. tostring(werr))
+          end
+        end)
+      end,
+    })
+  end)
 end
 
 return D

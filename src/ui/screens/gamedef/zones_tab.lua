@@ -1,5 +1,8 @@
--- Port of widgets/zones_tab.dart: a reorderable list of expandable
--- ZoneDefinition editors. Edits apply straight to game.zones.
+-- Port of widgets/zones_tab.dart, laid out as list + detail: a reorderable
+-- zone list on the left and the selected zone's settings on the right.
+-- Settings that can't apply to the zone as configured are hidden rather
+-- than greyed out (their stored values are kept). Edits apply straight to
+-- game.zones.
 local ui = require("src.ui.kit.ui")
 local theme = require("src.ui.kit.theme")
 local widgets = require("src.ui.kit.widgets")
@@ -15,21 +18,90 @@ local T = {}
 T.__index = T
 
 function T.new(editor)
-  return setmetatable({ editor = editor, expanded = {} }, T)
+  return setmetatable({ editor = editor }, T)
 end
 
 local KIND_OPTIONS = { { value = "card", label = "Card Zone" }, { value = "widget", label = "Widget Zone" } }
 local WIDGET_KIND_OPTIONS = { { value = "counter", label = "Counter" } }
 local SIDE_OPTIONS = { { value = "left", label = "Left" }, { value = "right", label = "Right" } }
 
+local LIST_W = 300
+local ROW_H = 56
+
 local function isInteger(s) return s:match("^%-?%d+$") ~= nil end
 
--- A text field with grey helper text under it. Returns (text, height).
-local function fieldWithHelper(id, x, y, w, text, label, helper, disabled)
-  local v = ui.textField(id, x, y, w, text, { label = label, disabled = disabled, labelBackground = theme.c.surfaceContainer })
-  local hh = ui.textHeight(helper, w - 24, 12)
-  ui.text(helper, x + 12, y + 48 + 4, { w = w - 24, size = 12, color = disabled and theme.c.disabled or theme.c.onSurfaceVariant })
-  return v, 48 + 4 + hh
+-- Short flags shown under a zone's name in the list.
+local function badgesOf(zone)
+  if zone.kind ~= "card" then return "Counter" end
+  local b = {}
+  if zone.shared then b[#b + 1] = "Shared" end
+  if zone.dealsBuiltDeck and not zone.shared then b[#b + 1] = "Deck" end
+  if zone.faceUp then b[#b + 1] = "Face up" end
+  if zone.isDiscardPile then b[#b + 1] = "Discard" end
+  return #b > 0 and table.concat(b, " · ") or "Card zone"
+end
+
+---------------------------------------------------------------------------
+-- List
+---------------------------------------------------------------------------
+
+function T:drawList(x, y, w, h)
+  local c = theme.c
+  local game = self.editor.game
+  ui.rect("fill", x, y, w, h, 0, c.surfaceContainer)
+  local hh, add = common.sectionHeader("zt:list", "Zones", x + 16, y + 12, w - 32, {
+    count = #game.zones, action = { label = "Add Zone", icon = "add", id = "zt:add" } })
+  if add then
+    local zone = models.ZoneDefinition.new({ id = uuid.v4(), name = "New Zone" })
+    game.zones[#game.zones + 1] = zone
+    self.selected = zone
+  end
+  local ly = y + 12 + hh + 8
+  local lh = y + h - ly
+  local off = ui.beginScroll("zt:list", x, ly, w, lh)
+  local ro = widgets.reorder("zt:zones")
+  local yy = ly - off
+  for i, zone in ipairs(game.zones) do
+    local rx, rw = x + 8, w - 16
+    local sel = zone == self.selected
+    local r = ui.region("zt:row:" .. keyOf(zone), rx + 40, yy, rw - 40, ROW_H, { cursor = "hand" })
+    if sel then
+      ui.rect("fill", rx, yy, rw, ROW_H, 8, c.secondaryContainer)
+    elseif r.hovered then
+      ui.rect("fill", rx, yy, rw, ROW_H, 8, theme.alpha(c.onSurface, 0.05))
+    end
+    ro:handle(i, rx, yy + (ROW_H - 40) / 2, yy, ROW_H)
+    local fg = sel and c.onSecondaryContainer or c.onSurface
+    ui.icon(zone.kind == "card" and "layers" or "widgets", rx + 42, yy + (ROW_H - 20) / 2, 20, sel and fg or c.onSurfaceVariant)
+    local tx = rx + 72
+    ui.text(zone.name == "" and "(unnamed zone)" or zone.name, tx, yy + 9, { w = rx + rw - 8 - tx, ellipsis = true,
+      weight = sel and "medium" or nil, color = fg })
+    ui.text(badgesOf(zone), tx, yy + 30, { w = rx + rw - 8 - tx, ellipsis = true, size = 12, color = c.onSurfaceVariant })
+    if r.clicked then
+      self.selected = zone
+      ui.blur()
+    end
+    yy = yy + ROW_H + 2
+  end
+  local from, to = ro:finish(x + 8, w - 16)
+  if from then widgets.moveItem(game.zones, from, to) end
+  ui.endScroll("zt:list", #game.zones * (ROW_H + 2) + 12)
+end
+
+---------------------------------------------------------------------------
+-- Detail
+---------------------------------------------------------------------------
+
+-- A labelled sub-group heading with a little space above. Returns height.
+local function group(text, x, y, w)
+  return 20 + common.groupLabel(text, x, y + 20, w) + 2
+end
+
+-- A text field with a (i) help icon inside its right end. Returns text.
+local function fieldWithInfo(id, x, y, w, text, label, help)
+  local v = ui.textField(id, x, y, w, text, { label = label, trailingW = 28 })
+  common.infoIcon(id .. ":info", x + w - 30, y + (common.FIELD_H - 18) / 2, help)
+  return v
 end
 
 -- The card-zone settings below the Zone Type picker. Returns height used.
@@ -37,69 +109,95 @@ function T:drawCardZoneFields(zone, k, x, y, w)
   local c = theme.c
   local cards = self.editor.game.cards
   local yy = y
+
+  -- Ownership.
+  yy = yy + group("Ownership", x, yy, w)
+  local rows = {
+    { id = k .. ":shared", label = "Shared", help = "One public pile for everyone, instead of one private pile per player",
+      get = function() return zone.shared end, set = function(v) zone.shared = v end },
+  }
+  if not zone.shared then
+    rows[#rows + 1] = { id = k .. ":visible", label = "Visible To All", help = "Let opponents see the real cards in this owned zone",
+      get = function() return zone.visibleToAll end, set = function(v) zone.visibleToAll = v end }
+  end
+  yy = yy + common.toggleGrid(rows, x, yy, w)
+
+  -- Behavior.
+  yy = yy + group("Behavior", x, yy, w)
+  yy = yy + common.toggleGrid({
+    { id = k .. ":faceup", label = "Face Up", help = "Cards in this zone show their real face",
+      get = function() return zone.faceUp end, set = function(v) zone.faceUp = v end },
+    { id = k .. ":shufflable", label = "Shuffleable", help = "Show a shuffle button for this zone",
+      get = function() return zone.shuffleable end, set = function(v) zone.shuffleable = v end },
+    { id = k .. ":autoshuffle", label = "Auto Shuffle", help = "Randomize this zone's order automatically when the game loads",
+      get = function() return zone.autoShuffle end, set = function(v) zone.autoShuffle = v end },
+    { id = k .. ":discard", label = "Is Discard Pile", help = "Pressing D sends a hovered table card here",
+      get = function() return zone.isDiscardPile end, set = function(v) zone.isDiscardPile = v end },
+  }, x, yy, w)
+
+  -- Dealing (owned zones) or the shared deck (shared zones).
   local h
-  zone.shared, h = common.switchTile(k .. ":shared", "Shared",
-    "One public pile for everyone, instead of one private pile per player", x, yy, w, zone.shared)
-  yy = yy + h
-  zone.dealsBuiltDeck, h = common.switchTile(k .. ":deals", "Deals Built Deck",
-    "Receives the player's own loaded deck at game start (owned zones only)", x, yy, w, zone.dealsBuiltDeck,
-    { disabled = zone.shared })
-  yy = yy + h
+  if not zone.shared then
+    yy = yy + group("Dealing", x, yy, w)
+    zone.dealsBuiltDeck, h = common.toggleRow(k .. ":deals", "Deals Built Deck",
+      "Receives the player's own loaded deck at game start (owned zones only)", x, yy, w, zone.dealsBuiltDeck)
+    yy = yy + h
+    if zone.dealsBuiltDeck then
+      yy = yy + 8
+      -- Deck Type keeps what's typed; an empty field means main_deck.
+      local function deckTypeOf(s) return util.trim(s) == "" and "main_deck" or s end
+      local st = ui.state(k .. ":deckTypeText")
+      if st.text == nil or deckTypeOf(st.text) ~= zone.deckType then st.text = zone.deckType end
+      local dw = w >= 560 and (w - 32) / 2 or w
+      st.text = fieldWithInfo(k .. ":decktype", x, yy, dw, st.text, "Deck Type",
+        "Which subdeck (by name) this zone loads from a chosen deck file -- defaults to main_deck")
+      zone.deckType = deckTypeOf(st.text)
+      if w >= 560 then
+        zone.deckOptional = common.toggleRow(k .. ":optional", "Deck Optional",
+          "A chosen deck may leave this zone's subdeck empty or missing (deals empty instead of being rejected)",
+          x + dw + 32, yy + 2, dw, zone.deckOptional)
+        yy = yy + common.FIELD_H
+      else
+        yy = yy + common.FIELD_H + 4
+        zone.deckOptional, h = common.toggleRow(k .. ":optional", "Deck Optional",
+          "A chosen deck may leave this zone's subdeck empty or missing (deals empty instead of being rejected)",
+          x, yy, w, zone.deckOptional)
+        yy = yy + h
+      end
+    end
+  else
+    yy = yy + group("Shared Deck", x, yy, w)
+    zone.standardDeck, h = common.toggleRow(k .. ":standard", "Standard 52-Card Deck",
+      "Deal one of each traditional playing card automatically", x, yy, w, zone.standardDeck)
+    yy = yy + h + 8
+    local sideW = 40 + 200
+    local dw = zone.standardDeck and 0 or (w - sideW - 24)
+    if not zone.standardDeck then
+      local text = fieldWithInfo(k .. ":deckname", x, yy, dw, zone.deckName or "", "Deck Name",
+        "Loads this deck from the Deck Library's folder for this game")
+      if text ~= (zone.deckName or "") then zone.deckName = text ~= "" and text or nil end
+    end
+    local sx = zone.standardDeck and x or (x + dw + 24)
+    ui.text("Side", sx, yy + 4, { h = 40, valign = "middle", color = c.onSurfaceVariant })
+    zone.side = ui.segmented(k .. ":side", sx + 40, yy + 4, sideW - 40, SIDE_OPTIONS, zone.side)
+    yy = yy + common.FIELD_H
+  end
 
-  -- Deck Type keeps what's typed; an empty field means main_deck.
-  local function deckTypeOf(s) return util.trim(s) == "" and "main_deck" or s end
-  local st = ui.state(k .. ":deckTypeText")
-  if st.text == nil or deckTypeOf(st.text) ~= zone.deckType then st.text = zone.deckType end
-  local text
-  text, h = fieldWithHelper(k .. ":decktype", x, yy, w, st.text, "Deck Type",
-    "Which subdeck (by name) this zone loads from a chosen deck file -- defaults to main_deck", not zone.dealsBuiltDeck)
-  st.text = text
-  zone.deckType = deckTypeOf(text)
-  yy = yy + h + 8
-  zone.deckOptional, h = common.switchTile(k .. ":optional", "Deck Optional",
-    "A chosen deck may leave this zone's subdeck empty or missing (deals empty instead of being rejected)",
-    x, yy, w, zone.deckOptional, { disabled = not zone.dealsBuiltDeck })
-  yy = yy + h
-  zone.faceUp, h = common.switchTile(k .. ":faceup", "Face Up", "Cards in this zone show their real face", x, yy, w, zone.faceUp)
-  yy = yy + h
-  zone.shuffleable, h = common.switchTile(k .. ":shufflable", "Shuffleable", "Show a shuffle button for this zone",
-    x, yy, w, zone.shuffleable)
-  yy = yy + h
-  zone.autoShuffle, h = common.switchTile(k .. ":autoshuffle", "Auto Shuffle",
-    "Randomize this zone's order automatically when the game loads", x, yy, w, zone.autoShuffle)
-  yy = yy + h
-  zone.visibleToAll, h = common.switchTile(k .. ":visible", "Visible To All",
-    "Let opponents see the real cards in this owned zone", x, yy, w, zone.visibleToAll, { disabled = zone.shared })
-  yy = yy + h
-  zone.isDiscardPile, h = common.switchTile(k .. ":discard", "Is Discard Pile",
-    "Pressing D sends a hovered table card here", x, yy, w, zone.isDiscardPile)
-  yy = yy + h + 8
-
-  -- Shared deck (only meaningful for shared zones).
-  local notShared = not zone.shared
-  ui.text("Shared Deck", x, yy, { weight = "bold", color = notShared and c.disabled or c.onSurface })
-  yy = yy + 20
-  zone.standardDeck, h = common.switchTile(k .. ":standard", "Standard 52-Card Deck",
-    "Deal one of each traditional playing card automatically", x, yy, w, zone.standardDeck, { disabled = notShared })
-  yy = yy + h + 4
-  text, h = fieldWithHelper(k .. ":deckname", x, yy, w, zone.deckName or "", "Deck Name",
-    "Loads this deck from the Deck Library's folder for this game", notShared or zone.standardDeck)
-  if text ~= (zone.deckName or "") then zone.deckName = text ~= "" and text or nil end
-  yy = yy + h + 12
-  zone.side = ui.segmented(k .. ":side", x, yy, 240, SIDE_OPTIONS, zone.side, { disabled = notShared })
-  yy = yy + 40 + 16
-
-  -- Starting contents, ignored when another source fills the zone.
+  -- Starting contents, ignored when another source fills the zone (only
+  -- the sources that apply to this kind of zone -- see session.lua).
+  yy = yy + group("Starting Contents", x, yy, w)
   local hasDeckName = zone.deckName ~= nil and zone.deckName ~= ""
-  local ignored = zone.dealsBuiltDeck or zone.standardDeck or hasDeckName
-  ui.text("Starting Contents", x, yy, { weight = "bold", color = ignored and c.disabled or c.onSurface })
-  yy = yy + 20
-  if ignored then
-    local why = zone.dealsBuiltDeck and "Ignored while Deals Built Deck is on."
-      or zone.standardDeck and "Ignored while Standard 52-Card Deck is on."
-      or "Ignored while a Deck Name is set."
-    ui.text(why, x, yy + 4, { size = 12, color = c.onSurfaceVariant })
-    yy = yy + 24
+  local why
+  if not zone.shared and zone.dealsBuiltDeck then
+    why = "Ignored while Deals Built Deck is on."
+  elseif zone.shared and zone.standardDeck then
+    why = "Ignored while Standard 52-Card Deck is on."
+  elseif zone.shared and hasDeckName then
+    why = "Ignored while a Deck Name is set."
+  end
+  if why then
+    ui.text(why, x, yy, { h = 32, valign = "middle", color = c.onSurfaceVariant })
+    return yy + 32 - y
   end
   local options = util.map(cards, function(card) return { value = card.id, label = card.cardTitle } end)
   local remove
@@ -107,16 +205,16 @@ function T:drawCardZoneFields(zone, k, x, y, w)
     local ek = k .. ":entry" .. i
     local dw = w - 8 - common.stepperWidth
     local picked = ui.dropdown(ek .. ":card", x, yy + 4, dw, options, entry.definitionId,
-      { h = 40, disabled = ignored, placeholder = "(unknown card)", size = 14 })
+      { h = 40, placeholder = "(unknown card)", size = 14 })
     if picked ~= entry.definitionId then zone.entries[i] = models.DeckEntry.new(picked, entry.quantity) end
-    local q, removed = common.stepper(ek, x + w, yy + 4, entry.quantity, { removeTooltip = "Remove Entry", disabled = ignored })
+    local q, removed = common.stepper(ek, x + w, yy + 4, entry.quantity, { removeTooltip = "Remove Entry" })
     if q ~= entry.quantity then zone.entries[i] = models.DeckEntry.new(zone.entries[i].definitionId, q) end
     if removed then remove = i end
     yy = yy + 48
   end
   if remove then table.remove(zone.entries, remove) end
   if ui.button("Add Entry", x - 8, yy, nil, 40, { variant = "text", icon = "add", id = k .. ":addentry",
-    disabled = ignored or #cards == 0 }) then
+    disabled = #cards == 0 }) then
     zone.entries[#zone.entries + 1] = models.DeckEntry.new(cards[1].id, 1)
   end
   yy = yy + 40
@@ -125,92 +223,88 @@ end
 
 -- The widget-zone settings. Returns height used.
 function T:drawWidgetZoneFields(zone, k, x, y, w)
-  local yy = y + 12
-  ui.text("Widget Zone", x, yy, { weight = "bold" })
-  yy = yy + 20 + 8
-  zone.widgetKind = ui.dropdown(k .. ":wkind", x, yy, w, WIDGET_KIND_OPTIONS, zone.widgetKind,
-    { label = "Widget Type", labelBackground = theme.c.surfaceContainer })
-  yy = yy + 48 + 12
+  local G = common.GAP
+  local yy = y + group("Counter", x, y, w) + 8
+  local hw = (w - G) / 2
+  zone.widgetKind = ui.dropdown(k .. ":wkind", x, yy, hw, WIDGET_KIND_OPTIONS, zone.widgetKind, { label = "Widget Type" })
   -- Starting Value keeps what's typed; anything unparsable counts as 0.
   local function valueOf(s) return isInteger(s) and tonumber(s) or 0 end
   local st = ui.state(k .. ":startText")
   if st.text == nil or valueOf(st.text) ~= zone.counterStartingValue then
     st.text = tostring(zone.counterStartingValue)
   end
-  st.text = ui.textField(k .. ":start", x, yy, w, st.text, { label = "Starting Value",
-    labelBackground = theme.c.surfaceContainer, filter = function(s) return s:match("^[%d%-]*$") ~= nil end })
+  st.text = ui.textField(k .. ":start", x + hw + G, yy, hw, st.text, { label = "Starting Value",
+    filter = function(s) return s:match("^[%d%-]*$") ~= nil end })
   zone.counterStartingValue = valueOf(st.text)
-  yy = yy + 48 + 12
-  local cw = (w - 12) / 2
+  yy = yy + common.FIELD_H + G
   local h1, h2
-  zone.counterStartingColor, h1 = colorpicker.field(k .. ":color", x, yy, cw, zone.counterStartingColor,
-    { hexLabel = "Starting Color (hex)", labelBackground = theme.c.surfaceContainer })
-  zone.counterStartingTextColor, h2 = colorpicker.field(k .. ":textcolor", x + cw + 12, yy, cw, zone.counterStartingTextColor,
-    { hexLabel = "Starting Text Color (hex)", labelBackground = theme.c.surfaceContainer })
+  zone.counterStartingColor, h1 = colorpicker.field(k .. ":color", x, yy, hw, zone.counterStartingColor,
+    { hexLabel = "Starting Color (hex)" })
+  zone.counterStartingTextColor, h2 = colorpicker.field(k .. ":textcolor", x + hw + G, yy, hw, zone.counterStartingTextColor,
+    { hexLabel = "Starting Text Color (hex)" })
   yy = yy + math.max(h1, h2)
   return yy - y
 end
 
--- One zone's card: header (handle, name/id, delete) and, when expanded,
--- every field. Returns its height.
-function T:drawZone(ro, i, zone, x, y, w)
-  local c = theme.c
-  local zk = keyOf(zone)
-  local k = "zt:" .. zk
-  local headerH = 64
-  local expanded = self.expanded[zk]
-  -- The card background must go down before the fields, so measure the
-  -- body from last frame's height.
-  local st = ui.state(k)
-  local h = headerH + (expanded and (st.bodyH or 0) or 0)
-  widgets.card(x, y, w, h, { radius = 12 })
-  if common.expansionHeader(k .. ":hdr", x + 48, y, w - 48 - 56, headerH) then self.expanded[zk] = not expanded end
-  ro:handle(i, x + 4, y + 12, y, h)
-  ui.text(zone.name == "" and "(unnamed zone)" or zone.name, x + 56, y + 12, { w = w - 56 - 64, ellipsis = true })
-  ui.text(zone.id, x + 56, y + 34, { w = w - 56 - 64, ellipsis = true, size = 12, color = c.onSurfaceVariant })
-  if ui.iconButton("delete_outline", x + w - 52, y + 12, { id = k .. ":del", tooltip = "Delete Zone" }) then
+function T:drawDetail(zone, x, y, w, h)
+  local k = "zt:" .. keyOf(zone)
+  local G = common.GAP
+  local off = ui.beginScroll("zt:detail", x, y, w, h)
+  local cx, cw = common.column(x, w)
+  local yy = y + common.PAD - off
+
+  -- Header: name and delete.
+  ui.text(zone.name == "" and "(unnamed zone)" or zone.name, cx, yy, { size = 20, weight = "medium", h = 40,
+    valign = "middle", w = cw - 160, ellipsis = true })
+  local bw = ui.buttonWidth("Delete Zone", { icon = "delete_outline" })
+  if ui.button("Delete Zone", cx + cw - bw, yy, bw, 40, { variant = "text", icon = "delete_outline", id = k .. ":del" }) then
     self.pendingRemove = zone
   end
-  if not expanded then return h end
+  yy = yy + 40 + 16
 
-  local fx, fw = x + 16, w - 32
-  local yy = y + headerH
-  zone.id = ui.textField(k .. ":id", fx, yy, fw, zone.id, { label = "Zone ID", labelBackground = c.surfaceContainer })
-  yy = yy + 48 + 12
-  zone.name = ui.textField(k .. ":name", fx, yy, fw, zone.name, { label = "Zone Name", labelBackground = c.surfaceContainer })
-  yy = yy + 48 + 12
-  zone.kind = ui.dropdown(k .. ":kind", fx, yy, fw, KIND_OPTIONS, zone.kind,
-    { label = "Zone Type", labelBackground = c.surfaceContainer })
-  yy = yy + 48
+  local hw = (cw - G) / 2
+  zone.name = ui.textField(k .. ":name", cx, yy, hw, zone.name, { label = "Zone Name" })
+  zone.id = ui.textField(k .. ":id", cx + hw + G, yy, hw, zone.id, { label = "Zone ID" })
+  yy = yy + common.FIELD_H + 16
+  zone.kind = ui.segmented(k .. ":kind", cx, yy, math.min(cw, 320), KIND_OPTIONS, zone.kind)
+  yy = yy + 40 + 8
+
   if zone.kind == "card" then
-    yy = yy + self:drawCardZoneFields(zone, k, fx, yy, fw)
+    yy = yy + self:drawCardZoneFields(zone, k, cx, yy, cw)
   else
-    yy = yy + self:drawWidgetZoneFields(zone, k, fx, yy, fw)
+    yy = yy + self:drawWidgetZoneFields(zone, k, cx, yy, cw)
   end
-  yy = yy + 16
-  st.bodyH = yy - (y + headerH)
-  return headerH + st.bodyH
+  yy = yy + common.PAD
+  ui.endScroll("zt:detail", yy + off - y)
 end
 
 function T:draw(x, y, w, h)
+  local c = theme.c
   local game = self.editor.game
   self.pendingRemove = nil
-  local pad = 16
-  local off = ui.beginScroll("zt:scroll", x, y, w, h)
-  local cx, cw = x + pad, w - 2 * pad
-  local yy = y + pad - off
-  local ro = widgets.reorder("zt:zones")
-  for i, zone in ipairs(game.zones) do
-    yy = yy + self:drawZone(ro, i, zone, cx, yy, cw) + 12
+  if self.selected and not util.contains(game.zones, self.selected) then self.selected = nil end
+  if not self.selected then self.selected = game.zones[1] end
+
+  local lw = math.min(LIST_W, math.floor(w * 0.4))
+  ui.pushClip(x, y, lw, h)
+  self:drawList(x, y, lw, h)
+  ui.popClip()
+  ui.rect("fill", x + lw, y, 1, h, 0, c.outlineVariant)
+  local dx = x + lw + 1
+  ui.pushClip(dx, y, w - lw - 1, h)
+  if self.selected then
+    self:drawDetail(self.selected, dx, y, w - lw - 1, h)
+  else
+    ui.text("Add a zone to get started", dx, y, { w = w - lw - 1, h = h, align = "center", valign = "middle",
+      color = c.onSurfaceVariant })
   end
-  local from, to = ro:finish(cx, cw)
-  if from then widgets.moveItem(game.zones, from, to) end
-  if self.pendingRemove then util.removeValue(game.zones, self.pendingRemove) end
-  if ui.button("Add Zone", cx, yy, nil, 40, { variant = "outlined", icon = "add", id = "zt:add" }) then
-    game.zones[#game.zones + 1] = models.ZoneDefinition.new({ id = uuid.v4(), name = "New Zone" })
+  ui.popClip()
+  if self.pendingRemove then
+    local i
+    for j, z in ipairs(game.zones) do if z == self.pendingRemove then i = j end end
+    util.removeValue(game.zones, self.pendingRemove)
+    self.selected = i and game.zones[math.min(i, #game.zones)] or nil
   end
-  yy = yy + 40 + pad
-  ui.endScroll("zt:scroll", yy + off - y)
 end
 
 return T
