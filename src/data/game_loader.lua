@@ -8,6 +8,7 @@ local resolver = require("src.data.image_resolver")
 local L = {}
 
 L.standardDeckAssetPath = "assets/games/standard_52/standard_52.json"
+L.standardDeckId = "standard_52"
 
 -- Appends the 52 generated cards when any zone asks for a standard deck.
 local function withStandardDeckCards(game)

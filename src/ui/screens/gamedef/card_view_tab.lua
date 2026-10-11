@@ -17,6 +17,10 @@ local common = require("src.ui.screens.gamedef.common")
 local CR = require("src.ui.table.card_render")
 
 local CW, CH = CR.cardWidth, CR.cardHeight
+-- The card grid draws cards a third larger, with up to three lines of name.
+local POOL_SCALE = 4 / 3
+local PW, PH = CW * POOL_SCALE, CH * POOL_SCALE
+local NAME_LINES = 3
 local keyOf = common.keyOf
 
 local T = {}
@@ -140,7 +144,8 @@ function T:drawPool(x, y, w, h, visible)
   local cardBacks = self.displayBacks
   local gy = y + 4
   local gh = y + h - gy
-  local maxExtent, rowH, gap = CW + 24, CH + 28, 12
+  local nameH = NAME_LINES * theme.font(11):getHeight()
+  local maxExtent, rowH, gap = PW + 24, PH + 6 + nameH + 4, 12
   local inner = w - 24
   local cols = math.max(1, math.ceil((inner + gap) / (maxExtent + gap)))
   local tileW = (inner - (cols - 1) * gap) / cols
@@ -150,16 +155,16 @@ function T:drawPool(x, y, w, h, visible)
     local tx, ty = x + 12 + col * (tileW + gap), gy + 12 + row * (rowH + gap) - off
     if ty + rowH > gy and ty < gy + gh then
       local cx = tx + tileW / 2
-      local r = ui.region("cv:card:" .. keyOf(card), cx - CW / 2 - 4, ty - 4, CW + 8, CH + 8 + 4 + 16, { cursor = "hand" })
-      CR.draw({ def = common.displayCard(folder, card), faceUp = true, cx = cx, cy = ty + CH / 2,
+      local r = ui.region("cv:card:" .. keyOf(card), cx - PW / 2 - 4, ty - 4, PW + 8, PH + 8 + 2 + nameH, { cursor = "hand" })
+      CR.draw({ def = common.displayCard(folder, card), faceUp = true, cx = cx, cy = ty + PH / 2, scale = POOL_SCALE,
         angle = CR.orientationTurns(card.orientation) * 2 * math.pi, cardBacks = cardBacks })
       if card == self.selected then
         -- Match the card's footprint: turned cards are landscape around the same center.
         local turned = CR.orientationTurns(card.orientation) ~= 0
-        local hw, hh = turned and CH or CW, turned and CW or CH
-        ui.rect("line", cx - hw / 2 - 4, ty + CH / 2 - hh / 2 - 4, hw + 8, hh + 8, 8, theme.fixed.blue, 2)
+        local hw, hh = turned and PH or PW, turned and PW or PH
+        ui.rect("line", cx - hw / 2 - 4, ty + PH / 2 - hh / 2 - 4, hw + 8, hh + 8, 8, theme.fixed.blue, 2)
       end
-      ui.text(card.cardTitle, cx - CW / 2, ty + CH + 6, { size = 11, w = CW, align = "center", ellipsis = true })
+      ui.text(card.cardTitle, tx, ty + PH + 6, { size = 11, w = tileW, align = "center", maxLines = NAME_LINES })
       if r.clicked then
         self.selected = card
         ui.blur()
@@ -194,7 +199,7 @@ function T:drawFrontPane(card, x, y, w, h)
   ui.rect("fill", x, y, w, h, 0, { 0, 0, 0, 0.05 })
   local display = common.displayCard(self.editor.folderPath, card)
   local px, py, pw, ph = x + 20, y + 20, w - 40, h - 40
-  local drawn = common.drawImageInBox(display.imagePath, px, py, pw, ph, "contain", turnsOf(card.orientation))
+  local drawn = common.drawImageInBox(display.imagePath, px, py, pw, ph, "contain", turnsOf(card.orientation), true)
   if drawn == false then fitCard(display, true, card.orientation, self.displayBacks, px, py, pw, ph) end
 end
 

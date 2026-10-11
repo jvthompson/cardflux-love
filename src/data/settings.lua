@@ -17,6 +17,7 @@ S.keys = {
   darkMode = "dark_mode_enabled",
   -- LÖVE port only:
   uiScale = "ui_scale",
+  recentServers = "recent_servers",
 }
 
 local FILE = "settings.json"

@@ -369,7 +369,11 @@ function ui.text(str, x, y, opts)
   setColor(opts.color or theme.c.onSurface)
   str = tostring(str)
   if opts.w then
-    if opts.ellipsis then str = ui.ellipsize(str, f, opts.w) end
+    if opts.maxLines then
+      str = ui.clampLines(str, f, opts.w, opts.maxLines)
+    elseif opts.ellipsis then
+      str = ui.ellipsize(str, f, opts.w)
+    end
     local ty = y
     if opts.h and opts.valign == "middle" then
       local _, lines = f:getWrap(str, opts.w)
@@ -391,6 +395,18 @@ function ui.textHeight(str, w, size, weight)
   local f = theme.font(size or 14, weight)
   local _, lines = f:getWrap(tostring(str), w)
   return math.max(1, #lines) * f:getHeight()
+end
+
+-- Wraps str to maxW and keeps at most maxLines lines, ellipsizing the last.
+function ui.clampLines(str, font, maxW, maxLines)
+  local _, lines = font:getWrap(str, maxW)
+  if #lines <= maxLines then return str end
+  local kept = {}
+  for i = 1, maxLines - 1 do kept[i] = lines[i] end
+  local rest = {}
+  for i = maxLines, #lines do rest[#rest + 1] = lines[i] end
+  kept[maxLines] = ui.ellipsize(table.concat(rest, " "), font, maxW)
+  return table.concat(kept, "\n")
 end
 
 function ui.ellipsize(str, font, maxW)

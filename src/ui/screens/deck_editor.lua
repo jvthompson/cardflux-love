@@ -11,13 +11,17 @@ local models = require("src.core.models")
 local util = require("src.core.util")
 local paths = require("src.data.paths")
 local decks = require("src.data.deck_library")
-local resolver = require("src.data.image_resolver")
 local fileDialog = require("src.platform.file_dialog")
+local resolver = require("src.data.image_resolver")
 local CR = require("src.ui.table.card_render")
 local GamePicker = require("src.ui.screens.game_picker")
 local deckLibraryDialog = require("src.ui.screens.deck_library_dialog")
 
 local CW, CH = CR.cardWidth, CR.cardHeight
+-- The card pool draws cards a third larger, with up to three lines of name.
+local POOL_SCALE = 4 / 3
+local PW, PH = CW * POOL_SCALE, CH * POOL_SCALE
+local NAME_LINES = 3
 
 local function app() return require("src.app") end
 
@@ -299,20 +303,6 @@ function E:visibleCards()
   return util.filter(visible, function(def) return def.unownable or (self.ownedQty[def.id] or 0) > 0 end)
 end
 
--- Draws a card scaled to fit (w, h), turned to its orientation.
-local function fitScale(orientation, w, h)
-  local rotated = orientation ~= "portrait"
-  local bw, bh = rotated and CH or CW, rotated and CW or CH
-  return math.min(w / bw, h / bh), bw, bh
-end
-
-local function fitCard(def, faceUp, orientation, cardBacks, x, y, w, h)
-  local s, _, bh = fitScale(orientation, w, h)
-  CR.draw({ def = def, faceUp = faceUp, cx = x + w / 2, cy = y + h / 2, scale = s,
-    angle = CR.orientationTurns(orientation) * 2 * math.pi, cardBacks = cardBacks })
-  return y + (h + bh * s) / 2 -- bottom edge of the drawn card
-end
-
 function E:drawPool(x, y, w, h)
   local game = self.game
   local yy = filterBar.drawFilters("de", self.filters, game, x + 12, y, w - 24)
@@ -323,7 +313,8 @@ function E:drawPool(x, y, w, h)
     ui.text("Your collection has no cards matching these filters. Open packs from the server lobby's Collection screen.",
       gx + 24, gy, { w = gw - 48, h = math.min(gh, 200), align = "center", valign = "middle", color = theme.c.onSurfaceVariant })
   end
-  local maxExtent, rowH, gap = CW + 24, CH + 28, 12
+  local nameH = NAME_LINES * theme.font(11):getHeight()
+  local maxExtent, rowH, gap = PW + 24, PH + 6 + nameH + 4, 12
   local inner = gw - 24
   local cols = math.max(1, math.ceil((inner + gap) / (maxExtent + gap)))
   local tileW = (inner - (cols - 1) * gap) / cols
@@ -334,18 +325,26 @@ function E:drawPool(x, y, w, h)
     local tx, ty = gx + 12 + col * (tileW + gap), gy + 12 + row * (rowH + gap) - off
     if ty + rowH > gy and ty < gy + gh then
       local cx = tx + tileW / 2
-      local r = ui.region("de:card:" .. def.id, cx - CW / 2, ty, CW, CH + 4 + 16, { cursor = "hand" })
-      CR.draw({ def = def, faceUp = true, cx = cx, cy = ty + CH / 2,
+      local r = ui.region("de:card:" .. def.id, cx - PW / 2, ty, PW, PH + 6 + nameH, { cursor = "hand" })
+      -- Collection mode: a green badge (top left) counts the owned copies not
+      -- yet in the deck, and the card dims once they're all used.
+      local limit = self:ownedLimit(def.id)
+      local unused = limit and math.max(0, limit - self:copiesInDeck(def.id))
+      CR.draw({ def = def, faceUp = true, cx = cx, cy = ty + PH / 2, scale = POOL_SCALE, alpha = unused == 0 and 0.35 or 1,
         angle = CR.orientationTurns(def.orientation) * 2 * math.pi, cardBacks = game.cardBacks })
-      local n = active.qty[def.id]
+      local n = active.qty[def.id] or (self.ownedQty and 0)
       if n then
         love.graphics.setColor(0, 0, 0, 0.87)
-        love.graphics.circle("fill", cx + CW / 2 + 6 - 11, ty - 6 + 11, 11)
-        ui.text(tostring(n), cx + CW / 2 - 16, ty - 6, { size = 11, weight = "bold", w = 22, h = 22, align = "center", valign = "middle", color = theme.fixed.white })
+        love.graphics.circle("fill", cx + PW / 2 + 6 - 11, ty - 6 + 11, 11)
+        ui.text(tostring(n), cx + PW / 2 - 16, ty - 6, { size = 11, weight = "bold", w = 22, h = 22, align = "center", valign = "middle", color = theme.fixed.white })
       end
-      local limit = self:ownedLimit(def.id)
+      if unused then
+        love.graphics.setColor(theme.fixed.green)
+        love.graphics.circle("fill", cx - PW / 2 - 6 + 11, ty - 6 + 11, 11)
+        ui.text(tostring(unused), cx - PW / 2 - 6, ty - 6, { size = 11, weight = "bold", w = 22, h = 22, align = "center", valign = "middle", color = theme.fixed.white })
+      end
       local label = limit and (def.cardTitle .. " (" .. self:copiesInDeck(def.id) .. "/" .. limit .. ")") or def.cardTitle
-      ui.text(label, cx - CW / 2, ty + CH + 4, { size = 11, w = CW, align = "center", ellipsis = true })
+      ui.text(label, tx, ty + PH + 6, { size = 11, w = tileW, align = "center", maxLines = NAME_LINES })
       if r.hovered then self.hoveredId = def.id end
       if r.clicked then self:addCopy(def.id) end
       if r.rightClicked then self:removeCopy(def.id) end
@@ -402,41 +401,23 @@ function E:drawDeckPanel(x, y, w, h)
   if remove then self:removeCopy(remove) end
 end
 
--- Preview panel: 24px padding around the card image(s), with the title
--- below. A card with a back shows Front above Back.
 local DECK_W = 240
-local PREVIEW_W, PREVIEW_PAD, PREVIEW_TITLE_H = 560, 24, 16 + 24
 
-function E:drawPreviewPanel(x, y, w, h)
-  local c = theme.c
-  ui.rect("fill", x, y, w, h, 0, theme.alpha(c.surfaceContainerHighest, 0.4))
+-- Space preview: a big copy of the hovered card in the half of the screen
+-- away from the mouse, as on the table. A card with a back shows Front
+-- above Back.
+function E:drawPreview()
+  if overlays.anyOpen() or ui.focus or not love.keyboard.isDown("space") then return end
   local def = self.hoveredId and models.GameDefinition.cardById(self.game, self.hoveredId)
-  if not def then
-    ui.text("Hover a card to preview", x, y, { w = w, h = h, align = "center", valign = "middle", color = c.onSurfaceVariant })
-    return
-  end
-  local px, py, pw = x + PREVIEW_PAD, y + PREVIEW_PAD, w - 2 * PREVIEW_PAD
-  local areaH = h - 2 * PREVIEW_PAD - PREVIEW_TITLE_H
+  if not def then return end
   local cardBacks = self.game.cardBacks
-  local titleY
-  if def.cardBackId == nil then
-    -- The card and its title, centered together.
-    local sc, _, bh = fitScale(def.orientation, pw, areaH)
-    local cardH = bh * sc
-    local top = y + (h - (cardH + PREVIEW_TITLE_H)) / 2
-    titleY = fitCard(def, true, def.orientation, cardBacks, px, top, pw, cardH) + 16
-  else
-    local labelH = 8 + 16
-    local paneH = (areaH - 12) / 2 - labelH
-    local frontBottom = fitCard(def, true, def.orientation, cardBacks, px, py, pw, paneH)
-    ui.text("Front", px, frontBottom + 8, { size = 12, w = pw, align = "center", color = c.onSurfaceVariant })
-    local by = py + paneH + labelH + 12
+  local faces = { { def = def, faceUp = true, orientation = def.orientation } }
+  if def.cardBackId ~= nil then
     local _, _, backOrientation = resolver.resolveCardBackImagePath(cardBacks, def)
-    local backBottom = fitCard(def, false, backOrientation or "portrait", cardBacks, px, by, pw, paneH)
-    ui.text("Back", px, backBottom + 8, { size = 12, w = pw, align = "center", color = c.onSurfaceVariant })
-    titleY = backBottom + 8 + 16 + 12
+    faces[2] = { def = def, faceUp = false, orientation = backOrientation or "portrait" }
   end
-  ui.text(def.cardTitle, px, titleY, { size = 18, weight = "bold", w = pw, align = "center", ellipsis = true })
+  local sw, sh = ui.screenSize()
+  CR.drawPreview(faces, cardBacks, sw, sh, (ui.mouse()))
 end
 
 function E:draw(x, y, w, h)
@@ -447,13 +428,9 @@ function E:draw(x, y, w, h)
     { icon = "save", tooltip = "Save Deck...", id = "de:save", onClick = function() self:saveDeck() end },
   })
   local by, bh = y + tbH + 1, h - tbH - 1
-  -- Deck list 240 wide, preview 560; the pool takes the rest. On a
-  -- narrow window the preview gives way so the pool keeps three columns.
-  local minPoolW = 3 * (CW + 24) + 2 * 12 + 24
+  -- Deck list 240 wide on the right; the pool takes the rest.
   local deckW = DECK_W
-  local previewW = util.clamp(w - deckW - 2 - minPoolW, 240, PREVIEW_W)
-  local poolW = w - deckW - previewW - 2
-  local leftW = poolW + 1 + deckW
+  local poolW = w - deckW - 1
   ui.pushClip(x, by, poolW, bh)
   self:drawPool(x, by, poolW, bh)
   ui.popClip()
@@ -461,8 +438,7 @@ function E:draw(x, y, w, h)
   ui.pushClip(x + poolW + 1, by, deckW, bh)
   self:drawDeckPanel(x + poolW + 1, by, deckW, bh)
   ui.popClip()
-  ui.rect("fill", x + leftW, by, 1, bh, 0, c.outlineVariant)
-  self:drawPreviewPanel(x + leftW + 1, by, w - leftW - 1, bh)
+  ui.overlay(function() self:drawPreview() end)
 end
 
 ---------------------------------------------------------------------------
@@ -474,7 +450,7 @@ S.__index = S
 
 function S.new()
   local self = setmetatable({ title = "Deck Editor" }, S)
-  self.picker = GamePicker.new(function(game) app().push(E.new(game)) end)
+  self.picker = GamePicker.new(function(game) app().push(E.new(game)) end, { excludeStandardDeck = true })
   return self
 end
 

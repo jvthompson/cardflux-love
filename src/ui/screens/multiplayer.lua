@@ -548,6 +548,7 @@ function Join:connect()
     if status == "server" and not self.navigated then
       -- The address is a Cardflux server: sign in and go to its lobby.
       self.navigated = true
+      profile.addRecentServer(host, port)
       local sc = require("src.net.server_client").adopt(self.client.conn, host, port, self.client.serverInfo)
       app().replace(require("src.ui.screens.server.login").new(sc))
       return
@@ -555,10 +556,45 @@ function Join:connect()
     if status == "connected" and not self.navigated and self.client.assignedPlayerId then
       self.navigated = true
       profile.saveReconnect(hostKey, self.client.assignedPlayerId)
+      profile.addRecentServer(host, port)
       app().replace(M.ClientGame.new(self.client, self.client.assignedPlayerId))
     end
   end
   self.client:connect(host, port, A.playerName(), A.profile.color, profile.readAvatarBytes(), profile.getReconnectPlayerIdFor(hostKey))
+end
+
+-- Arrow at the right end of the address field opening the recently joined
+-- servers; picking one fills in both address and port.
+function Join:drawRecentServers(recent, x, y, w)
+  local c = theme.c
+  if ui.iconButton("arrow_drop_down", x + w - 40, y + 4, { id = "join:recent", tooltip = "Recent servers" }) then
+    self.recentOpen = not self.recentOpen
+  end
+  if not self.recentOpen then return end
+  local itemH = 40
+  local px, py, pw, ph = x, y + 50, w, #recent * itemH + 16
+  ui.overlay(function()
+    ui.cover(-1e9, -1e9, 2e9, 2e9) -- swallow clicks outside to close
+    ui.shadow(px, py, pw, ph, 4, 2)
+    ui.rect("fill", px, py, pw, ph, 4, c.surfaceContainer)
+    local yy = py + 8
+    for i, e in ipairs(recent) do
+      local r = ui.region("join:recent:" .. i, px, yy, pw - 40, itemH, { cursor = "hand" })
+      if r.hovered then ui.rect("fill", px, yy, pw, itemH, 0, theme.alpha(c.onSurface, 0.08)) end
+      ui.text(e.host .. " : " .. e.port, px + 12, yy, { w = pw - 56, h = itemH, valign = "middle", ellipsis = true, color = c.onSurface })
+      if ui.iconButton("close", px + pw - 40, yy + 4, { size = 32, id = "join:recent:rm:" .. i, tooltip = "Remove" }) then
+        profile.removeRecentServer(e.host, e.port)
+        if #recent == 1 then self.recentOpen = false end
+      elseif r.clicked then
+        self.ip, self.port = e.host, tostring(e.port)
+        self.recentOpen = false
+      end
+      yy = yy + itemH
+    end
+    if (ui.mousePressed(1) and not ui.hover(px, py, pw, ph)) or ui.mousePressed(2) then
+      self.recentOpen = false
+    end
+  end)
 end
 
 function Join:draw(x, y, w, h)
@@ -568,7 +604,10 @@ function Join:draw(x, y, w, h)
   local client = self.client
   if not client or client.status == "idle" then
     local submitted
-    self.ip, _, submitted = ui.textField("join:ip", cx, yy, colW, self.ip, { label = "Host or server IP address", hint = "e.g. 192.168.1.42 -- blank = 127.0.0.1", autofocus = true })
+    local recent = profile.getRecentServers()
+    self.ip, _, submitted = ui.textField("join:ip", cx, yy, colW, self.ip, { label = "Host or server IP address",
+      hint = "e.g. 192.168.1.42 -- blank = 127.0.0.1", autofocus = true, trailingW = #recent > 0 and 36 or nil })
+    if #recent > 0 then self:drawRecentServers(recent, cx, yy, colW) end
     yy = yy + 60
     local s2
     self.port, _, s2 = ui.textField("join:port", cx, yy, colW, self.port, { label = "Port", filter = function(t) return t:match("^%d+$") ~= nil end })

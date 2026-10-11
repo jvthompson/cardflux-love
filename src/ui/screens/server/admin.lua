@@ -36,6 +36,7 @@ function A:refreshSettings()
     self.form = {
       serverName = s.serverName, motd = s.motd, registrationOpen = s.registrationOpen, mode = s.mode,
       startingTokens = tostring(s.startingTokens), packCost = tostring(s.packCost),
+      starterDeckCost = tostring(s.starterDeckCost or 3),
       allowanceAmount = tostring(s.allowanceAmount), allowancePeriod = s.allowancePeriod,
       roomIdleTimeoutMin = tostring(s.roomIdleTimeoutMin), maxRooms = tostring(s.maxRooms), chatHistory = tostring(s.chatHistory),
     }
@@ -203,6 +204,7 @@ function A:saveSettings()
   local payload = json.object({
     "serverName", f.serverName, "motd", f.motd, "registrationOpen", f.registrationOpen, "mode", f.mode,
     "startingTokens", num(f.startingTokens, s.startingTokens), "packCost", num(f.packCost, s.packCost),
+    "starterDeckCost", num(f.starterDeckCost, s.starterDeckCost or 3),
     "allowanceAmount", num(f.allowanceAmount, s.allowanceAmount), "allowancePeriod", f.allowancePeriod,
     "roomIdleTimeoutMin", num(f.roomIdleTimeoutMin, s.roomIdleTimeoutMin), "maxRooms", num(f.maxRooms, s.maxRooms),
     "chatHistory", num(f.chatHistory, s.chatHistory),
@@ -251,9 +253,12 @@ function A:drawServer(x, y, w, h)
   ui.text(modeHelp, cx, yy, { w = colW, size = 12, color = c.onSurfaceVariant })
   yy = yy + ui.textHeight(modeHelp, colW, 12) + 16
   local third = (colW - 24) / 3
-  f.startingTokens = ui.textField("as:start", cx, yy, third, f.startingTokens, { label = "Starting tokens", labelBackground = bg, filter = digits })
-  f.packCost = ui.textField("as:cost", cx + third + 12, yy, third, f.packCost, { label = "Tokens per pack", labelBackground = bg, filter = digits })
-  f.allowanceAmount = ui.textField("as:allow", cx + 2 * (third + 12), yy, third, f.allowanceAmount,
+  local quarter = (colW - 36) / 4
+  f.startingTokens = ui.textField("as:start", cx, yy, quarter, f.startingTokens, { label = "Starting tokens", labelBackground = bg, filter = digits })
+  f.packCost = ui.textField("as:cost", cx + quarter + 12, yy, quarter, f.packCost, { label = "Tokens per pack", labelBackground = bg, filter = digits })
+  f.starterDeckCost = ui.textField("as:starter", cx + 2 * (quarter + 12), yy, quarter, f.starterDeckCost,
+    { label = "Tokens per starter", labelBackground = bg, filter = digits })
+  f.allowanceAmount = ui.textField("as:allow", cx + 3 * (quarter + 12), yy, quarter, f.allowanceAmount,
     { label = "Allowance", labelBackground = bg, filter = digits })
   yy = yy + 48 + 12
   ui.text("Allowance is given", cx, yy + 10, { color = c.onSurfaceVariant })
@@ -262,7 +267,7 @@ function A:drawServer(x, y, w, h)
     { value = "none", label = "Never" }, { value = "daily", label = "Daily" }, { value = "weekly", label = "Weekly" },
   }, f.allowancePeriod)
   yy = yy + 40 + 8
-  local allowHelp = "New accounts get the starting tokens. The allowance is added once per day or week, the next time a player signs in (or while they're online)."
+  local allowHelp = "New accounts get the starting tokens. A starter deck (a built-in deck marked isStarter) gives the player its cards and a copy of the deck. The allowance is added once per day or week, the next time a player signs in (or while they're online)."
   ui.text(allowHelp, cx, yy, { w = colW, size = 12, color = c.onSurfaceVariant })
   yy = yy + ui.textHeight(allowHelp, colW, 12) + 20
   yy = yy + sectionLabel("LIMITS", cx, yy)

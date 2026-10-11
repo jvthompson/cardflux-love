@@ -268,7 +268,11 @@ M.LegacyDeckFormatError = {
 local DeckConfig = {}
 M.DeckConfig = DeckConfig
 
-function DeckConfig.new(gameId, subdecks) return { gameId = gameId, subdecks = subdecks or {} } end
+-- isStarter: optional flag (default false); on a collection-mode server a
+-- game's built-in starter decks can be bought with tokens.
+function DeckConfig.new(gameId, subdecks, isStarter)
+  return { gameId = gameId, subdecks = subdecks or {}, isStarter = isStarter == true }
+end
 
 function DeckConfig.subdeck(d, name)
   for _, s in ipairs(d.subdecks) do
@@ -313,10 +317,13 @@ end
 
 function DeckConfig.fromJson(t)
   if t.subdecks == nil then error(M.LegacyDeckFormatError, 0) end
-  return DeckConfig.new(requireField(t, "gameId", "DeckConfig"), mapJson(t.subdecks, SubDeck.fromJson))
+  return DeckConfig.new(requireField(t, "gameId", "DeckConfig"), mapJson(t.subdecks, SubDeck.fromJson),
+    t.isStarter == true or t.IsStarter == true)
 end
 
-function DeckConfig.toJson(d) return obj("gameId", d.gameId, "subdecks", arr(mapJson(d.subdecks, SubDeck.toJson))) end
+function DeckConfig.toJson(d)
+  return obj("gameId", d.gameId, "subdecks", arr(mapJson(d.subdecks, SubDeck.toJson)), "isStarter", d.isStarter and true or nil)
+end
 
 ---------------------------------------------------------------------------
 -- ZoneDefinition

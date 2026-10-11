@@ -695,21 +695,25 @@ function T:cardMenuItems(card, onSearch)
   local isTable = card.zone == "table"
   local C = self.controller
   if isOwner then
+    local function placementMenu(zone)
+      local sub = { { label = "Top", onSelect = function() C:returnToZone(card.instanceId, zone.id, false) end } }
+      if zone.shuffleable then
+        sub[#sub + 1] = { label = "Shuffle Into", onSelect = function()
+          C:returnToZone(card.instanceId, zone.id, false)
+          C:shuffleZone(zone.id)
+        end }
+      end
+      sub[#sub + 1] = { label = "Bottom", onSelect = function() C:returnToZone(card.instanceId, zone.id, true) end }
+      return sub
+    end
     local send = {}
     if card.zone ~= "hand" then send[#send + 1] = { label = "Hand", onSelect = function() C:moveToHand(card.instanceId) end } end
-    local discard = self:localDiscardZoneId()
-    if discard then send[#send + 1] = { label = "Discard", onSelect = function() C:returnToZone(card.instanceId, discard, false) end } end
+    local discardId = self:localDiscardZoneId()
+    local discard = discardId and models.GameDefinition.zoneById(self.game, discardId)
+    if discard then send[#send + 1] = { label = "Discard", submenu = placementMenu(discard) } end
     for _, zone in ipairs(self.game.zones) do
       if zone.kind == "card" and not zone.isDiscardPile then
-        local sub = { { label = "Top", onSelect = function() C:returnToZone(card.instanceId, zone.id, false) end } }
-        if zone.shuffleable then
-          sub[#sub + 1] = { label = "Shuffle Into", onSelect = function()
-            C:returnToZone(card.instanceId, zone.id, false)
-            C:shuffleZone(zone.id)
-          end }
-        end
-        sub[#sub + 1] = { label = "Bottom", onSelect = function() C:returnToZone(card.instanceId, zone.id, true) end }
-        send[#send + 1] = { label = zone.name, submenu = sub }
+        send[#send + 1] = { label = zone.name, submenu = placementMenu(zone) }
       end
     end
     items[#items + 1] = { label = "Send to...", submenu = send }
@@ -1301,8 +1305,8 @@ function T:drawLibrary()
   theme.c = saved
 end
 
--- Space preview: big copy of exactly what's visible (table_screen.dart
--- _previewGeometry), centered in the half of the screen away from the mouse.
+-- Space preview: big copy of exactly what's visible, centered in the half
+-- of the screen away from the mouse.
 function T:drawPreview()
   if not self.spaceDown then return end
   local def, faceUp, orientation
@@ -1323,21 +1327,7 @@ function T:drawPreview()
     return
   end
   local sw, sh = ui.screenSize()
-  local rotated = orientation ~= "portrait"
-  local boxW, boxH = rotated and CH or CW, rotated and CW or CH
-  local ph = sh * 0.7
-  local pw = ph * (boxW / boxH)
-  if pw > sw * 0.42 then
-    pw = sw * 0.42
-    ph = pw * (boxH / boxW)
-  end
-  local mx = ui.mouse()
-  local targetX = mx < sw / 2 and sw * 0.75 or sw * 0.25
-  local left = util.clamp(targetX - pw / 2, 0, sw - pw)
-  local top = util.clamp(sh / 2 - ph / 2, 0, sh - ph)
-  local scale = pw / boxW
-  CR.draw({ def = def, faceUp = faceUp, cx = left + pw / 2, cy = top + ph / 2, scale = scale,
-    angle = CR.orientationTurns(orientation) * 2 * math.pi, cardBacks = self.game.cardBacks })
+  CR.drawPreview({ { def = def, faceUp = faceUp, orientation = orientation } }, self.game.cardBacks, sw, sh, (ui.mouse()))
 end
 
 ---------------------------------------------------------------------------

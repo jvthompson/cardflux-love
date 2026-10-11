@@ -19,9 +19,11 @@ local MAX_COLUMNS = 5
 local SPACING = 16
 local TEXT_BLOCK_H = 96
 
--- onGameChosen(game)
-function P.new(onGameChosen)
+-- onGameChosen(game). opts.excludeStandardDeck hides the Standard 52-Card
+-- Deck (it can't be customized, so the deck editors leave it out).
+function P.new(onGameChosen, opts)
   local self = setmetatable({ onGameChosen = onGameChosen, games = nil, busy = false }, P)
+  self.excludeStandardDeck = opts and opts.excludeStandardDeck or false
   self.directoryPath = paths.gamesDir()
   self.standardDeck = loader.loadStandardDeck()
   self:refresh()
@@ -139,7 +141,7 @@ function P:draw(x, y, w, h)
   for _, g in ipairs(self.games or {}) do
     if g.id ~= self.standardDeck.id then tiles[#tiles + 1] = g end
   end
-  tiles[#tiles + 1] = self.standardDeck
+  if not self.excludeStandardDeck then tiles[#tiles + 1] = self.standardDeck end
 
   P.drawGrid("gp:grid", tiles, x, yy, w, y + h - yy, pad, function(g) self.onGameChosen(g) end)
 end

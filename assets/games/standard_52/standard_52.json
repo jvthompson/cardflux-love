@@ -580,6 +580,7 @@
       "id": "deck",
       "name": "Deck",
       "shared": true,
+      "autoShuffle": true,
       "side": "left"
     },
     {

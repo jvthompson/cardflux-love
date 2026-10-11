@@ -31,6 +31,38 @@ function P.saveReconnect(hostKey, playerId)
   settings.set(K.reconnectPlayerId, playerId)
 end
 
+-- Recently joined hosts/servers, most recent first: { {host=, port=}, ... }.
+local MAX_RECENT_SERVERS = 5
+
+function P.getRecentServers()
+  local out = {}
+  local list = settings.get(K.recentServers)
+  if type(list) ~= "table" then return out end
+  for _, e in ipairs(list) do
+    if type(e) == "table" and type(e.host) == "string" and tonumber(e.port) then
+      out[#out + 1] = { host = e.host, port = tonumber(e.port) }
+    end
+  end
+  return out
+end
+
+function P.addRecentServer(host, port)
+  local list = { { host = host, port = port } }
+  for _, e in ipairs(P.getRecentServers()) do
+    if #list >= MAX_RECENT_SERVERS then break end
+    if not (e.host == host and e.port == port) then list[#list + 1] = e end
+  end
+  settings.set(K.recentServers, list)
+end
+
+function P.removeRecentServer(host, port)
+  local list = {}
+  for _, e in ipairs(P.getRecentServers()) do
+    if not (e.host == host and e.port == port) then list[#list + 1] = e end
+  end
+  settings.set(K.recentServers, list)
+end
+
 function P.getDiscordRefreshToken() return settings.get(K.discordRefreshToken) end
 function P.saveDiscordRefreshToken(token) settings.set(K.discordRefreshToken, token) end
 function P.clearDiscordRefreshToken() settings.remove(K.discordRefreshToken) end

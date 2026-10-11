@@ -10,7 +10,7 @@ local R = {}
 
 R.cardWidth = 70
 R.cardHeight = 100
-R.radius = 6
+R.radius = 3.5
 R.pileExtra = 24
 
 local W, H, RAD = R.cardWidth, R.cardHeight, R.radius
@@ -46,6 +46,25 @@ local function roundedShader()
   return shader or nil
 end
 
+-- Sets the rounded-corner shader for drawing an image (or the quadRect
+-- part of it, in UVs) into a w x h destination. Returns false when shaders
+-- are unavailable; otherwise the caller resets with setShader().
+function R.setRoundedShader(quadRect, w, h, radius)
+  local sh = roundedShader()
+  if not sh then return false end
+  love.graphics.setShader(sh)
+  sh:send("quadRect", quadRect)
+  sh:send("size", { w, h })
+  sh:send("radius", radius)
+  return true
+end
+
+-- Corner radius for a card image displayed with the given short side, so
+-- it matches the drawn cards' proportions at any size.
+function R.radiusFor(shortSide)
+  return RAD / W * shortSide
+end
+
 -- Draws `img` cover-fit into the base card rect with rounded corners.
 local function drawImageCover(img)
   local iw, ih = img:getDimensions()
@@ -62,15 +81,9 @@ local function drawImageCover(img)
   local quad = R._quad or love.graphics.newQuad(0, 0, 1, 1, 1, 1)
   R._quad = quad
   quad:setViewport(qx, qy, qw, qh, iw, ih)
-  local sh = roundedShader()
-  if sh then
-    love.graphics.setShader(sh)
-    sh:send("quadRect", { qx / iw, qy / ih, (qx + qw) / iw, (qy + qh) / ih })
-    sh:send("size", { W, H })
-    sh:send("radius", RAD)
-  end
+  local rounded = R.setRoundedShader({ qx / iw, qy / ih, (qx + qw) / iw, (qy + qh) / ih }, W, H, RAD)
   love.graphics.draw(img, quad, 0, 0, 0, W / qw, H / qh)
-  if sh then love.graphics.setShader() end
+  if rounded then love.graphics.setShader() end
 end
 
 local function shadow(alpha)
@@ -280,6 +293,34 @@ function R.drawSearchBadge(cx, cy, scale)
   love.graphics.setColor(1, 1, 1)
   local g = theme.glyph("visibility")
   love.graphics.print(g, cx, cy, 0, scale, scale, f:getWidth(g) / 2, f:getHeight() / 2)
+end
+
+-- Hover preview (table_screen.dart _previewGeometry): big copies of the
+-- faces ({ def, faceUp, orientation } each), stacked top to bottom and
+-- centered in the half of the (sw x sh) screen away from mouse x mx. One
+-- face is 70% of the screen tall, a stack 90%; at most 42% wide either way.
+local PREVIEW_GAP = 16
+function R.drawPreview(faces, cardBacks, sw, sh, mx)
+  local boxes, stackH, maxW = {}, 0, 0
+  for i, f in ipairs(faces) do
+    local rotated = f.orientation ~= "portrait"
+    local bw, bh = rotated and H or W, rotated and W or H
+    boxes[i] = { bw = bw, bh = bh }
+    stackH, maxW = stackH + bh, math.max(maxW, bw)
+  end
+  local gaps = PREVIEW_GAP * (#faces - 1)
+  local heightFrac = #faces == 1 and 0.7 or 0.9
+  local s = math.min((sh * heightFrac - gaps) / stackH, sw * 0.42 / maxW)
+  local pw, ph = maxW * s, stackH * s + gaps
+  local targetX = mx < sw / 2 and sw * 0.75 or sw * 0.25
+  local left = math.max(0, math.min(targetX - pw / 2, sw - pw))
+  local y = math.max(0, math.min(sh / 2 - ph / 2, sh - ph))
+  for i, f in ipairs(faces) do
+    local bh = boxes[i].bh * s
+    R.draw({ def = f.def, faceUp = f.faceUp, cx = left + pw / 2, cy = y + bh / 2, scale = s,
+      angle = R.orientationTurns(f.orientation) * 2 * math.pi, cardBacks = cardBacks })
+    y = y + bh + PREVIEW_GAP
+  end
 end
 
 return R

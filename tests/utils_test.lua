@@ -232,4 +232,32 @@ return function(t)
       t.isNil(state.cards[1].stackParentId)
     end)
   end)
+
+  t.describe("ui.clampLines", function()
+    t.it("keeps short text and ellipsizes past the line limit", function()
+      local ui = require("src.ui.kit.ui")
+      -- Headless: a monospace stand-in (6px per character, word wrap).
+      local f = {}
+      function f:getWidth(str) return 6 * (require("utf8").len(str) or #str) end
+      function f:getWrap(str, w)
+        local lines, line = {}, ""
+        for word in str:gmatch("%S+") do
+          local try = line == "" and word or (line .. " " .. word)
+          if line ~= "" and self:getWidth(try) > w then
+            lines[#lines + 1], line = line, word
+          else
+            line = try
+          end
+        end
+        if line ~= "" then lines[#lines + 1] = line end
+        return 0, lines
+      end
+      t.eq(ui.clampLines("Short", f, 90, 3), "Short")
+      local long = string.rep("Longword ", 20)
+      local out = ui.clampLines(long, f, 90, 3)
+      local _, lines = f:getWrap(out, 90)
+      t.eq(#lines, 3)
+      t.ok(out:sub(-3) == "…", "ends with an ellipsis")
+    end)
+  end)
 end

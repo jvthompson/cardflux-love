@@ -10,6 +10,7 @@ local fs = require("src.data.fs")
 local ops = require("src.data.gamedef_ops")
 local resolver = require("src.data.image_resolver")
 local imageCache = require("src.data.image_cache")
+local CR = require("src.ui.table.card_render")
 local fileDialog = require("src.platform.file_dialog")
 
 local C = {}
@@ -168,8 +169,8 @@ end
 -- Draws an image into a box: "contain" (whole image, letterboxed) or
 -- "cover" (fills, cropped). quarterTurns rotates it in place. Returns
 -- true when drawn, false when missing/broken (caller draws a fallback),
--- or "loading".
-function C.drawImageInBox(path, x, y, w, h, fit, quarterTurns)
+-- or "loading". rounded (contain only) gives it card-style rounded corners.
+function C.drawImageInBox(path, x, y, w, h, fit, quarterTurns, rounded)
   if not path then return false end
   local img = imageCache.get(path)
   if not img then
@@ -180,8 +181,11 @@ function C.drawImageInBox(path, x, y, w, h, fit, quarterTurns)
   local bw, bh = turned and ih or iw, turned and iw or ih
   local s = fit == "cover" and math.max(w / bw, h / bh) or math.min(w / bw, h / bh)
   if fit == "cover" then ui.pushClip(x, y, w, h) end
+  rounded = rounded and fit ~= "cover"
+    and CR.setRoundedShader({ 0, 0, 1, 1 }, iw * s, ih * s, CR.radiusFor(math.min(iw, ih) * s))
   love.graphics.setColor(1, 1, 1)
   love.graphics.draw(img, x + w / 2, y + h / 2, (quarterTurns or 0) * math.pi / 2, s, s, iw / 2, ih / 2)
+  if rounded then love.graphics.setShader() end
   if fit == "cover" then ui.popClip() end
   return true
 end

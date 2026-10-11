@@ -153,7 +153,7 @@ function D.open(game, zones, onDeckChosen, opts)
             ui.text("Old format", tx, ny + 14, { size = 10, w = TILE_W, align = "center", color = theme.fixed.red })
           else
             ui.text(decks.cardCount(entry) .. " card(s)", tx, ny + 14, { size = 10, w = TILE_W, align = "center", color = c.onSurfaceVariant })
-            if entry.isBuiltIn then ui.text("Built-in", tx, ny + 27, { size = 10, w = TILE_W, align = "center", color = c.primary }) end
+            if entry.isBuiltIn then ui.text(entry.deck.isStarter and "Built-in · Starter" or "Built-in", tx, ny + 27, { size = 10, w = TILE_W, align = "center", color = c.primary }) end
           end
           if r.clicked then
             if isIncompat then

@@ -7,14 +7,16 @@ local overlays = require("src.ui.kit.overlays")
 local json = require("lib.json")
 local deckStore = require("src.data.deck_store")
 local common = require("src.ui.screens.server.common")
+local loader = require("src.data.game_loader")
 
 local D = {}
 D.__index = D
 
 local function app() return require("src.app") end
 
--- A list of the server's games; onPick(gameInfo).
-function D.drawGameList(sc, id, x, y, w, h, subtitle, onPick)
+-- A list of the server's games; onPick(gameInfo). opts.excludeStandardDeck
+-- leaves out the Standard 52-Card Deck.
+function D.drawGameList(sc, id, x, y, w, h, subtitle, onPick, opts)
   local c = theme.c
   local colW = math.min(640, w - 48)
   local cx = math.floor(x + (w - colW) / 2)
@@ -24,7 +26,14 @@ function D.drawGameList(sc, id, x, y, w, h, subtitle, onPick)
   yy = yy + 32
   ui.text(subtitle, cx, yy, { w = colW, color = c.onSurfaceVariant })
   yy = yy + ui.textHeight(subtitle, colW) + 20
-  if #sc.games == 0 then
+  local games = sc.games
+  if opts and opts.excludeStandardDeck then
+    games = {}
+    for _, g in ipairs(games) do
+      if g.id ~= loader.standardDeckId then games[#games + 1] = g end
+    end
+  end
+  if #games == 0 then
     ui.text("This server doesn't have any games yet.", cx, yy, { w = colW, color = c.onSurfaceVariant })
   end
   for _, g in ipairs(sc.games) do
@@ -68,7 +77,7 @@ function D:draw(x, y, w, h)
   local sub = self.sc:isCollectionMode()
     and "Decks are saved on the server. In collection mode you can only use cards you own."
     or "Decks are saved on the server, so they're available wherever you sign in."
-  D.drawGameList(self.sc, "sd:games", x, y, w, h, sub, function(g) self:open(g) end)
+  D.drawGameList(self.sc, "sd:games", x, y, w, h, sub, function(g) self:open(g) end, { excludeStandardDeck = true })
 end
 
 return D
