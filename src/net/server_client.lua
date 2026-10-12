@@ -86,7 +86,7 @@ function S.adopt(conn, host, port, info)
     conn = conn, host = host, port = port, key = host .. ":" .. port, info = info or {},
     status = "connected", -- "connected" | "disconnected"
     nextRid = 0, pending = {},
-    users = {}, rooms = {}, games = {}, chat = {}, roomChat = {},
+    users = {}, rooms = {}, games = {}, chat = {}, roomChat = {}, tradeChat = {},
     avatarRequested = {}, avatarKeys = {},
     listeners = {},
   }, S)
@@ -142,6 +142,16 @@ end
 -- The room this client is in (kept fresh from "rooms" broadcasts).
 function S:currentRoom()
   return self.roomId and self:roomById(self.roomId) or nil
+end
+
+-- The trade this client is in, if any (kept fresh from "trade" pushes).
+-- myOffer/theirOffer are read from the trade's offers map, which is keyed
+-- by user id.
+function S:currentTrade()
+  local t = self.trade
+  if not t then return nil end
+  local otherId = t.a.id == self.self.id and t.b.id or t.a.id
+  return t, t.offers[self.self.id], t.offers[otherId], otherId
 end
 
 -- Image-cache key for a user's avatar, fetching it on first use; nil
@@ -244,12 +254,21 @@ function S:handle(m)
       S.saveSession(self.key, p.token, saved.email or (self.self and self.self.email))
     end
   elseif t == "chat" then
-    local list = p.roomId and self.roomChat or self.chat
+    local list = p.roomId and self.roomChat or (p.tradeId and self.tradeChat) or self.chat
     list[#list + 1] = p.line
     if #list > 200 then table.remove(list, 1) end
     self:emit("chat", p.line, p.roomId)
   elseif t == "toast" then
     require("src.ui.kit.overlays").toast(p.message)
+  elseif t == "tradeInvite" then
+    self:emit("tradeInvite", p)
+  elseif t == "trade" then
+    if not (self.trade and self.trade.id == p.id) then self.tradeChat = p.chat or {} end
+    self.trade = p
+    self:emit("trade")
+  elseif t == "tradeClosed" then
+    if self.trade and self.trade.id == p.tradeId then self.trade = nil end
+    self:emit("tradeClosed", p)
   elseif t == "serverShutdown" then
     -- An admin scheduled a shutdown: warn on whatever screen is showing.
     local seconds = tonumber(p.seconds) or 0

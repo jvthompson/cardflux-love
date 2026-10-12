@@ -101,4 +101,55 @@ return function(t)
       overlays.closeDialog(d)
     end)
   end)
+
+  t.describe("trading", function()
+    t.it("emits tradeInvite pushes", function()
+      local sc, conn = client()
+      local got
+      sc:on("tradeInvite", function(p) got = p end)
+      conn.inbox = { { type = "tradeInvite", payload = { tradeId = "t1", gameId = "g1", fromId = "u2", fromName = "Bob" } } }
+      sc:update()
+      t.eq(got.fromName, "Bob")
+    end)
+
+    t.it("tracks the current trade and seeds chat from the first push", function()
+      local sc, conn = client()
+      sc.self = { id = "u1" }
+      local emitted = 0
+      sc:on("trade", function() emitted = emitted + 1 end)
+      conn.inbox = { { type = "trade", payload = { id = "t1", gameId = "g1",
+        a = { id = "u1", name = "A" }, b = { id = "u2", name = "B" }, offers = {}, chat = { { text = "hi" } } } } }
+      sc:update()
+      t.eq(sc.trade.id, "t1")
+      t.eq(#sc.tradeChat, 1)
+      t.eq(emitted, 1)
+      -- A later push for the same trade updates state without wiping chat.
+      conn.inbox = { { type = "trade", payload = { id = "t1", gameId = "g1",
+        a = { id = "u1", name = "A" }, b = { id = "u2", name = "B" }, offers = {}, chat = { { text = "hi" } } } } }
+      sc:update()
+      t.eq(#sc.tradeChat, 1)
+    end)
+
+    t.it("appends trade chat lines to tradeChat, not the lobby/room chat", function()
+      local sc, conn = client()
+      sc.self = { id = "u1" }
+      sc.trade = { id = "t1" }
+      sc.tradeChat = {}
+      conn.inbox = { { type = "chat", payload = { tradeId = "t1", line = { name = "Bob", text = "hey" } } } }
+      sc:update()
+      t.eq(#sc.tradeChat, 1)
+      t.eq(#sc.chat, 0)
+    end)
+
+    t.it("clears the current trade when it closes", function()
+      local sc, conn = client()
+      sc.trade = { id = "t1" }
+      local reason
+      sc:on("tradeClosed", function(p) reason = p.reason end)
+      conn.inbox = { { type = "tradeClosed", payload = { tradeId = "t1", reason = "completed" } } }
+      sc:update()
+      t.isNil(sc.trade)
+      t.eq(reason, "completed")
+    end)
+  end)
 end

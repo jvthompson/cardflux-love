@@ -144,7 +144,7 @@ T.icons = {
   keyboard = 0xe312, arrow_back = 0xe5c4, settings = 0xe8b8, person = 0xe7fd, edit = 0xe3c9, palette = 0xe40a, more_vert = 0xe5d4,
   info_outline = 0xe88f, build = 0xe869, layers = 0xe53b, widgets = 0xe1bd, image = 0xe3f4,
   send = 0xe163, shield = 0xe9e0, toll = 0xe8e0, block = 0xe14b, vpn_key = 0xe0da, card_giftcard = 0xe8f6,
-  sports_esports = 0xea28, group = 0xe7ef,
+  sports_esports = 0xea28, group = 0xe7ef, swap_horiz = 0xe8d4, hourglass_empty = 0xe88b,
 }
 
 local glyphCache = {}

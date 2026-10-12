@@ -34,6 +34,9 @@ function Lobby.new(sc)
       common.returnToLobby(CLOSE_REASONS[reason] or "The game was closed.")
     end
   end)
+  sc:on("tradeInvite", function(p) self:onTradeInvite(p) end)
+  sc:on("tradeClosed", function(p) self:onTradeClosed(p) end)
+  sc:on("trade", function() self:onTradeUpdate() end)
   return self
 end
 
@@ -134,6 +137,109 @@ function Lobby:createGame(st)
       sc.roomId, sc.spectating, sc.roomChat = r.room.id, false, {}
       common.openRoomScreen(sc, game, r.room)
     end)
+  end)
+end
+
+---------------------------------------------------------------------------
+-- Trading
+---------------------------------------------------------------------------
+
+-- Step 1: pick which game to trade in, reusing the Create Game game-tile
+-- picker; step 2 sends the invite and shows a "waiting for a response"
+-- dialog until the other player responds (or the request is cancelled).
+function Lobby:askToTrade(u)
+  local sc = self.sc
+  if #sc.games == 0 then
+    overlays.alert("No Games", "This server doesn't have any games yet.")
+    return
+  end
+  app().push(GameChoice.new(sc, function(g)
+    app().pop()
+    self:sendTradeRequest(u, g)
+  end))
+end
+
+function Lobby:sendTradeRequest(u, g)
+  local sc = self.sc
+  sc:request("tradeRequest", json.object({ "targetId", u.id, "gameId", g.id }), function(r)
+    if not r.ok then
+      overlays.alert("Couldn't Send Trade Request", r.message or "Something went wrong.")
+      return
+    end
+    self.waitingTradeId = r.tradeId
+    self.waitingTradeDialog = overlays.dialog({
+      title = "Trade Request Sent",
+      width = 380,
+      dismissible = false,
+      content = function(_, x, y, w)
+        ui.spinner(x + w / 2, y + 14, 14)
+        local msg = "Waiting for " .. u.name .. " to respond..."
+        ui.text(msg, x, y + 44, { w = w, align = "center", color = theme.c.onSurfaceVariant })
+        return 44 + ui.textHeight(msg, w)
+      end,
+      actions = { { label = "Cancel", variant = "text", onClick = function()
+        sc:request("tradeLeave", json.object({ "tradeId", self.waitingTradeId }))
+        self.waitingTradeId, self.waitingTradeDialog = nil, nil
+      end } },
+    })
+  end)
+end
+
+-- Someone else asked to trade with us.
+function Lobby:onTradeInvite(p)
+  local sc = self.sc
+  local function respond(accept)
+    sc:request("tradeRespond", json.object({ "tradeId", p.tradeId, "accept", accept }))
+    self.tradeInviteId, self.tradeInviteDialog = nil, nil
+  end
+  self.tradeInviteId = p.tradeId
+  self.tradeInviteDialog = overlays.dialog({
+    title = "Trade Request",
+    message = p.fromName .. " wants to trade with you.",
+    width = 420,
+    dismissible = false,
+    actions = {
+      { label = "Decline", variant = "text", onClick = function() respond(false) end },
+      { label = "Accept", variant = "filled", onClick = function() respond(true) end },
+    },
+  })
+end
+
+-- The trade we were waiting on (or playing) ended: declined, expired, left,
+-- or completed.
+function Lobby:onTradeClosed(p)
+  if self.waitingTradeId == p.tradeId then
+    if self.waitingTradeDialog then self.waitingTradeDialog:close() end
+    self.waitingTradeId, self.waitingTradeDialog = nil, nil
+    local messages = { declined = "They declined your trade request.", expired = "They didn't respond in time." }
+    overlays.toast(messages[p.reason] or "The trade request was cancelled.")
+  end
+  if self.tradeInviteId == p.tradeId then
+    if self.tradeInviteDialog then self.tradeInviteDialog:close() end
+    self.tradeInviteId, self.tradeInviteDialog = nil, nil
+  end
+  -- Whether the Trade screen is showing is read straight off the screen
+  -- stack rather than a separately-tracked flag: a flag set only by the
+  -- "trade" push and cleared only by a "tradeClosed" push would get stuck
+  -- whenever a screen transition happens some other way (e.g. the server
+  -- only pushes "tradeClosed" to the *other* player when someone leaves).
+  local top = app().top()
+  if top and top.isTradeScreen then
+    local messages = { completed = "Trade complete.", left = "The other player left the trade." }
+    common.returnToLobby(messages[p.reason] or "The trade ended.")
+  end
+end
+
+-- A trade we're part of just started (or was already open and changed) --
+-- make sure the Trade screen is showing.
+function Lobby:onTradeUpdate()
+  local top = app().top()
+  if top and top.isTradeScreen then return end
+  if self.waitingTradeDialog then self.waitingTradeDialog:close() end
+  self.waitingTradeId, self.waitingTradeDialog = nil, nil
+  local sc = self.sc
+  common.withGame(sc, sc.trade.gameId, function(game)
+    app().push(require("src.ui.screens.server.trade").new(sc, game))
   end)
 end
 
@@ -383,6 +489,11 @@ function Lobby:drawUsers(x, y, w, h)
   local off = ui.beginScroll("lb:users", x, ly, w, y + h - ly)
   local uy = ly - off
   for _, u in ipairs(sc.users) do
+    local rowR = ui.region("lb:user:" .. u.id, x, uy, w - 8, 32, { cursor = "hand" })
+    if rowR.rightClicked and u.id ~= sc.self.id and sc:isCollectionMode() and u.roomId == "" then
+      local mx, my = ui.mouse()
+      overlays.menu(mx, my, { { label = "Ask to Trade...", icon = "swap_horiz", onSelect = function() self:askToTrade(u) end } })
+    end
     common.userRow(sc, u, x, uy, w - 8, { size = 32, h = 32, bold = u.id == sc.self.id })
     local status
     if u.roomId ~= "" then
