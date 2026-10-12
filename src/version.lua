@@ -3,7 +3,7 @@
 -- so it must publish to its own repo (the Flutter repo's build numbers
 -- would always look newer).
 return {
-  name = "0.1.0",
+  name = "0.2.0",
   build = 5,
   -- src/platform/updater.lua: where releases are published, the zip asset
   -- each release must carry, and the executable inside it.
