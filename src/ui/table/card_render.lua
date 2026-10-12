@@ -299,6 +299,17 @@ function R.drawSearchBadge(cx, cy, scale)
   love.graphics.print(g, cx, cy, 0, scale, scale, f:getWidth(g) / 2, f:getHeight() / 2)
 end
 
+-- Preview faces for a card definition as browsed in a list: its front, then
+-- its back when it has its own.
+function R.definitionFaces(def, cardBacks)
+  local faces = { { def = def, faceUp = true, orientation = def.orientation } }
+  if def.cardBackId ~= nil then
+    local _, _, backOrientation = resolver.resolveCardBackImagePath(cardBacks, def)
+    faces[2] = { def = def, faceUp = false, orientation = backOrientation or "portrait" }
+  end
+  return faces
+end
+
 -- Hover preview (table_screen.dart _previewGeometry): big copies of the
 -- faces ({ def, faceUp, orientation } each), stacked top to bottom and
 -- centered in the half of the (sw x sh) screen away from mouse x mx. One

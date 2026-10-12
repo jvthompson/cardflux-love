@@ -1,5 +1,6 @@
--- Sign in to / create an account on a Cardflux server. A saved sign-in
--- (token) is tried first, so returning players go straight to the lobby.
+-- Sign in to / create an account on a Cardflux server. If the player chose
+-- "Remember me", the saved sign-in (token) is tried first so they go
+-- straight to the lobby; otherwise they enter their email and password.
 local ui = require("src.ui.kit.ui")
 local theme = require("src.ui.kit.theme")
 local overlays = require("src.ui.kit.overlays")
@@ -21,9 +22,15 @@ local function trim(s) return (s or ""):gsub("^%s+", ""):gsub("%s+$", "") end
 function L.new(sc)
   local A = app()
   local saved = SC.savedSession(sc.key)
+  if saved and not saved.remember then
+    -- Saved before Remember me existed: don't sign in without asking.
+    SC.clearSession(sc.key)
+    saved = nil
+  end
   local self = setmetatable({
     title = sc.info.name or "Cardflux Server", sc = sc,
     mode = "signIn", email = saved and saved.email or "", password = "", confirm = "",
+    remember = saved ~= nil,
     name = A.playerName(), color = A.profile.color, avatarPath = A.profile.avatarPath,
   }, L)
   sc:on("disconnected", function() app().popToHome(sc:disconnectMessage()) end)
@@ -32,7 +39,7 @@ function L.new(sc)
     sc:request("resume", json.object({ "token", saved.token }), function(r)
       self.busy = nil
       if r.ok then
-        self:signedIn(r, saved.email)
+        self:signedIn(r, saved.email, true)
       else
         SC.forgetSession(sc.key)
         if r.error ~= "disconnected" then self.error = r.message end
@@ -47,11 +54,15 @@ function L:onBack()
   app().pop()
 end
 
-function L:signedIn(r, email)
+function L:signedIn(r, email, remember)
   local sc = self.sc
   sc.token = r.token
   sc.self = r.user
-  SC.saveSession(sc.key, r.token, email or r.user.email)
+  if remember then
+    SC.saveSession(sc.key, r.token, email or r.user.email)
+  else
+    SC.clearSession(sc.key)
+  end
   app().replace(require("src.ui.screens.server.lobby").new(sc))
 end
 
@@ -64,7 +75,7 @@ function L:submitSignIn()
   self.error, self.busy = nil, "Signing in..."
   self.sc:request("login", json.object({ "email", email, "passwordHash", SC.passwordHash(email, self.password) }), function(r)
     self.busy = nil
-    if r.ok then self:signedIn(r, email) else self.error = r.message end
+    if r.ok then self:signedIn(r, email, self.remember) else self.error = r.message end
   end)
 end
 
@@ -96,7 +107,7 @@ function L:submitCreate()
   self.error, self.busy = nil, "Creating your account..."
   self.sc:request("register", payload, function(r)
     self.busy = nil
-    if r.ok then self:signedIn(r, email) else self.error = r.message end
+    if r.ok then self:signedIn(r, email, self.remember) else self.error = r.message end
   end)
 end
 
@@ -138,7 +149,14 @@ function L:draw(x, y, w, h)
     { label = "Password", password = true, autofocus = self.email ~= "", labelBackground = bg, disabled = self.busy ~= nil })
   yy = yy + 48 + 16
 
+  local function rememberBox()
+    self.remember = ui.checkbox("login:remember", cx, yy, self.remember,
+      { label = "Remember me", disabled = self.busy ~= nil, tooltip = "Sign in automatically next time" })
+    yy = yy + 18 + 24
+  end
+
   if self.mode == "signIn" then
+    rememberBox()
     if self.error then
       ui.text(self.error, cx, yy, { w = colW, color = theme.fixed.red })
       yy = yy + ui.textHeight(self.error, colW) + 12
@@ -178,6 +196,7 @@ function L:draw(x, y, w, h)
     local newColor, ch = colorpicker.field("login:color", cx, yy, colW, self.color, { labelBackground = bg })
     self.color = newColor
     yy = yy + ch + 16
+    rememberBox()
     if self.error then
       ui.text(self.error, cx, yy, { w = colW, color = theme.fixed.red })
       yy = yy + ui.textHeight(self.error, colW) + 12

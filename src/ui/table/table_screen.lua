@@ -1712,17 +1712,28 @@ function T:drawLog()
   end
 end
 
--- A grid of card tiles (search results / card library) inside a panel.
+-- A grid of card tiles (search results / card library) inside a panel, laid
+-- out like the Deck Editor's card pool: cards a third larger (GRID_SCALE)
+-- with up to GRID_NAME_LINES lines of name.
+local GRID_SCALE, GRID_NAME_LINES = 4 / 3, 3
+local GW, GH = CW * GRID_SCALE, CH * GRID_SCALE
 function T:drawCardGrid(id, x, y, w, h, list, tileFn)
-  local tileW, tileH, gap = CW + 24, CH + 28, 12
-  local cols = math.max(1, math.floor((w - 24 + gap) / (tileW + gap)))
+  local nameH = GRID_NAME_LINES * theme.font(11):getHeight()
+  local maxExtent, tileH, gap = GW + 24, GH + 6 + nameH + 4, 12
+  local inner = w - 24
+  local cols = math.max(1, math.ceil((inner + gap) / (maxExtent + gap)))
+  local tileW = (inner - (cols - 1) * gap) / cols
   local off = ui.beginScroll(id, x, y, w, h)
   for i, entry in ipairs(list) do
     local col, row = (i - 1) % cols, math.floor((i - 1) / cols)
     local tx, ty = x + 12 + col * (tileW + gap), y + 12 + row * (tileH + gap) - off
     if ty + tileH > y and ty < y + h then tileFn(entry, tx, ty, tileW, tileH) end
   end
-  ui.endScroll(id, 24 + math.ceil(#list / cols) * (tileH + gap))
+  ui.endScroll(id, 24 + math.ceil(#list / cols) * (tileH + gap) - gap)
+end
+
+local function gridName(title, tx, ty, tw)
+  ui.text(title, tx, ty + GH + 6, { size = 11, w = tw, align = "center", maxLines = GRID_NAME_LINES, color = WHITE })
 end
 
 function T:drawSearch()
@@ -1757,15 +1768,16 @@ function T:drawSearch()
   end
   self:drawCardGrid("search:grid", x, y, w, h, cards, function(c, tx, ty, tw)
     local def = V.def(self, c)
-    local cx, cy = tx + tw / 2, ty + CH / 2
-    local r = ui.region("search:" .. c.instanceId, cx - CW / 2, ty, CW, CH, { cursor = "hand" })
-    CR.draw({ def = def, faceUp = def ~= nil, cx = cx, cy = cy, cardBacks = self.game.cardBacks,
+    local cx, cy = tx + tw / 2, ty + GH / 2
+    local r = ui.region("search:" .. c.instanceId, cx - GW / 2, ty, GW, GH, { cursor = "hand" })
+    CR.draw({ def = def, faceUp = def ~= nil, cx = cx, cy = cy, scale = GRID_SCALE, cardBacks = self.game.cardBacks,
+      angle = def and CR.orientationTurns(def.orientation) * 2 * math.pi or 0,
       alpha = V.isDragging(self, c.instanceId) and 0.3 or 1 })
-    ui.text(def and def.cardTitle or "", tx, ty + CH + 4, { size = 11, w = tw, align = "center", ellipsis = true, color = WHITE })
+    gridName(def and def.cardTitle or "", tx, ty, tw)
     if r.hovered then self.overlayHoverId = c.instanceId end
     if r.pressed then
       local mx, my = ui.mouse()
-      self:pressSource({ kind = "card", card = c, cx = cx, cy = cy, scale = 1, forceFaceUp = true }, mx, my)
+      self:pressSource({ kind = "card", card = c, cx = cx, cy = cy, scale = GRID_SCALE, forceFaceUp = true }, mx, my)
     end
   end)
 end
@@ -1787,10 +1799,11 @@ function T:drawLibrary()
     ui.text("No cards match the current filters.", x, yy, { w = w, h = gridH, align = "center", valign = "middle", color = { 1, 1, 1, 0.54 } })
   else
     self:drawCardGrid("library:grid", x, yy, w, gridH, visible, function(def, tx, ty, tw)
-      local cx, cy = tx + tw / 2, ty + CH / 2
-      local r = ui.region("lib:" .. def.id, cx - CW / 2, ty, CW, CH, { cursor = "hand" })
-      CR.draw({ def = def, faceUp = true, cx = cx, cy = cy, cardBacks = self.game.cardBacks })
-      ui.text(def.cardTitle, tx, ty + CH + 4, { size = 11, w = tw, align = "center", ellipsis = true, color = WHITE })
+      local cx, cy = tx + tw / 2, ty + GH / 2
+      local r = ui.region("lib:" .. def.id, cx - GW / 2, ty, GW, GH, { cursor = "hand" })
+      CR.draw({ def = def, faceUp = true, cx = cx, cy = cy, scale = GRID_SCALE, cardBacks = self.game.cardBacks,
+        angle = CR.orientationTurns(def.orientation) * 2 * math.pi })
+      gridName(def.cardTitle, tx, ty, tw)
       if r.hovered then self.libraryHoverDef = def end
       if r.pressed then
         local mx, my = ui.mouse()

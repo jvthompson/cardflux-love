@@ -46,9 +46,37 @@ end
 
 function Lobby:quit() self.sc:disconnect() end
 
+-- Signs out: the server drops the session token, and Remember me is turned
+-- off so the next sign-in asks for the password again.
+function Lobby:logOut()
+  local sc = self.sc
+  SC.clearSession(sc.key)
+  -- The server closes the connection after replying; that's expected here.
+  sc:on("disconnected", function() end)
+  local function done()
+    sc:disconnect()
+    app().popToHome()
+    overlays.toast("Logged out of " .. (sc.info.name or "the server") .. ".")
+  end
+  sc:request("logout", json.object({ "token", sc.token }), done)
+end
+
 ---------------------------------------------------------------------------
 -- Dialogs
 ---------------------------------------------------------------------------
+
+-- Create Game, step 1: a screen of game tiles (as the local pickers show).
+local GameChoice = {}
+GameChoice.__index = GameChoice
+
+function GameChoice.new(sc, onPick)
+  return setmetatable({ title = "Create Game", sc = sc, onPick = onPick }, GameChoice)
+end
+
+function GameChoice:draw(x, y, w, h)
+  require("src.ui.screens.server.decks").drawGameList(self.sc, "cg:games", x, y, w, h,
+    "Pick the game to play.", self.onPick)
+end
 
 function Lobby:openCreateGame()
   local sc = self.sc
@@ -56,19 +84,25 @@ function Lobby:openCreateGame()
     overlays.alert("No Games", "This server doesn't have any games yet. An admin can add game folders to the server's games directory.")
     return
   end
-  local st = { gameId = sc.games[1].id, name = "", players = 2 }
-  local gameOptions = {}
-  for _, g in ipairs(sc.games) do gameOptions[#gameOptions + 1] = { value = g.id, label = g.name } end
+  app().push(GameChoice.new(sc, function(g)
+    -- Back to the lobby first: leaving the room later pops one screen.
+    app().pop()
+    self:openCreateGameDialog(g)
+  end))
+end
+
+-- Create Game, step 2: name and player count for the chosen game.
+function Lobby:openCreateGameDialog(game)
+  local sc = self.sc
+  local st = { gameId = game.id, name = "", players = 2 }
   local playerOptions = {}
   for n = 1, 8 do playerOptions[#playerOptions + 1] = { value = n, label = n == 1 and "1 player" or (n .. " players") } end
   overlays.dialog({
-    title = "Create Game",
+    title = "Create Game -- " .. game.name,
     width = 440,
     content = function(_, x, y, w)
       local bg = theme.c.surfaceContainerHigh
       local yy = y + 8
-      st.gameId = ui.dropdown("cg:game", x, yy, w, gameOptions, st.gameId, { label = "Game" })
-      yy = yy + 48 + 16
       st.name = ui.textField("cg:name", x, yy, w, st.name, { label = "Name (optional)", hint = sc.self.name .. "'s game",
         labelBackground = bg, maxLength = 40 })
       yy = yy + 48 + 16
@@ -161,6 +195,10 @@ function Lobby:openProfile()
       return yy - y
     end,
     actions = {
+      { label = "Log Out", variant = "text", onClick = function()
+        overlays.confirm("Log Out", "Log out of " .. (sc.info.name or "this server")
+          .. "? You'll need to enter your password the next time you sign in.", "Log Out", function() self:logOut() end)
+      end },
       { label = "Cancel", variant = "text" },
       { label = "Save", variant = "filled", onClick = function()
         local payload = json.object()

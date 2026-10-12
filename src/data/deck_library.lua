@@ -22,7 +22,7 @@ local function scanDirectory(dir, game, isBuiltIn)
             entries[#entries + 1] = { displayName = displayName, filePath = path, deck = deck, isBuiltIn = isBuiltIn }
           end
         elseif type(deck) == "table" and deck.legacyDeckFormat and raw.gameId == game.id then
-          incompatible[#incompatible + 1] = { displayName = displayName, filePath = path }
+          incompatible[#incompatible + 1] = { displayName = displayName, filePath = path, isBuiltIn = isBuiltIn }
         end
       end
     end

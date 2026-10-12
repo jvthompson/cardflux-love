@@ -8,46 +8,41 @@ local json = require("lib.json")
 local deckStore = require("src.data.deck_store")
 local common = require("src.ui.screens.server.common")
 local loader = require("src.data.game_loader")
+local assetSync = require("src.net.asset_sync")
+local GamePicker = require("src.ui.screens.game_picker")
 
 local D = {}
 D.__index = D
 
 local function app() return require("src.app") end
 
--- A list of the server's games; onPick(gameInfo). opts.excludeStandardDeck
--- leaves out the Standard 52-Card Deck.
+-- The server's games as logo tiles (as the local game pickers show them);
+-- onPick(gameInfo). opts.excludeStandardDeck leaves out the Standard
+-- 52-Card Deck. Logos come from the game's downloaded copy, if any.
 function D.drawGameList(sc, id, x, y, w, h, subtitle, onPick, opts)
   local c = theme.c
-  local colW = math.min(640, w - 48)
-  local cx = math.floor(x + (w - colW) / 2)
-  local off = ui.beginScroll(id, x, y, w, h)
-  local yy = y + 24 - off
-  ui.text("Choose a game", cx, yy, { size = 22 })
+  local pad = 24
+  x, y, w, h = x + pad, y + pad, w - 2 * pad, h - 2 * pad
+  local yy = y
+  ui.text("Choose a game", x, yy, { size = 22 })
   yy = yy + 32
-  ui.text(subtitle, cx, yy, { w = colW, color = c.onSurfaceVariant })
-  yy = yy + ui.textHeight(subtitle, colW) + 20
-  local games = sc.games
-  if opts and opts.excludeStandardDeck then
-    games = {}
-    for _, g in ipairs(games) do
-      if g.id ~= loader.standardDeckId then games[#games + 1] = g end
+  ui.text(subtitle, x, yy, { w = w, color = c.onSurfaceVariant })
+  yy = yy + ui.textHeight(subtitle, w) + 20
+  local tiles = {}
+  for _, g in ipairs(sc.games) do
+    if not (opts and opts.excludeStandardDeck and g.id == loader.standardDeckId) then
+      local n, sets = g.cardCount or 0, #(g.sets or {})
+      local caption = n .. (n == 1 and " card" or " cards")
+      if sets > 0 then caption = caption .. "  ·  " .. sets .. (sets == 1 and " set" or " sets") end
+      tiles[#tiles + 1] = { id = g.id, name = g.name, caption = caption,
+        folderPath = assetSync.gameFolder(sc, g.id), info = g }
     end
   end
-  if #games == 0 then
-    ui.text("This server doesn't have any games yet.", cx, yy, { w = colW, color = c.onSurfaceVariant })
+  if #tiles == 0 then
+    ui.text("This server doesn't have any games yet.", x, yy, { w = w, color = c.onSurfaceVariant })
+    return
   end
-  for _, g in ipairs(sc.games) do
-    local r = ui.region(id .. ":" .. g.id, cx, yy, colW, 64, { cursor = "hand" })
-    ui.rect("fill", cx, yy, colW, 64, 12, r.hovered and c.surfaceContainerHigh or c.surfaceContainer)
-    ui.text(g.name, cx + 20, yy + 12, { weight = "bold", w = colW - 60, ellipsis = true })
-    local sets = #(g.sets or {})
-    ui.text(g.cardCount .. " cards" .. (sets > 0 and ("  ·  " .. sets .. (sets == 1 and " set" or " sets")) or ""), cx + 20, yy + 34,
-      { size = 12, color = c.onSurfaceVariant })
-    ui.icon("chevron_right", cx + colW - 36, yy + 20, 24, c.onSurfaceVariant)
-    if r.clicked then onPick(g) end
-    yy = yy + 64 + 10
-  end
-  ui.endScroll(id, yy + off - y + 24)
+  GamePicker.drawGrid(id, tiles, x, yy, w, y + h - yy, pad, function(t) onPick(t.info) end)
 end
 
 function D.new(sc)

@@ -92,6 +92,37 @@ function D.open(game, zones, onDeckChosen, opts)
     selectDeck(deck, require("src.data.fs").basename(path))
   end
 
+  -- Right-click a deck: Delete Deck, after a confirmation. Local decks are
+  -- removed by file (the listed folder); server decks through the store.
+  local function deleteDeck(entry)
+    local function done(ok, err)
+      if not ok then
+        sound.play("error")
+        overlays.alert("Couldn't Delete Deck", err or 'Could not delete "' .. entry.displayName .. '".')
+        return
+      end
+      if st.chosenName == entry.displayName then st.chosenName, st.chosenDeck = nil, nil end
+      st.selectionError = nil
+      overlays.toast('Deleted "' .. entry.displayName .. '".')
+      refresh()
+    end
+    if remote then
+      store:remove(game, entry.displayName, done)
+    else
+      done(require("src.data.fs").remove(entry.filePath))
+    end
+  end
+
+  local function openDeckMenu(entry)
+    local mx, my = ui.mouse()
+    overlays.menu(mx, my, {
+      { label = "Delete Deck", icon = "delete_outline", onSelect = function()
+        overlays.confirm("Delete Deck", 'Delete "' .. entry.displayName .. '"? This can\'t be undone.', "Delete",
+          function() deleteDeck(entry) end, { danger = true })
+      end },
+    })
+  end
+
   local function chooseDirectory()
     local path = fileDialog.pickFolder({ title = "Choose your deck library folder", initialDir = st.directoryPath })
     if not path then return end
@@ -102,10 +133,15 @@ function D.open(game, zones, onDeckChosen, opts)
     end)
   end
 
-  local TILE_W, TILE_H, GAP = CR.cardWidth + 24, CR.cardHeight + 44, 12
+  -- Deck tiles match the Deck Editor's card pool: card backs a third larger,
+  -- with up to three lines of deck name.
+  local SCALE, NAME_LINES, GAP = 4 / 3, 3, 12
+  local PW, PH = CR.cardWidth * SCALE, CR.cardHeight * SCALE
+  local nameH = NAME_LINES * theme.font(11):getHeight()
+  local TILE_H = 4 + PH + 4 + nameH + 2 + 28
 
   dialog = overlays.dialog({
-    width = 480,
+    width = 760,
     content = function(d, x, y, w)
       local c = theme.c
       local h = 560 - 48
@@ -129,7 +165,8 @@ function D.open(game, zones, onDeckChosen, opts)
       elseif st.folderError then
         ui.text(st.folderError, x, yy, { w = gridW, h = bodyH, align = "center", valign = "middle", color = theme.fixed.red })
       else
-        local cols = math.max(1, math.floor((gridW + GAP) / (TILE_W + GAP)))
+        local cols = math.max(1, math.ceil((gridW + GAP) / (PW + 24 + GAP)))
+        local TILE_W = (gridW - (cols - 1) * GAP) / cols
         local total = #entries + #incompatible
         local off = ui.beginScroll("dl:grid", x, yy, gridW, bodyH)
         for i = 1, total do
@@ -144,16 +181,17 @@ function D.open(game, zones, onDeckChosen, opts)
             ui.rect("line", tx + 1, ty + 1, TILE_W - 2, TILE_H - 2, 6, c.primary, 2)
           end
           love.graphics.push("all")
-          CR.draw({ def = nil, faceUp = false, cx = tx + TILE_W / 2, cy = ty + 4 + CR.cardHeight / 2,
+          CR.draw({ def = nil, faceUp = false, cx = tx + TILE_W / 2, cy = ty + 4 + PH / 2, scale = SCALE,
             cardBacks = game.cardBacks, alpha = isIncompat and 0.35 or 1 })
           love.graphics.pop()
-          local ny = ty + 4 + CR.cardHeight + 4
-          ui.text(entry.displayName, tx, ny, { size = 11, w = TILE_W, align = "center", ellipsis = true })
+          local ny = ty + 4 + PH + 4
+          ui.text(entry.displayName, tx, ny, { size = 11, w = TILE_W, align = "center", maxLines = NAME_LINES })
+          ny = ny + math.min(nameH, ui.textHeight(entry.displayName, TILE_W, 11)) + 2
           if isIncompat then
-            ui.text("Old format", tx, ny + 14, { size = 10, w = TILE_W, align = "center", color = theme.fixed.red })
+            ui.text("Old format", tx, ny, { size = 10, w = TILE_W, align = "center", color = theme.fixed.red })
           else
-            ui.text(decks.cardCount(entry) .. " card(s)", tx, ny + 14, { size = 10, w = TILE_W, align = "center", color = c.onSurfaceVariant })
-            if entry.isBuiltIn then ui.text(entry.deck.isStarter and "Built-in · Starter" or "Built-in", tx, ny + 27, { size = 10, w = TILE_W, align = "center", color = c.primary }) end
+            ui.text(decks.cardCount(entry) .. " card(s)", tx, ny, { size = 10, w = TILE_W, align = "center", color = c.onSurfaceVariant })
+            if entry.isBuiltIn then ui.text(entry.deck.isStarter and "Built-in · Starter" or "Built-in", tx, ny + 13, { size = 10, w = TILE_W, align = "center", color = c.primary }) end
           end
           if r.clicked then
             if isIncompat then
@@ -163,24 +201,30 @@ function D.open(game, zones, onDeckChosen, opts)
               selectDeck(entry.deck, entry.displayName)
             end
           end
+          -- Built-in decks ship with the game, so they can't be deleted.
+          if r.rightClicked and not entry.isBuiltIn then openDeckMenu(entry) end
         end
-        ui.endScroll("dl:grid", math.ceil(total / cols) * (TILE_H + GAP) + 8)
+        ui.endScroll("dl:grid", math.ceil(total / cols) * (TILE_H + GAP) - GAP + 8)
       end
       -- Summary panel.
       local sx = x + gridW + 24
       ui.rect("fill", sx - 12, yy, 1, bodyH, 0, c.outlineVariant)
       local sy = yy
-      ui.text("This game needs", sx, sy, { weight = "medium" })
-      sy = sy + 28
-      for _, z in ipairs(zones) do
-        ui.text(z.name, sx, sy, { weight = "bold", w = 240, ellipsis = true })
-        ui.text(z.deckType .. (z.deckOptional and " (optional)" or " (required)"), sx, sy + 18, { size = 12, color = c.onSurfaceVariant, w = 240, ellipsis = true })
-        sy = sy + 44
+      -- The Deck Editor opens decks without zones to fill: no requirements.
+      if #zones > 0 then
+        ui.text("This game needs", sx, sy, { weight = "medium" })
+        sy = sy + 28
+        for _, z in ipairs(zones) do
+          ui.text(z.name, sx, sy, { weight = "bold", w = 240, ellipsis = true })
+          ui.text(z.deckType .. (z.deckOptional and " (optional)" or " (required)"), sx, sy + 18, { size = 12, color = c.onSurfaceVariant, w = 240, ellipsis = true })
+          sy = sy + 44
+        end
+        ui.divider(sx, sy + 4, 240)
+        sy = sy + 16
       end
-      ui.divider(sx, sy + 4, 240)
-      sy = sy + 16
-      ui.text("Tap a deck to load it.", sx, sy, { size = 12, color = c.onSurfaceVariant })
-      sy = sy + 24
+      local hint = "Click a deck to load it. Right-click one of your decks to delete it."
+      ui.text(hint, sx, sy, { size = 12, w = 240, color = c.onSurfaceVariant })
+      sy = sy + ui.textHeight(hint, 240, 12) + 8
       if st.selectionError then
         local eh = ui.textHeight(st.selectionError, 240, 12)
         ui.text(st.selectionError, sx, sy, { size = 12, w = 240, color = theme.fixed.red })

@@ -14,6 +14,11 @@ local common = require("src.ui.screens.server.common")
 local decksScreen = require("src.ui.screens.server.decks")
 
 local CW, CH = CR.cardWidth, CR.cardHeight
+-- The collection grid matches the Deck Editor's card pool: cards a third
+-- larger, with up to three lines of name.
+local POOL_SCALE = 4 / 3
+local PW, PH = CW * POOL_SCALE, CH * POOL_SCALE
+local NAME_LINES = 3
 
 local C = {}
 C.__index = C
@@ -86,7 +91,13 @@ function C:buyStarter(starter)
   end)
 end
 
--- The opened pack, with cards new to the collection marked.
+local function newBadge(x, y)
+  ui.rect("fill", x, y, 36, 18, 9, theme.fixed.green)
+  ui.text("NEW", x, y, { size = 10, weight = "bold", w = 36, h = 18, align = "center", valign = "middle", color = theme.fixed.white })
+end
+
+-- An opened pack: the cards are revealed one at a time (Next Card / Skip),
+-- then shown together, with cards new to the collection marked.
 function C:showPack(set, ids, before, title)
   local game = self.game
   local cards = {}
@@ -94,36 +105,97 @@ function C:showPack(set, ids, before, title)
     local def = models.GameDefinition.cardById(game, id)
     if def then cards[#cards + 1] = { def = def, new = (before[id] or 0) == 0 } end
   end
+  title = title or (set.name .. " Pack")
   sound.play("shuffle")
-  local gap = 16
-  local perRow = math.min(#cards, 5)
-  local width = math.max(420, perRow * (CW + gap) - gap + 48)
-  local hovered
+  if #cards == 0 then return end
+  self:revealPack(cards, title)
+end
+
+-- One card at a time, drawn large inside the dialog.
+local REVEAL_W = 480
+function C:revealPack(cards, title)
+  local game = self.game
+  local index = 1
+  local nextAction = { label = "Next Card", variant = "filled" }
+  local function showAll() self:showPackSummary(cards, title) end
+  local function advance(d)
+    if index >= #cards then
+      d:close()
+      showAll()
+      return true
+    end
+    index = index + 1
+    sound.play("draw")
+    if index == #cards then nextAction.label = "Show All" end
+    return true
+  end
+  nextAction.onClick = advance
+  if #cards == 1 then nextAction.label = "Show All" end
   overlays.dialog({
-    title = title or (set.name .. " Pack"),
+    title = title,
+    width = REVEAL_W,
+    dismissible = false,
+    onEnter = advance,
+    content = function(_, x, y, w)
+      local card = cards[index]
+      local def = card.def
+      ui.text("Card " .. index .. " of " .. #cards, x, y, { w = w, align = "center", size = 13, color = theme.c.onSurfaceVariant })
+      -- Fit the card (portrait or turned) in a box under the counter.
+      local _, sh = ui.screenSize()
+      local boxW, boxH = w, math.max(240, math.min(460, sh - 380))
+      local turned = def.orientation and def.orientation ~= "portrait"
+      local bw, bh = turned and CH or CW, turned and CW or CH
+      local s = math.min(boxW / bw, boxH / bh)
+      local cy = y + 28 + bh * s / 2
+      CR.draw({ def = def, faceUp = true, cx = x + w / 2, cy = cy, scale = s,
+        angle = CR.orientationTurns(def.orientation) * 2 * math.pi, cardBacks = game.cardBacks })
+      if card.new then newBadge(x + (w - bw * s) / 2 + 8, y + 28 + 8) end
+      local ty = y + 28 + bh * s + 12
+      ui.text(def.cardTitle, x, ty, { w = w, align = "center", weight = "bold", maxLines = 2 })
+      return ty - y + ui.textHeight(def.cardTitle, w) + 4
+    end,
+    actions = {
+      { label = "Skip", variant = "text", onClick = function(d) d:close(); showAll(); return true end },
+      nextAction,
+    },
+  })
+end
+
+-- Every card from the pack, laid out like the Deck Editor's card pool, with
+-- the Space preview for the hovered card.
+function C:showPackSummary(cards, title)
+  local game = self.game
+  local gap = 12
+  local nameH = NAME_LINES * theme.font(11):getHeight()
+  local tileW, rowH = PW + 24, PH + 6 + nameH + 4
+  local perRow = math.min(#cards, 6)
+  local width = math.max(420, perRow * (tileW + gap) - gap + 48)
+  overlays.dialog({
+    title = title,
     width = width,
     content = function(_, x, y, w)
-      hovered = nil
+      local hovered
       local rows = math.ceil(#cards / perRow)
       for i, card in ipairs(cards) do
         local col, row = (i - 1) % perRow, math.floor((i - 1) / perRow)
         local rowCount = math.min(perRow, #cards - row * perRow)
-        local rowW = rowCount * (CW + gap) - gap
-        local cx = x + (w - rowW) / 2 + col * (CW + gap) + CW / 2
-        local ty = y + 8 + row * (CH + 44)
-        local r = ui.region("pk:" .. i, cx - CW / 2, ty, CW, CH)
-        CR.draw({ def = card.def, faceUp = true, cx = cx, cy = ty + CH / 2,
+        local rowW = rowCount * (tileW + gap) - gap
+        local tx = x + (w - rowW) / 2 + col * (tileW + gap)
+        local cx, ty = tx + tileW / 2, y + 8 + row * (rowH + gap)
+        local r = ui.region("pk:" .. i, cx - PW / 2, ty, PW, PH + 6 + nameH)
+        CR.draw({ def = card.def, faceUp = true, cx = cx, cy = ty + PH / 2, scale = POOL_SCALE,
           angle = CR.orientationTurns(card.def.orientation) * 2 * math.pi, cardBacks = game.cardBacks })
-        if card.new then
-          ui.rect("fill", cx - CW / 2 + 4, ty + 4, 36, 18, 9, theme.fixed.green)
-          ui.text("NEW", cx - CW / 2 + 4, ty + 4, { size = 10, weight = "bold", w = 36, h = 18, align = "center", valign = "middle",
-            color = theme.fixed.white })
-        end
-        ui.text(card.def.cardTitle, cx - CW / 2 - 8, ty + CH + 6, { size = 12, w = CW + 16, align = "center", ellipsis = true })
+        if card.new then newBadge(cx - PW / 2 + 4, ty + 4) end
+        ui.text(card.def.cardTitle, tx, ty + PH + 6, { size = 11, w = tileW, align = "center", maxLines = NAME_LINES })
         if r.hovered then hovered = card.def end
       end
-      local _ = hovered
-      return 8 + rows * (CH + 44)
+      if hovered and love.keyboard.isDown("space") then
+        ui.overlay(function()
+          local sw, sh = ui.screenSize()
+          CR.drawPreview(CR.definitionFaces(hovered, game.cardBacks), game.cardBacks, sw, sh, (ui.mouse()))
+        end)
+      end
+      return 8 + rows * (rowH + gap) - gap
     end,
     actions = { { label = "Done", variant = "filled" } },
   })
@@ -219,30 +291,42 @@ function C:drawCollection(x, y, w, h)
     ui.text(self.ownedOnly and distinct == 0 and "You don't own any cards for this game yet. Open a pack above."
       or "No cards match these filters.", x, yy + 24, { w = w, align = "center", color = c.onSurfaceVariant })
   end
+  -- Same tile layout as the Deck Editor's card pool.
   local gh = y + h - yy
-  local tileW, rowH, gap = CW + 24, CH + 30, 12
-  local cols = math.max(1, math.floor((w + gap) / (tileW + gap)))
+  local nameH = NAME_LINES * theme.font(11):getHeight()
+  local maxExtent, rowH, gap = PW + 24, PH + 6 + nameH + 4, 12
+  local cols = math.max(1, math.ceil((w + gap) / (maxExtent + gap)))
+  local tileW = (w - (cols - 1) * gap) / cols
   local off = ui.beginScroll("co:grid", x, yy, w, gh)
   for i, def in ipairs(visible) do
     local col, row = (i - 1) % cols, math.floor((i - 1) / cols)
-    local tx, ty = x + col * (tileW + gap), yy + 8 + row * (rowH + gap) - off
+    local tx, ty = x + col * (tileW + gap), yy + 12 + row * (rowH + gap) - off
     if ty + rowH > yy and ty < yy + gh then
       local n = owned[def.id] or 0
       local have = def.isFreeCard or n > 0
       local cx = tx + tileW / 2
-      CR.draw({ def = def, faceUp = true, cx = cx, cy = ty + CH / 2, alpha = have and 1 or 0.25,
+      local r = ui.region("co:card:" .. def.id, cx - PW / 2, ty, PW, PH + 6 + nameH)
+      CR.draw({ def = def, faceUp = true, cx = cx, cy = ty + PH / 2, scale = POOL_SCALE, alpha = have and 1 or 0.25,
         angle = CR.orientationTurns(def.orientation) * 2 * math.pi, cardBacks = game.cardBacks })
       if have then
         love.graphics.setColor(0, 0, 0, 0.87)
-        love.graphics.circle("fill", cx + CW / 2 - 5, ty + 5, 11)
-        ui.text(def.isFreeCard and "∞" or ("×" .. n), cx + CW / 2 - 16, ty - 6, { size = 11, weight = "bold", w = 22, h = 22, align = "center", valign = "middle",
+        love.graphics.circle("fill", cx + PW / 2 + 6 - 11, ty - 6 + 11, 11)
+        ui.text(def.isFreeCard and "∞" or ("×" .. n), cx + PW / 2 - 16, ty - 6, { size = 11, weight = "bold", w = 22, h = 22, align = "center", valign = "middle",
           color = theme.fixed.white })
       end
-      ui.text(def.cardTitle, tx, ty + CH + 4, { size = 11, w = tileW, align = "center", ellipsis = true,
+      ui.text(def.cardTitle, tx, ty + PH + 6, { size = 11, w = tileW, align = "center", maxLines = NAME_LINES,
         color = have and c.onSurface or c.onSurfaceVariant })
+      if r.hovered then self.hovered = def end
     end
   end
-  ui.endScroll("co:grid", 16 + math.ceil(#visible / cols) * (rowH + gap))
+  ui.endScroll("co:grid", 24 + math.ceil(#visible / cols) * (rowH + gap) - gap)
+end
+
+-- Space preview of the hovered card, as in the Deck Editor.
+function C:drawPreview()
+  if overlays.anyOpen() or ui.focus or not love.keyboard.isDown("space") or not self.hovered then return end
+  local sw, sh = ui.screenSize()
+  CR.drawPreview(CR.definitionFaces(self.hovered, self.game.cardBacks), self.game.cardBacks, sw, sh, (ui.mouse()))
 end
 
 function C:draw(x, y, w, h)
@@ -252,9 +336,11 @@ function C:draw(x, y, w, h)
     return
   end
   local pad = 24
+  self.hovered = nil
   local yy = self:drawStore(x + pad, y + pad, w - 2 * pad)
   ui.divider(x + pad, yy + 8, w - 2 * pad)
   self:drawCollection(x + pad, yy + 24, w - 2 * pad, y + h - yy - 24 - pad)
+  ui.overlay(function() self:drawPreview() end)
 end
 
 return C

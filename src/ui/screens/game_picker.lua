@@ -14,10 +14,10 @@ local ops = require("src.data.gamedef_ops")
 local P = {}
 P.__index = P
 
-local TILE_W = 400
-local MAX_COLUMNS = 5
+local TILE_W = 268
+local MAX_COLUMNS = 7
 local SPACING = 16
-local TEXT_BLOCK_H = 96
+local TEXT_BLOCK_H = 64
 
 -- onGameChosen(game). opts.excludeStandardDeck hides the Standard 52-Card
 -- Deck (it can't be customized, so the deck editors leave it out).
@@ -107,11 +107,11 @@ local function drawTile(game, x, y, w, h, onTap)
     love.graphics.draw(img, lx + (logoSize - iw * s) / 2, ly + (logoSize - ih * s) / 2, 0, s, s)
   elseif not logoPath or imageCache.status(logoPath) == "error" then
     ui.rect("fill", lx, ly, logoSize, logoSize, 6, c.surfaceContainerHighest)
-    ui.iconCentered("style", lx, ly, logoSize, logoSize, 48, c.onSurfaceVariant)
+    ui.iconCentered("style", lx, ly, logoSize, logoSize, 32, c.onSurfaceVariant)
   end
   local ty = ly + logoSize + 8
   ui.text(game.name, x + pad, ty, { weight = "bold", w = w - 2 * pad, align = "center", ellipsis = true })
-  ui.text(#game.cards .. " card(s)", x + pad, ty + 22, { size = 12, w = w - 2 * pad, align = "center", color = c.onSurfaceVariant })
+  ui.text(game.caption or (#game.cards .. " card(s)"), x + pad, ty + 22, { size = 12, w = w - 2 * pad, align = "center", color = c.onSurfaceVariant })
   if r.clicked then onTap() end
 end
 
@@ -146,9 +146,10 @@ function P:draw(x, y, w, h)
   P.drawGrid("gp:grid", tiles, x, yy, w, y + h - yy, pad, function(g) self.onGameChosen(g) end)
 end
 
--- Port of game_grid.dart's GameGridView: up to five 400px tiles per row,
+-- Port of game_grid.dart's GameGridView: up to seven 268px tiles per row,
 -- centered, in a scroll view that extends `pad` past each side.
--- onTap(game); each game needs name, cards and (for its logo) folderPath.
+-- onTap(game); each game needs name, cards (or a caption) and, for its
+-- logo, folderPath.
 function P.drawGrid(scrollId, games, x, y, w, viewH, pad, onTap)
   local columns = math.max(1, math.min(MAX_COLUMNS, math.floor((w + SPACING) / (TILE_W + SPACING))))
   local tileW = TILE_W

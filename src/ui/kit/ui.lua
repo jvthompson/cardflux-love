@@ -843,6 +843,9 @@ function ui.textField(id, x, y, w, text, opts)
   end
   if st.caret > n then st.caret = n end
   if st.anchor and st.anchor > n then st.anchor = n end
+  -- An empty selection (e.g. Tab select-all on an empty field) must not
+  -- linger, or the next insert would leave a stale anchor behind.
+  if st.anchor == st.caret then st.anchor = nil end
   if not opts.disabled then focusOrder[#focusOrder + 1] = id end
 
   local focused = ui.focus == id
@@ -922,7 +925,7 @@ function ui.textField(id, x, y, w, text, opts)
       s = sub(s, 0, math.max(0, opts.maxLength - utf8Len(text)))
     end
     text = sub(text, 0, st.caret) .. s .. sub(text, st.caret, utf8Len(text))
-    st.caret = st.caret + utf8Len(s)
+    st.caret, st.anchor = st.caret + utf8Len(s), nil
     changed = true
   end
 

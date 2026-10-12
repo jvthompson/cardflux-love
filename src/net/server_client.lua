@@ -38,7 +38,9 @@ function S.passwordHash(email, password)
 end
 
 ---------------------------------------------------------------------------
--- Saved sign-ins, per server ("host:port" -> { token, email })
+-- Saved sign-ins, per server ("host:port" -> { token, email }). Only kept
+-- when the player ticks "Remember me"; otherwise every sign-in asks for
+-- the email and password again.
 ---------------------------------------------------------------------------
 
 local SESSIONS_KEY = "server_sessions"
@@ -51,7 +53,7 @@ end
 function S.saveSession(key, token, email)
   local all = settings.get(SESSIONS_KEY)
   if type(all) ~= "table" then all = json.object() end
-  all[key] = json.object({ "token", token, "email", email })
+  all[key] = json.object({ "token", token, "email", email, "remember", true })
   settings.set(SESSIONS_KEY, all)
 end
 
@@ -59,8 +61,17 @@ function S.forgetSession(key)
   local all = settings.get(SESSIONS_KEY)
   if type(all) ~= "table" or not all[key] then return end
   local email = all[key].email
-  -- Keep the email so the sign-in form can prefill it.
-  all[key] = json.object({ "email", email })
+  -- Keep the email (and the Remember me choice) so the sign-in form can
+  -- prefill them.
+  all[key] = json.object({ "email", email, "remember", true })
+  settings.set(SESSIONS_KEY, all)
+end
+
+-- Drops everything saved for the server, email included.
+function S.clearSession(key)
+  local all = settings.get(SESSIONS_KEY)
+  if type(all) ~= "table" or not all[key] then return end
+  all[key] = nil
   settings.set(SESSIONS_KEY, all)
 end
 
@@ -226,8 +237,12 @@ function S:handle(m)
   elseif t == "tokens" then
     if self.self then self.self.tokens = p.tokens end
   elseif t == "newToken" then
+    self.token = p.token
+    -- Replace the remembered token, but don't start remembering one.
     local saved = S.savedSession(self.key)
-    S.saveSession(self.key, p.token, saved and saved.email or (self.self and self.self.email))
+    if saved and saved.remember and saved.token then
+      S.saveSession(self.key, p.token, saved.email or (self.self and self.self.email))
+    end
   elseif t == "chat" then
     local list = p.roomId and self.roomChat or self.chat
     list[#list + 1] = p.line

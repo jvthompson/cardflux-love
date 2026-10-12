@@ -9,10 +9,6 @@ local widgets = require("src.ui.kit.widgets")
 local filterBar = require("src.ui.kit.card_filter_bar")
 local models = require("src.core.models")
 local util = require("src.core.util")
-local paths = require("src.data.paths")
-local decks = require("src.data.deck_library")
-local fileDialog = require("src.platform.file_dialog")
-local resolver = require("src.data.image_resolver")
 local CR = require("src.ui.table.card_render")
 local GamePicker = require("src.ui.screens.game_picker")
 local deckLibraryDialog = require("src.ui.screens.deck_library_dialog")
@@ -24,108 +20,6 @@ local PW, PH = CW * POOL_SCALE, CH * POOL_SCALE
 local NAME_LINES = 3
 
 local function app() return require("src.app") end
-
----------------------------------------------------------------------------
--- Open Deck dialog (_DeckLibraryPickerDialog)
----------------------------------------------------------------------------
-
--- onChosen(deck)
-local function openDeckPicker(game, onChosen)
-  local st = { root = paths.decksDir() }
-  local function refresh()
-    st.error = nil
-    local ok, scan = pcall(decks.loadAllDecksForGame, st.root, game)
-    if ok then
-      st.scan = scan
-    else
-      st.scan = nil
-      st.error = "Could not read that folder: " .. tostring(scan)
-    end
-  end
-  refresh()
-
-  local dialog
-  local function changeFolder()
-    local chosen = fileDialog.pickFolder({ title = "Choose your deck library folder", initialDir = st.root })
-    if not chosen then return end
-    GamePicker.maybeMoveLibraryFolder(st.root, chosen, "deck", function()
-      paths.setDecksDir(chosen)
-      st.root = chosen
-      refresh()
-    end)
-  end
-
-  local function browseSingleFile()
-    local path = fileDialog.openFile({ title = "Open Deck", filters = fileDialog.jsonFilters })
-    if not path then return true end
-    local deck, reason = decks.readDeckFile(path)
-    if not deck then
-      st.error = reason == "legacy" and models.LegacyDeckFormatError.message or "That file is not a valid deck."
-      return true
-    end
-    if deck.gameId ~= game.id then
-      st.error = "That deck is for a different game (" .. deck.gameId .. ")."
-      return true
-    end
-    onChosen(deck)
-    return false
-  end
-
-  dialog = overlays.dialog({
-    title = "Open Deck -- " .. game.name,
-    width = 360 + 48,
-    content = function(d, x, y, w)
-      local c = theme.c
-      local h = 360
-      ui.text(st.root, x, y, { size = 12, color = c.onSurfaceVariant, w = w - 48, h = 40, valign = "middle", ellipsis = true })
-      if ui.iconButton("folder_open", x + w - 40, y, { tooltip = "Change Deck Library Folder...", id = "od:folder" }) then changeFolder() end
-      local yy = y + 48
-      ui.divider(x, yy, w)
-      yy = yy + 8
-      local listH = y + h - yy
-      local entries = st.scan and st.scan.entries or {}
-      local incompatible = st.scan and st.scan.incompatible or {}
-      if st.error then
-        ui.text(st.error, x, yy, { w = w, h = listH, align = "center", valign = "middle", color = theme.fixed.red })
-      elseif #entries == 0 and #incompatible == 0 then
-        ui.text("No decks found for " .. game.name .. ".", x, yy, { w = w, h = listH, align = "center", valign = "middle", color = c.onSurfaceVariant })
-      else
-        local off = ui.beginScroll("od:list", x, yy, w, listH)
-        local ry = yy - off
-        for i, e in ipairs(entries) do
-          local rowH = e.isBuiltIn and 56 or 40
-          local r = ui.region("od:item" .. i, x, ry, w, rowH, { cursor = "hand" })
-          if r.hovered then ui.rect("fill", x, ry, w, rowH, 0, theme.alpha(c.onSurface, 0.08)) end
-          if e.isBuiltIn then
-            ui.text(e.displayName, x + 16, ry + 8, { w = w - 140, ellipsis = true })
-            ui.text("Built-in", x + 16, ry + 28, { size = 12, color = c.onSurfaceVariant })
-          else
-            ui.text(e.displayName, x + 16, ry, { h = rowH, valign = "middle", w = w - 140, ellipsis = true })
-          end
-          ui.text(decks.cardCount(e) .. " card(s)", x, ry, { w = w - 16, h = rowH, valign = "middle", align = "right", size = 12, color = c.onSurfaceVariant })
-          if r.clicked then
-            d:close()
-            onChosen(e.deck)
-          end
-          ry = ry + rowH
-        end
-        for _, e in ipairs(incompatible) do
-          local dim = theme.alpha(c.onSurface, 0.38)
-          ui.text(e.displayName, x + 16, ry + 8, { w = w - 32, ellipsis = true, color = dim })
-          ui.text("Old format -- rebuild in the Deck Editor", x + 16, ry + 28, { size = 12, color = theme.fixed.red })
-          ry = ry + 56
-        end
-        ui.endScroll("od:list", ry + ui.scrollOffset("od:list") - yy)
-      end
-      return h
-    end,
-    actions = {
-      { label = "Browse for a different file...", variant = "text", onClick = browseSingleFile },
-      { label = "Cancel", variant = "text" },
-    },
-  })
-  return dialog
-end
 
 ---------------------------------------------------------------------------
 -- Deck Editor screen
@@ -289,11 +183,8 @@ function E:clampToCollection()
 end
 
 function E:openDeck()
-  if self.store and self.store.kind == "server" then
-    deckLibraryDialog.open(self.game, {}, function(deck) self:loadDeck(deck) end, { store = self.store })
-    return
-  end
-  openDeckPicker(self.game, function(deck) self:loadDeck(deck) end)
+  -- The same deck-tile dialog as at the table, for local and server decks.
+  deckLibraryDialog.open(self.game, {}, function(deck) self:loadDeck(deck) end, { store = self.store })
 end
 
 -- The pool: every card, or (collection mode) the ones owned, unownable or free.
@@ -356,21 +247,23 @@ end
 function E:drawDeckPanel(x, y, w, h)
   local c = theme.c
   local yy = y
+  local function slotLabel(s)
+    local n = total(self.quantitiesBySlot[s.deckType])
+    return s.label .. " -- " .. n .. (n == 1 and " card" or " cards")
+  end
   if #self.slots > 1 then
-    local opts, segW = {}, 0
-    for _, s in ipairs(self.slots) do
-      opts[#opts + 1] = { value = s.deckType, label = s.label }
-      segW = math.max(segW, ui.textWidth(s.label, 14, "medium") + 26 + 24)
-    end
-    local sw = math.min(w - 24, segW * #opts)
-    self.activeDeckType = ui.segmented("de:slots", x + 12, yy + 12, sw, opts, self.activeDeckType)
-    yy = yy + 12 + 40
+    -- One dropdown picks the deck and shows its name and count.
+    local opts = {}
+    for _, s in ipairs(self.slots) do opts[#opts + 1] = { value = s.deckType, label = slotLabel(s) } end
+    self.activeDeckType = ui.dropdown("de:slots", x + 12, yy + 12, w - 24, opts, self.activeDeckType, { h = 40, size = 14 })
+    yy = yy + 12 + 40 + 12
+  else
+    local slot
+    for _, s in ipairs(self.slots) do if s.deckType == self.activeDeckType then slot = s end end
+    ui.text(slotLabel(slot), x + 12, yy + 12, { weight = "bold", w = w - 24, ellipsis = true })
+    yy = yy + 12 + 20 + 12
   end
   local active = self:active()
-  local label
-  for _, s in ipairs(self.slots) do if s.deckType == self.activeDeckType then label = s.label end end
-  ui.text(label .. " -- " .. total(active) .. " card(s)", x + 12, yy + 12, { weight = "bold", w = w - 24, ellipsis = true })
-  yy = yy + 12 + 20 + 12
   ui.divider(x, yy, w)
   yy = yy + 1
   local listH = y + h - yy
@@ -410,14 +303,8 @@ function E:drawPreview()
   if overlays.anyOpen() or ui.focus or not love.keyboard.isDown("space") then return end
   local def = self.hoveredId and models.GameDefinition.cardById(self.game, self.hoveredId)
   if not def then return end
-  local cardBacks = self.game.cardBacks
-  local faces = { { def = def, faceUp = true, orientation = def.orientation } }
-  if def.cardBackId ~= nil then
-    local _, _, backOrientation = resolver.resolveCardBackImagePath(cardBacks, def)
-    faces[2] = { def = def, faceUp = false, orientation = backOrientation or "portrait" }
-  end
   local sw, sh = ui.screenSize()
-  CR.drawPreview(faces, cardBacks, sw, sh, (ui.mouse()))
+  CR.drawPreview(CR.definitionFaces(def, self.game.cardBacks), self.game.cardBacks, sw, sh, (ui.mouse()))
 end
 
 function E:draw(x, y, w, h)
