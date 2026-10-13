@@ -24,6 +24,7 @@ pcall(ffi.cdef, [[
   int SDL_GetWindowDisplayIndex(SDL_Window* window);
   int SDL_GetDisplayDPI(int displayIndex, float* ddpi, float* hdpi, float* vdpi);
   void SDL_SetWindowMinimumSize(SDL_Window* window, int min_w, int min_h);
+  int SDL_SetHint(const char* name, const char* value);
 ]])
 
 local HT = { NORMAL = 0, DRAGGABLE = 1, TOPLEFT = 2, TOP = 3, TOPRIGHT = 4, RIGHT = 5, BOTTOMRIGHT = 6, BOTTOM = 7, BOTTOMLEFT = 8, LEFT = 9 }
@@ -110,6 +111,11 @@ end
 function W.install()
   local ok = pcall(function()
     assert(sdlLib())
+    -- By default SDL swallows the mouse-down that refocuses the window
+    -- (clicking in from outside only activates it; the click itself is
+    -- dropped), so a button click right after refocus needs a second
+    -- click to register. This makes the refocusing click a real click too.
+    sdl.SDL_SetHint("SDL_MOUSE_FOCUS_CLICKTHROUGH", "1")
     if not callback then callback = ffi.cast("SDL_HitTest_CF", hitTest) end
     local win = sdl.SDL_GL_GetCurrentWindow()
     if win ~= nil then
