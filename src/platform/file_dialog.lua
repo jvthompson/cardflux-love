@@ -18,6 +18,7 @@ if isWindows then
     void CoTaskMemFree(void* p);
     HRESULT SHCreateItemFromParsingName(const unsigned short* path, void* bc, const GUID_CF* iid, void** out);
     void* GetActiveWindow(void);
+    int SetForegroundWindow(void* hwnd);
   ]])
 end
 
@@ -123,7 +124,14 @@ local function showWindows(opts)
         release(ip[0])
       end
     end
-    local hr = com(dlg, 3, "void*", ffi.C.GetActiveWindow())
+    local owner = ffi.C.GetActiveWindow()
+    -- Show() is called from a Lua callback rather than directly inside a
+    -- native input handler, so Windows' foreground-lock heuristic doesn't
+    -- treat it as a direct response to the click that triggered it and
+    -- refuses to raise the dialog automatically; it opens behind the owner
+    -- until the user alt-tabs. Forcing foreground here fixes that.
+    ffi.C.SetForegroundWindow(owner)
+    local hr = com(dlg, 3, "void*", owner)
     if hr < 0 then return end -- cancelled (or failed)
     local itemp = ffi.new("void*[1]")
     if com(dlg, 20, "void**", itemp) < 0 then return end
