@@ -76,20 +76,21 @@ function D.open(game, zones, onDeckChosen, opts)
   end
 
   local function browse()
-    local path = fileDialog.openFile({ title = "Choose a deck file", filters = fileDialog.jsonFilters })
-    if not path then return end
-    local deck, reason = decks.readDeckFile(path)
-    if not deck then
-      sound.play("error")
-      st.selectionError = reason == "legacy" and models.LegacyDeckFormatError.message or "That file is not a valid deck."
-      return
-    end
-    if deck.gameId ~= game.id then
-      sound.play("error")
-      st.selectionError = "That deck is for a different game (" .. deck.gameId .. ")."
-      return
-    end
-    selectDeck(deck, require("src.data.fs").basename(path))
+    fileDialog.openFile({ title = "Choose a deck file", filters = fileDialog.jsonFilters }, function(path)
+      if not path then return end
+      local deck, reason = decks.readDeckFile(path)
+      if not deck then
+        sound.play("error")
+        st.selectionError = reason == "legacy" and models.LegacyDeckFormatError.message or "That file is not a valid deck."
+        return
+      end
+      if deck.gameId ~= game.id then
+        sound.play("error")
+        st.selectionError = "That deck is for a different game (" .. deck.gameId .. ")."
+        return
+      end
+      selectDeck(deck, require("src.data.fs").basename(path))
+    end)
   end
 
   -- Right-click a deck: Delete Deck, after a confirmation. Local decks are
@@ -124,12 +125,13 @@ function D.open(game, zones, onDeckChosen, opts)
   end
 
   local function chooseDirectory()
-    local path = fileDialog.pickFolder({ title = "Choose your deck library folder", initialDir = st.directoryPath })
-    if not path then return end
-    require("src.ui.screens.game_picker").maybeMoveLibraryFolder(st.directoryPath, path, "deck", function()
-      paths.setDecksDir(path)
-      st.directoryPath = path
-      refresh()
+    fileDialog.pickFolder({ title = "Choose your deck library folder", initialDir = st.directoryPath }, function(path)
+      if not path then return end
+      require("src.ui.screens.game_picker").maybeMoveLibraryFolder(st.directoryPath, path, "deck", function()
+        paths.setDecksDir(path)
+        st.directoryPath = path
+        refresh()
+      end)
     end)
   end
 

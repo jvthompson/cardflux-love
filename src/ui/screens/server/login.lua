@@ -179,8 +179,9 @@ function L:draw(x, y, w, h)
     widgets.avatar(cx, yy, size, self.color, self.avatarPath and { path = self.avatarPath } or nil)
     if r.hovered then ui.rect("fill", cx, yy, size, size, 0, { 1, 1, 1, 0.08 }) end
     local function pick()
-      local path = fileDialog.openFile({ title = "Choose an avatar image", filters = fileDialog.imageFilters })
-      if path then self.avatarPath = path end
+      fileDialog.openFile({ title = "Choose an avatar image", filters = fileDialog.imageFilters }, function(path)
+        if path then self.avatarPath = path end
+      end)
     end
     if r.clicked then pick() end
     local bx = cx + size + 16

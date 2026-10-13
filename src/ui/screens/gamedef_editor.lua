@@ -68,16 +68,17 @@ end
 
 -- Opens a gamedef.json picked anywhere on disk. onOpened(folderPath, game).
 function M.openExistingGameDefinition(onOpened)
-  local path = fileDialog.openFile({ title = "Open Game Definition",
-    filters = { { name = "Game Definition", extensions = { "json" } } } })
-  if not path then return end
-  local folder = fs.dirname(path)
-  local ok, game = pcall(ops.loadGameDefFile, path, folder)
-  if not ok then
-    overlays.toast("That file is not a valid game definition.")
-    return
-  end
-  onOpened(folder, game)
+  fileDialog.openFile({ title = "Open Game Definition",
+    filters = { { name = "Game Definition", extensions = { "json" } } } }, function(path)
+    if not path then return end
+    local folder = fs.dirname(path)
+    local ok, game = pcall(ops.loadGameDefFile, path, folder)
+    if not ok then
+      overlays.toast("That file is not a valid game definition.")
+      return
+    end
+    onOpened(folder, game)
+  end)
 end
 
 ---------------------------------------------------------------------------
@@ -228,12 +229,13 @@ function Entry:update()
 end
 
 function Entry:changeRoot()
-  local chosen = fileDialog.pickFolder({ title = "Choose your game library folder", initialDir = self.root })
-  if not chosen then return end
-  GamePicker.maybeMoveLibraryFolder(self.root, chosen, "game", function()
-    paths.setGamesDir(chosen)
-    self.root = chosen
-    self:refresh()
+  fileDialog.pickFolder({ title = "Choose your game library folder", initialDir = self.root }, function(chosen)
+    if not chosen then return end
+    GamePicker.maybeMoveLibraryFolder(self.root, chosen, "game", function()
+      paths.setGamesDir(chosen)
+      self.root = chosen
+      self:refresh()
+    end)
   end)
 end
 

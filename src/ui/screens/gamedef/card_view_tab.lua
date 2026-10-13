@@ -355,8 +355,9 @@ function T:drawForm(card, x, y, w, h)
   if ui.button("Choose...", fx + nameW + 4, yy + 2, chooseW, 40, { variant = "outlined", id = k .. ":choose",
     tooltip = "Choose Image..." }) then
     local dest = card.setId == nil and editor.folderPath or fs.join(editor.folderPath, card.setId)
-    local name = common.chooseImage(dest, true)
-    if name then card.imagePath = name end
+    common.chooseImage(dest, true, function(name)
+      if name then card.imagePath = name end
+    end)
   end
   if card.imagePath ~= nil then
     if ui.iconButton("close", fx + fw - 40, yy + 2, { id = k .. ":clear", tooltip = "Clear Image" }) then

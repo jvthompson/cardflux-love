@@ -49,12 +49,13 @@ function Home.openEditPlayerSettings()
       widgets.avatar(ax, yy, size, st.color, st.avatarPath and { path = st.avatarPath } or nil)
       if r.hovered then ui.rect("fill", ax, yy, size, size, 0, { 1, 1, 1, 0.08 }) end
       if r.clicked then
-        local path = fileDialog.openFile({ title = "Choose an avatar image", filters = fileDialog.imageFilters })
-        if path then
-          st.avatarPath = path
-          st.avatarChanged = true
-          st.newSource = path
-        end
+        fileDialog.openFile({ title = "Choose an avatar image", filters = fileDialog.imageFilters }, function(path)
+          if path then
+            st.avatarPath = path
+            st.avatarChanged = true
+            st.newSource = path
+          end
+        end)
       end
       yy = yy + size + 4
       if st.avatarPath then

@@ -267,8 +267,9 @@ function Lobby:openProfile()
       widgets.avatar(ax, yy, size, st.color, source)
       if r.hovered then ui.rect("fill", ax, yy, size, size, 0, { 1, 1, 1, 0.08 }) end
       if r.clicked then
-        local path = fileDialog.openFile({ title = "Choose an avatar image", filters = fileDialog.imageFilters })
-        if path then st.avatarPath, st.avatarChanged = path, true end
+        fileDialog.openFile({ title = "Choose an avatar image", filters = fileDialog.imageFilters }, function(path)
+          if path then st.avatarPath, st.avatarChanged = path, true end
+        end)
       end
       yy = yy + size + 4
       if source then

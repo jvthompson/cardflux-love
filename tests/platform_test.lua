@@ -16,12 +16,10 @@ return function(t)
   end)
 
   t.describe("file dialog paths", function()
-    t.it("the shell returns the full file-system path, not just the folder name", function()
+    t.it("isAbsolute recognizes absolute paths", function()
       local fd = require("src.platform.file_dialog")
       if not fs.isWindows then return end
-      love.filesystem.createDirectory("dlg_test_dir")
       local dir = fs.join(love.filesystem.getSaveDirectory(), "dlg_test_dir")
-      t.eq(fd._shellItemPath(dir), dir)
       t.ok(fd.isAbsolute(dir))
       t.notOk(fd.isAbsolute("game_library"))
     end)

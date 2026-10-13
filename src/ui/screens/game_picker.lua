@@ -93,12 +93,13 @@ function P.maybeMoveLibraryFolder(oldRoot, newRoot, whatLabel, after)
 end
 
 function P:chooseDirectory()
-  local path = fileDialog.pickFolder({ title = "Choose your game library folder", initialDir = self.directoryPath })
-  if not path then return end
-  P.maybeMoveLibraryFolder(self.directoryPath, path, "game", function()
-    paths.setGamesDir(path)
-    self.directoryPath = path
-    self:refresh()
+  fileDialog.pickFolder({ title = "Choose your game library folder", initialDir = self.directoryPath }, function(path)
+    if not path then return end
+    P.maybeMoveLibraryFolder(self.directoryPath, path, "game", function()
+      paths.setGamesDir(path)
+      self.directoryPath = path
+      self:refresh()
+    end)
   end)
 end
 

@@ -22,16 +22,17 @@ function T.new(editor)
 end
 
 function T:addSet()
-  local sourcePath = fileDialog.pickFolder({ title = "Choose a folder of card images" })
-  if not sourcePath then return end
-  local id = ops.deriveIdFromFolderPath(sourcePath)
-  if util.any(self.editor.game.sets, function(s) return s.id == id end) then
-    overlays.toast('A set named "' .. id .. '" already exists.')
-    return
-  end
-  -- Copy on a later frame so the spinner shows first.
-  self.busy = true
-  self.pendingAdd = { sourcePath = sourcePath, id = id, frames = 2 }
+  fileDialog.pickFolder({ title = "Choose a folder of card images" }, function(sourcePath)
+    if not sourcePath then return end
+    local id = ops.deriveIdFromFolderPath(sourcePath)
+    if util.any(self.editor.game.sets, function(s) return s.id == id end) then
+      overlays.toast('A set named "' .. id .. '" already exists.')
+      return
+    end
+    -- Copy on a later frame so the spinner shows first.
+    self.busy = true
+    self.pendingAdd = { sourcePath = sourcePath, id = id, frames = 2 }
+  end)
 end
 
 function T:update()

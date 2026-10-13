@@ -59,20 +59,23 @@ function C.displayCardBacks(folderPath, cardBacks)
   return out
 end
 
--- Picks an image file and copies it into destFolder; returns its bare file
--- name, or nil when cancelled or the copy failed (with a snackbar).
-function C.chooseImage(destFolder, correctCardOrientation)
-  local path = fileDialog.openFile({ title = "Choose Image", filters = C.imageFilters })
-  if not path then return nil end
-  local ok, fileName, err = pcall(ops.copyPickedImage, path, destFolder, correctCardOrientation)
-  if not ok or not fileName then
-    overlays.toast("Could not copy that image: " .. tostring(ok and err or fileName))
-    return nil
-  end
-  -- The copy may have replaced a file the caches already hold.
-  imageCache.invalidate(fs.join(destFolder, fileName))
-  resolver.clearCache()
-  return fileName
+-- Picks an image file and copies it into destFolder; onResult(fileName)
+-- fires with its bare file name, or nil when cancelled or the copy failed
+-- (with a snackbar).
+function C.chooseImage(destFolder, correctCardOrientation, onResult)
+  fileDialog.openFile({ title = "Choose Image", filters = C.imageFilters }, function(path)
+    if not path then onResult(nil); return end
+    local ok, fileName, err = pcall(ops.copyPickedImage, path, destFolder, correctCardOrientation)
+    if not ok or not fileName then
+      overlays.toast("Could not copy that image: " .. tostring(ok and err or fileName))
+      onResult(nil)
+      return
+    end
+    -- The copy may have replaced a file the caches already hold.
+    imageCache.invalidate(fs.join(destFolder, fileName))
+    resolver.clearCache()
+    onResult(fileName)
+  end)
 end
 
 -- Shared layout scale for the editor's tabs.

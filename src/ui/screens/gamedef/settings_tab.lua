@@ -48,8 +48,9 @@ function T:drawCardBackRow(ro, i, back, x, y, w)
   if cleared then
     back.imagePath = nil
   elseif thumb.clicked then
-    local name = common.chooseImage(folder)
-    if name then back.imagePath = name end
+    common.chooseImage(folder, nil, function(name)
+      if name then back.imagePath = name end
+    end)
   end
 
   local fx = tx + THUMB_W + 16
@@ -205,10 +206,11 @@ end
 
 function T:addCardBack()
   local editor = self.editor
-  local name = common.chooseImage(editor.folderPath)
-  if not name then return end
-  local backs = editor.game.cardBacks
-  backs[#backs + 1] = models.CardBackDefinition.new({ id = uuid.v4(), name = fs.stripExtension(name), imagePath = name })
+  common.chooseImage(editor.folderPath, nil, function(name)
+    if not name then return end
+    local backs = editor.game.cardBacks
+    backs[#backs + 1] = models.CardBackDefinition.new({ id = uuid.v4(), name = fs.stripExtension(name), imagePath = name })
+  end)
 end
 
 function T:draw(x, y, w, h)
