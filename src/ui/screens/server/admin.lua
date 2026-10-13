@@ -95,6 +95,36 @@ function A:editUser(u)
       ui.text("Tell the player their new password; they can change it from their profile.", x, yy, { size = 12, w = w,
         color = c.onSurfaceVariant })
       yy = yy + 28
+      if #sc.games > 0 then
+        ui.text("Clear collection", x, yy, { weight = "medium" })
+        yy = yy + 28
+        local gameOpts = {}
+        for _, g in ipairs(sc.games) do gameOpts[#gameOpts + 1] = { value = g.id, label = g.name } end
+        st.clearGameId = st.clearGameId or gameOpts[1].value
+        local cbw = ui.buttonWidth("Clear")
+        local dw = w - cbw - 12
+        st.clearGameId = ui.dropdown("au:cleargame", x, yy, dw, gameOpts, st.clearGameId, { labelBackground = bg })
+        if ui.button("Clear", x + dw + 12, yy, cbw, 48, { variant = "outlined", color = theme.fixed.red, id = "au:clear" }) then
+          local game
+          for _, g in ipairs(sc.games) do
+            if g.id == st.clearGameId then game = g end
+          end
+          if game then
+            overlays.confirm("Clear Collection", 'Remove every card ' .. u.name .. ' owns in "' .. game.name
+              .. '"? Decks that use those cards are kept but will be missing them. This can\'t be undone.',
+              "Clear Collection", function()
+                sc:request("adminClearCollection", json.object({ "id", u.id, "gameId", game.id }), function(r)
+                  if r.ok then
+                    overlays.toast('Cleared ' .. u.name .. '\'s collection for "' .. game.name .. '".')
+                  else
+                    overlays.alert("Couldn't Clear Collection", r.message or "Something went wrong.")
+                  end
+                end)
+              end, { danger = true })
+          end
+        end
+        yy = yy + 48 + 16
+      end
       if not isSelf then
         local bx = x - 12
         if u.online and ui.button("Disconnect", bx, yy, nil, 40, { variant = "text", icon = "logout", id = "au:kick" }) then
