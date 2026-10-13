@@ -1,5 +1,6 @@
 -- The server lobby: games (rooms) to join or watch, chat, who's online,
--- and the way into the server's Deck Editor, Collection and Administration.
+-- and the way into the server's Deck Editor, Card Shop, Collection and
+-- Administration.
 local ui = require("src.ui.kit.ui")
 local theme = require("src.ui.kit.theme")
 local overlays = require("src.ui.kit.overlays")
@@ -540,6 +541,9 @@ function Lobby:drawHeader(x, y, w)
   end
   if action("Deck Editor", "build", "lb:decks") then
     app().push(require("src.ui.screens.server.decks").new(sc))
+  end
+  if sc:isCollectionMode() and action("Card Shop", "card_giftcard", "lb:shop") then
+    app().push(require("src.ui.screens.server.shop").new(sc))
   end
   if sc:isCollectionMode() then
     local t = tostring(me.tokens or 0) .. " tokens"

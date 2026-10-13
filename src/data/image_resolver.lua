@@ -66,15 +66,20 @@ function R.resolvePackGeneratorImagePath(folderPath)
   return exists(candidate) and candidate or nil
 end
 
-local LOGO_EXTENSIONS = { "png", "jpg", "jpeg", "webp", "gif", "bmp" }
+local IMAGE_EXTENSIONS = { "png", "jpg", "jpeg", "webp", "gif", "bmp" }
 
-function R.resolveGameLogoImagePath(folderPath)
-  if folderPath == nil then return nil end
-  for _, ext in ipairs(LOGO_EXTENSIONS) do
-    local candidate = fs.join(folderPath, "gamelogo." .. ext)
+-- Probes <folderPath>/<baseName>.<ext> for each known extension, in order.
+function R.resolveImageAnyExt(folderPath, baseName)
+  if folderPath == nil or baseName == nil then return nil end
+  for _, ext in ipairs(IMAGE_EXTENSIONS) do
+    local candidate = fs.join(folderPath, baseName .. "." .. ext)
     if exists(candidate) then return candidate end
   end
   return nil
+end
+
+function R.resolveGameLogoImagePath(folderPath)
+  return R.resolveImageAnyExt(folderPath, "gamelogo")
 end
 
 -- Client side: keep the host's card/zone/tag/set data but use this

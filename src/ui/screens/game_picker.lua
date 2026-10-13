@@ -18,6 +18,20 @@ local TILE_W = 268
 local MAX_COLUMNS = 7
 local SPACING = 16
 local TEXT_BLOCK_H = 64
+-- Exposed so callers (e.g. the Card Shop) can size a grid's viewport to
+-- exactly fit its rows without duplicating these constants.
+P.TILE_W, P.MAX_COLUMNS, P.SPACING, P.TEXT_BLOCK_H = TILE_W, MAX_COLUMNS, SPACING, TEXT_BLOCK_H
+
+-- Height of a grid of `count` tiles at width `w` (same math drawGrid uses),
+-- for sizing a non-scrolling or precisely-fit viewport.
+function P.gridHeight(w, count)
+  local columns = math.max(1, math.min(MAX_COLUMNS, math.floor((w + SPACING) / (TILE_W + SPACING))))
+  local tileW = TILE_W
+  if columns == 1 and w < TILE_W then tileW = w end
+  local tileH = tileW + TEXT_BLOCK_H
+  local rows = math.max(1, math.ceil(count / columns))
+  return rows * tileH + (rows - 1) * SPACING + 8
+end
 
 -- onGameChosen(game). opts.excludeStandardDeck hides the Standard 52-Card
 -- Deck (it can't be customized, so the deck editors leave it out).
@@ -88,9 +102,13 @@ function P:chooseDirectory()
   end)
 end
 
+-- A tile may set `disabled` (dimmed, non-interactive -- e.g. can't afford
+-- it yet) and `tooltip`, in addition to the fields documented on drawGrid.
 local function drawTile(game, x, y, w, h, onTap)
   local c = theme.c
-  local r = ui.region("game:" .. (game.folderPath or game.id), x, y, w, h, { cursor = "hand" })
+  local disabled = game.disabled
+  local r = disabled and { hovered = false }
+    or ui.region("game:" .. (game.folderPath or "") .. ":" .. (game.id or ""), x, y, w, h, { cursor = "hand", tooltip = game.tooltip })
   ui.rect("fill", x + 1, y + 1, w, h, 8, { 0, 0, 0, 0.38 })
   ui.rect("fill", x, y, w, h, 8, c.surface)
   ui.rect("line", x + 0.5, y + 0.5, w - 1, h - 1, 8, c.outlineVariant)
@@ -98,20 +116,22 @@ local function drawTile(game, x, y, w, h, onTap)
   local pad = 12
   local logoSize = math.min(w - 2 * pad, h - 2 * pad - 8 - 44)
   local lx, ly = x + (w - logoSize) / 2, y + pad
-  local logoPath = resolver.resolveGameLogoImagePath(game.folderPath)
+  local logoPath = game.imagePath or resolver.resolveGameLogoImagePath(game.folderPath)
   local img = logoPath and imageCache.get(logoPath)
   if img then
     local iw, ih = img:getDimensions()
     local s = math.min(logoSize / iw, logoSize / ih)
-    love.graphics.setColor(1, 1, 1)
+    love.graphics.setColor(1, 1, 1, disabled and 0.5 or 1)
     love.graphics.draw(img, lx + (logoSize - iw * s) / 2, ly + (logoSize - ih * s) / 2, 0, s, s)
   elseif not logoPath or imageCache.status(logoPath) == "error" then
     ui.rect("fill", lx, ly, logoSize, logoSize, 6, c.surfaceContainerHighest)
     ui.iconCentered("style", lx, ly, logoSize, logoSize, 32, c.onSurfaceVariant)
   end
   local ty = ly + logoSize + 8
-  ui.text(game.name, x + pad, ty, { weight = "bold", w = w - 2 * pad, align = "center", ellipsis = true })
-  ui.text(game.caption or (#game.cards .. " card(s)"), x + pad, ty + 22, { size = 12, w = w - 2 * pad, align = "center", color = c.onSurfaceVariant })
+  local textColor = disabled and c.disabled or nil
+  ui.text(game.name, x + pad, ty, { weight = "bold", w = w - 2 * pad, align = "center", ellipsis = true, color = textColor })
+  ui.text(game.caption or (#game.cards .. " card(s)"), x + pad, ty + 22,
+    { size = 12, w = w - 2 * pad, align = "center", color = textColor or c.onSurfaceVariant })
   if r.clicked then onTap() end
 end
 
@@ -154,18 +174,20 @@ function P.drawGrid(scrollId, games, x, y, w, viewH, pad, onTap)
   local columns = math.max(1, math.min(MAX_COLUMNS, math.floor((w + SPACING) / (TILE_W + SPACING))))
   local tileW = TILE_W
   if columns == 1 and w < TILE_W then tileW = w end
-  local gridW = columns * tileW + (columns - 1) * SPACING
-  local gx = x + (w - gridW) / 2
   local tileH = tileW + TEXT_BLOCK_H
   local off = ui.beginScroll(scrollId, x - pad, y, w + 2 * pad, viewH)
+  local rows = math.ceil(#games / columns)
   for i, g in ipairs(games) do
     local col, row = (i - 1) % columns, math.floor((i - 1) / columns)
-    local tx, ty = gx + col * (tileW + SPACING), y + 4 + row * (tileH + SPACING) - off
+    -- Each row centers on its own tile count, not the grid's column count,
+    -- so a short last row doesn't end up hanging off the left edge.
+    local rowCount = math.min(columns, #games - row * columns)
+    local rowW = rowCount * (tileW + SPACING) - SPACING
+    local tx, ty = x + (w - rowW) / 2 + col * (tileW + SPACING), y + 4 + row * (tileH + SPACING) - off
     if ty + tileH > y - 10 and ty < y + viewH + 10 then
       drawTile(g, tx, ty, tileW, tileH, function() onTap(g) end)
     end
   end
-  local rows = math.ceil(#games / columns)
   ui.endScroll(scrollId, rows * tileH + (rows - 1) * SPACING + 8)
 end
 
