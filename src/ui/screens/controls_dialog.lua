@@ -64,13 +64,16 @@ function M.parse(text)
   return blocks
 end
 
-local cached
-local function blocks()
-  if not cached then
-    local ok, text = pcall(love.filesystem.read, SOURCE)
-    cached = M.parse((ok and text) or "Controls reference (CONTROLS.md) is missing from this build.")
+local cache = {}
+
+-- Reads and parses a packed Markdown file, cached by path. Shared by any
+-- screen that renders one of these files in a dialog (e.g. support_dialog.lua).
+function M.loadBlocks(source)
+  if not cache[source] then
+    local ok, text = pcall(love.filesystem.read, source)
+    cache[source] = M.parse((ok and text) or (source .. " is missing from this build."))
   end
-  return cached
+  return cache[source]
 end
 
 -- Column widths as fractions of the table width, by column count.
@@ -108,11 +111,13 @@ local function drawTable(b, x, y, w)
   return yy - y
 end
 
-local function drawBlocks(x, y, w)
+-- Renders a parsed block list (from M.loadBlocks/M.parse) at (x, y) within
+-- width w. Returns the height used.
+function M.drawBlocks(x, y, w, list)
   local c = theme.c
   local yy = y
   local first = true
-  for _, b in ipairs(blocks()) do
+  for _, b in ipairs(list) do
     if b.kind == "h1" then
       -- The dialog title already names the page.
     elseif b.kind == "h2" then
@@ -143,10 +148,11 @@ local function drawBlocks(x, y, w)
 end
 
 function M.open()
+  local list = M.loadBlocks(SOURCE)
   return overlays.dialog({
     title = "Controls",
     width = 820,
-    content = function(_, x, y, w) return drawBlocks(x, y, w) end,
+    content = function(_, x, y, w) return M.drawBlocks(x, y, w, list) end,
     actions = { { label = "Done", variant = "filled" } },
   })
 end

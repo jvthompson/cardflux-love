@@ -366,6 +366,10 @@ function Home:drawCornerTools(x, y, w, h)
   if ui.iconButton("build", bx, by, { tooltip = "Game Definition Editor", id = "home:gamedef" }) then
     A.push(require("src.ui.screens.gamedef_editor").Entry.new())
   end
+  bx = bx - 44
+  if ui.iconButton("local_cafe", bx, by, { tooltip = "Support the Author", id = "home:support" }) then
+    require("src.ui.screens.support_dialog").open()
+  end
 end
 
 function Home:draw(x, y, w, h)

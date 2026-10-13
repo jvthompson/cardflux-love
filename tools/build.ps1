@@ -10,7 +10,7 @@
   4. Copies love.exe, swaps its icon for assets\icon.ico, and appends
      game.love to make build\Cardflux\Cardflux.exe.
   5. Adds the LOVE runtime DLLs, the app's own DLLs (Discord SDK, libwebp),
-     LICENSE and CONTROLS.md.
+     LICENSE, CONTROLS.md and SUPPORT-ME.md.
   6. Zips build\Cardflux\* (flat) as build\cardflux-windows.zip -- the exact
      asset name src/platform/updater.lua looks for.
   7. (-Publish) commits the version bump, pushes, and creates the GitHub
@@ -111,7 +111,7 @@ function Get-RelFiles($baseDir, $items) {
 Step 'Creating game.love'
 if (Test-Path $buildDir) { Remove-Item $buildDir -Recurse -Force }
 New-Item -ItemType Directory -Force $outDir | Out-Null
-$loveFiles = Get-RelFiles $root @('conf.lua', 'main.lua', 'lib', 'src', 'assets', 'CONTROLS.md') | Where-Object { $_ -ne 'assets\icon.ico' }
+$loveFiles = Get-RelFiles $root @('conf.lua', 'main.lua', 'lib', 'src', 'assets', 'CONTROLS.md', 'SUPPORT-ME.md') | Where-Object { $_ -ne 'assets\icon.ico' }
 $lovePath = Join-Path $buildDir 'game.love'
 New-Zip $lovePath $root $loveFiles
 
@@ -233,7 +233,7 @@ foreach ($dll in @('love.dll', 'lua51.dll', 'SDL2.dll', 'OpenAL32.dll', 'mpg123.
   Copy-Item (Join-Path $loveDir $dll) $outDir
 }
 Copy-Item (Join-Path $loveDir 'license.txt') (Join-Path $outDir 'LOVE-license.txt')
-foreach ($f in @('discord_partner_sdk.dll', 'libwebp-7.dll', 'libsharpyuv-0.dll', 'LICENSE', 'CONTROLS.md')) {
+foreach ($f in @('discord_partner_sdk.dll', 'libwebp-7.dll', 'libsharpyuv-0.dll', 'LICENSE', 'CONTROLS.md', 'SUPPORT-ME.md')) {
   $p = Join-Path $root $f
   if (-not (Test-Path $p)) { throw "Missing $f in the project folder." }
   Copy-Item $p $outDir
