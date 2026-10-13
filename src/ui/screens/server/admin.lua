@@ -5,13 +5,22 @@ local theme = require("src.ui.kit.theme")
 local overlays = require("src.ui.kit.overlays")
 local widgets = require("src.ui.kit.widgets")
 local json = require("lib.json")
+local fs = require("src.data.fs")
+local fileDialog = require("src.platform.file_dialog")
 local SC = require("src.net.server_client")
+local AFM = require("src.net.admin_file_manager")
+local AGM = require("src.net.admin_game_manager")
 local common = require("src.ui.screens.server.common")
 
 local A = {}
 A.__index = A
 
-local TABS = { "Users", "Server", "Games" }
+local TABS = { "Users", "Server", "Games", "Files" }
+
+local function formatBytes(n)
+  if n >= 1024 * 1024 then return string.format("%.1f MB", n / (1024 * 1024)) end
+  return string.format("%d KB", math.floor(n / 1024 + 0.5))
+end
 
 function A.new(sc)
   local self = setmetatable({ title = "Server Administration", sc = sc, tab = 1, search = "", users = nil }, A)
@@ -348,6 +357,34 @@ end
 -- Games and rooms
 ---------------------------------------------------------------------------
 
+function A:uploadGame()
+  if self.installingGame then return end
+  fileDialog.openFile({ title = "Choose a game .zip file", filters = { { name = "Zip archive", extensions = { "zip" } } } },
+    function(zipPath)
+      if not zipPath then return end
+      self.installingGame, self.installBytes, self.installTotal = true, 0, 0
+      AGM.installFromZip(self.sc, zipPath, function(bytes, total)
+        self.installBytes, self.installTotal = bytes, total
+      end, function(err, gameId)
+        self.installingGame = false
+        if err then
+          overlays.alert("Couldn't Add Game", err)
+        else
+          overlays.toast('Added game "' .. gameId .. '".')
+        end
+      end)
+    end)
+end
+
+function A:removeGame(g)
+  overlays.confirm("Remove Game", 'Permanently delete "' .. g.name .. '" and all of its files from the server? This can\'t be undone.',
+    "Remove", function()
+      AGM.remove(self.sc, g.id, function(r)
+        if not r.ok then overlays.alert("Couldn't Remove Game", r.message or "Something went wrong.") end
+      end)
+    end, { danger = true })
+end
+
 function A:drawGames(x, y, w, h)
   local c = theme.c
   local sc = self.sc
@@ -356,9 +393,17 @@ function A:drawGames(x, y, w, h)
   local off = ui.beginScroll("ag:scroll", x, y, w, h)
   local yy = y - off
   ui.text("Games on this server", cx, yy, { size = 18 })
-  local label = "Rescan Games Folder"
-  local bw = ui.buttonWidth(label, { icon = "refresh" })
-  if ui.button(label, cx + colW - bw, yy - 6, bw, 40, { variant = "outlined", icon = "refresh", id = "ag:rescan", disabled = self.scanning }) then
+  local rescanLabel = "Rescan Games Folder"
+  local rescanW = ui.buttonWidth(rescanLabel, { icon = "refresh" })
+  local uploadLabel = self.installingGame and "Uploading..." or "Upload New Game"
+  local uploadW = ui.buttonWidth(uploadLabel, { icon = "upload_file" })
+  local rescanX = cx + colW - rescanW
+  local uploadX = rescanX - 12 - uploadW
+  if ui.button(uploadLabel, uploadX, yy - 6, uploadW, 40, { variant = "outlined", icon = "upload_file", id = "ag:upload",
+    disabled = self.installingGame }) then
+    self:uploadGame()
+  end
+  if ui.button(rescanLabel, rescanX, yy - 6, rescanW, 40, { variant = "outlined", icon = "refresh", id = "ag:rescan", disabled = self.scanning }) then
     self.scanning = true
     sc:request("adminRescanGames", json.object(), function(r)
       self.scanning = false
@@ -372,14 +417,27 @@ function A:drawGames(x, y, w, h)
     end)
   end
   yy = yy + 40
-  ui.text("Add a game by copying its folder (with gamedef.json and its images) into the server's data/games folder, then rescan.",
-    cx, yy, { w = colW, size = 12, color = c.onSurfaceVariant })
+  if self.installingGame then
+    local pct = self.installTotal and self.installTotal > 0
+      and string.format(" (%d%%)", math.floor(self.installBytes / self.installTotal * 100 + 0.5)) or ""
+    ui.text("Uploading game" .. pct .. "...", cx, yy, { size = 12, color = c.onSurfaceVariant })
+    yy = yy + 20
+  end
+  ui.text("Add a game by copying its folder (with gamedef.json and its images) into the server's data/games folder and rescanning, "
+    .. "or by uploading a .zip above.", cx, yy, { w = colW, size = 12, color = c.onSurfaceVariant })
   yy = yy + 32
+  local rowH = 40
   for _, g in ipairs(sc.games) do
-    ui.text(g.name, cx, yy, { weight = "medium", w = colW * 0.6, ellipsis = true })
-    ui.text(g.cardCount .. " cards  ·  " .. #(g.sets or {}) .. " sets  ·  " .. g.id, cx + colW * 0.6, yy,
-      { size = 12, w = colW * 0.4, align = "right", ellipsis = true, color = c.onSurfaceVariant })
-    yy = yy + 32
+    local rowW = g.removable and (colW - 48) or colW
+    ui.text(g.name, cx, yy, { weight = "medium", w = rowW * 0.6, ellipsis = true, h = rowH, valign = "middle" })
+    ui.text(g.cardCount .. " cards  ·  " .. #(g.sets or {}) .. " sets  ·  " .. g.id, cx + rowW * 0.6, yy,
+      { size = 12, w = rowW * 0.4, align = "right", ellipsis = true, color = c.onSurfaceVariant, h = rowH, valign = "middle" })
+    if g.removable then
+      if ui.iconButton("delete_outline", cx + colW - 40, yy, { tooltip = "Remove Game", id = "ag:removegame:" .. g.id }) then
+        self:removeGame(g)
+      end
+    end
+    yy = yy + rowH
   end
   for _, e in ipairs(self.gameErrors or {}) do
     ui.text(e, cx, yy, { w = colW, size = 12, color = theme.fixed.red })
@@ -408,6 +466,175 @@ function A:drawGames(x, y, w, h)
   ui.endScroll("ag:scroll", yy + off - y + 24)
 end
 
+---------------------------------------------------------------------------
+-- Files
+---------------------------------------------------------------------------
+
+function A:refreshFiles()
+  local gameId = self.filesGameId
+  if not gameId then return end
+  self.filesEntries = nil
+  AFM.list(self.sc, gameId, self.filesPath, function(r)
+    if gameId ~= self.filesGameId then return end -- the game picker moved on while this was in flight
+    if r.ok then
+      self.filesEntries = r.entries
+    else
+      self.filesEntries = {}
+      overlays.toast(r.message or "Couldn't list files.")
+    end
+  end)
+end
+
+function A:navigateFiles(path)
+  self.filesPath = path
+  self:refreshFiles()
+end
+
+function A:uploadFile()
+  local sc, gameId = self.sc, self.filesGameId
+  fileDialog.openFile({ title = "Choose a file to upload" }, function(localPath)
+    if not localPath or self.uploadName then return end
+    local name = fs.basename(localPath)
+    local dest = self.filesPath == "" and name or (self.filesPath .. "/" .. name)
+    self.uploadName, self.uploadBytes, self.uploadTotal = name, 0, 0
+    AFM.upload(sc, gameId, dest, localPath, function(bytes, total)
+      self.uploadBytes, self.uploadTotal = bytes, total
+    end, function(err)
+      self.uploadName = nil
+      if err then
+        overlays.alert("Upload Failed", err)
+      else
+        overlays.toast('Uploaded "' .. name .. '".')
+        if gameId == self.filesGameId then self:refreshFiles() end
+      end
+    end)
+  end)
+end
+
+function A:deleteFile(e, full)
+  local label = e.isDir and "Folder" or "File"
+  local warning = (not e.isDir and self.filesPath == "" and e.name == "gamedef.json")
+    and "This is the game's definition file -- deleting it will break this game until replaced. " or ""
+  overlays.confirm("Delete " .. label, warning .. 'Delete "' .. e.name .. '"? This can\'t be undone.', "Delete",
+    function()
+      AFM.delete(self.sc, self.filesGameId, full, function(r)
+        if r.ok then
+          self:refreshFiles()
+        else
+          overlays.alert("Couldn't Delete", r.message or "Something went wrong.")
+        end
+      end)
+    end, { danger = true })
+end
+
+-- Clickable "Game Name / sub / folder" trail; returns the x past the last crumb.
+function A:drawFileCrumbs(cx, cy, gameName)
+  local c = theme.c
+  local function crumb(label, path)
+    local w = ui.textWidth(label, 14)
+    local r = ui.region("af:crumb:" .. path, cx, cy, w, 24, { cursor = "hand" })
+    ui.text(label, cx, cy, { color = r.hovered and c.primary or c.onSurfaceVariant })
+    if r.clicked and path ~= self.filesPath then self:navigateFiles(path) end
+    cx = cx + w
+  end
+  crumb(gameName, "")
+  if self.filesPath ~= "" then
+    local built = ""
+    for seg in self.filesPath:gmatch("[^/]+") do
+      ui.text(" / ", cx, cy, { color = c.onSurfaceVariant })
+      cx = cx + ui.textWidth(" / ", 14)
+      built = built == "" and seg or (built .. "/" .. seg)
+      crumb(seg, built)
+    end
+  end
+end
+
+function A:drawFiles(x, y, w, h)
+  local c = theme.c
+  local sc = self.sc
+  if #sc.games == 0 then
+    ui.text("No games on this server.", x, y, { color = c.onSurfaceVariant })
+    return
+  end
+  if not self.filesGameId then
+    self.filesGameId, self.filesPath = sc.games[1].id, ""
+    self:refreshFiles()
+  end
+  local colW = math.min(720, w)
+  local cx = x + (w - colW) / 2
+  local off = ui.beginScroll("af:scroll", x, y, w, h)
+  local yy = y - off
+
+  local gameOpts = {}
+  local gameName
+  for _, g in ipairs(sc.games) do
+    gameOpts[#gameOpts + 1] = { value = g.id, label = g.name }
+    if g.id == self.filesGameId then gameName = g.name end
+  end
+  local dw = math.min(320, colW)
+  local prevGameId = self.filesGameId
+  self.filesGameId = ui.dropdown("af:game", cx, yy, dw, gameOpts, self.filesGameId, { label = "Game", labelBackground = c.surface })
+  if self.filesGameId ~= prevGameId then
+    self.filesPath = ""
+    self:refreshFiles()
+  end
+  local busy = self.uploadName ~= nil
+  local label = busy and "Uploading..." or "Upload"
+  local bw = ui.buttonWidth(label, { icon = "upload_file" })
+  if ui.button(label, cx + colW - bw, yy, bw, 48, { variant = "outlined", icon = "upload_file", id = "af:upload", disabled = busy }) then
+    self:uploadFile()
+  end
+  yy = yy + 48 + 8
+  if busy then
+    local pct = self.uploadTotal > 0 and string.format(" (%d%%)", math.floor(self.uploadBytes / self.uploadTotal * 100 + 0.5)) or ""
+    ui.text('Uploading "' .. self.uploadName .. '"' .. pct .. "...", cx, yy, { size = 12, color = c.onSurfaceVariant })
+    yy = yy + 20
+  end
+  yy = yy + 8
+
+  if ui.iconButton("arrow_upward", cx, yy, { tooltip = "Up one level", id = "af:up", disabled = self.filesPath == "" }) then
+    self:navigateFiles(self.filesPath:match("^(.*)/[^/]+$") or "")
+  end
+  if ui.iconButton("refresh", cx + 44, yy, { tooltip = "Refresh", id = "af:refresh" }) then self:refreshFiles() end
+  self:drawFileCrumbs(cx + 96, yy + 10, gameName or "")
+  yy = yy + 40 + 12
+  ui.divider(cx, yy, colW)
+  yy = yy + 8
+
+  if not self.filesEntries then
+    ui.spinner(cx + colW / 2, yy + 40, 14)
+    ui.endScroll("af:scroll", yy + 80 + off - y)
+    return
+  end
+  if #self.filesEntries == 0 then
+    ui.text("Empty.", cx, yy, { color = c.onSurfaceVariant })
+    yy = yy + 24
+  end
+  local rowH, delW = 44, 48
+  local navW = colW - delW
+  for i, e in ipairs(self.filesEntries) do
+    local full = self.filesPath == "" and e.name or (self.filesPath .. "/" .. e.name)
+    local r = ui.region("af:row:" .. i, cx, yy, navW, rowH, { cursor = "hand" })
+    if r.hovered then ui.rect("fill", cx, yy, navW, rowH, 0, theme.alpha(c.onSurface, 0.05)) end
+    ui.icon(e.isDir and "folder" or "insert_drive_file", cx + 8, yy + (rowH - 20) / 2, 20, c.onSurfaceVariant)
+    ui.text(e.name, cx + 40, yy, { h = rowH, valign = "middle", w = navW - (e.isDir and 48 or 140), ellipsis = true })
+    if not e.isDir then
+      ui.text(formatBytes(e.size), cx + navW - 100, yy, { h = rowH, valign = "middle", w = 92, align = "right",
+        size = 12, color = c.onSurfaceVariant })
+    end
+    if r.clicked and e.isDir then self:navigateFiles(full) end
+    if ui.iconButton("delete_outline", cx + navW + 4, yy + (rowH - 40) / 2, { tooltip = "Delete", id = "af:del:" .. i }) then
+      self:deleteFile(e, full)
+    end
+    yy = yy + rowH
+  end
+  yy = yy + 16
+  local hint = "Only image/json files are downloadable by game clients; other file types will sit in the folder unused."
+  ui.text(hint, cx, yy, { w = colW, size = 12, color = c.onSurfaceVariant })
+  yy = yy + ui.textHeight(hint, colW, 12) + 16
+  ui.endScroll("af:scroll", yy + off - y)
+end
+
 function A:draw(x, y, w, h)
   local pad = 24
   local tab, th = widgets.tabBar("admin:tabs", x, y, w, TABS, self.tab)
@@ -418,8 +645,10 @@ function A:draw(x, y, w, h)
     self:drawUsers(bx, by, bw, bh)
   elseif self.tab == 2 then
     self:drawServer(bx, by, bw, bh)
-  else
+  elseif self.tab == 3 then
     self:drawGames(bx, by, bw, bh)
+  else
+    self:drawFiles(bx, by, bw, bh)
   end
 end
 
