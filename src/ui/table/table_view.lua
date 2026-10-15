@@ -260,9 +260,9 @@ end
 ---------------------------------------------------------------------------
 
 local function drawCenterMarker(T)
-  local left, top = (WW - 1440) / 2, (WH - 810) / 2
+  local left, top = (WW - 1280) / 2, (WH - 720) / 2
   local x, y = V.worldToScreen(T, left, top)
-  local w, h = 1440 * T.zoom, 810 * T.zoom
+  local w, h = 1280 * T.zoom, 720 * T.zoom
   local r = 32 * T.zoom
   local mat = T.playmatIndex >= 1 and T.playmats[T.playmatIndex]
   if mat then
