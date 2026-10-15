@@ -399,25 +399,48 @@ function Session:shuffleZone(zoneId, zoneOwnerId, actingPlayerId)
   self:notify()
 end
 
+-- A deck can contain multiple subdecks (one per deck-building zone's
+-- deckType, e.g. a main deck plus a location deck). Loading it fills every
+-- matching zone, not just the one the player clicked - mirroring the
+-- per-zone subdeck matching that Session.dealFromZones does for the
+-- initial deal.
 function Session:loadDeckIntoZone(zoneId, deck, actingPlayerId)
-  local zone = self:zoneDefinition(zoneId)
-  local ids = {}
-  for _, e in ipairs(models.DeckConfig.entriesFor(deck, zone.deckType)) do
-    if self.definitionsById[e.definitionId] then
-      for _ = 1, e.quantity do ids[#ids + 1] = e.definitionId end
+  local targetZone = self:zoneDefinition(zoneId)
+  local zones = { targetZone }
+  for _, z in ipairs(models.GameDefinition.deckBuildingZones(self.game)) do
+    if z.id ~= targetZone.id then zones[#zones + 1] = z end
+  end
+  local newCards, names = {}, {}
+  for _, zone in ipairs(zones) do
+    local ids = {}
+    for _, e in ipairs(models.DeckConfig.entriesFor(deck, zone.deckType)) do
+      if self.definitionsById[e.definitionId] then
+        for _ = 1, e.quantity do ids[#ids + 1] = e.definitionId end
+      end
+    end
+    if #ids > 0 then
+      if zone.autoShuffle then util.shuffle(ids) end
+      -- Note: Flutter stamps the zone definition's own id here (not a deck
+      -- widget's synthetic id), matching game_session.dart.
+      for _, id in ipairs(ids) do
+        newCards[#newCards + 1] = models.CardInstance.new({
+          instanceId = uuid.v4(), definitionId = id, x = 0.5, y = 0.5, zIndex = 0, faceUp = zone.faceUp,
+          zone = "zone", zoneId = zone.id, ownerId = actingPlayerId, unownable = self.definitionsById[id].unownable,
+        })
+      end
+      names[#names + 1] = zone.name
     end
   end
-  if zone.autoShuffle then util.shuffle(ids) end
-  -- Note: Flutter stamps the zone definition's own id here (not a deck
-  -- widget's synthetic id), matching game_session.dart.
-  local newCards = util.map(ids, function(id)
-    return models.CardInstance.new({
-      instanceId = uuid.v4(), definitionId = id, x = 0.5, y = 0.5, zIndex = 0, faceUp = zone.faceUp,
-      zone = "zone", zoneId = zone.id, ownerId = actingPlayerId, unownable = self.definitionsById[id].unownable,
-    })
-  end)
   self.state = A.dealNewCards(self.state, newCards)
-  self:log(actingPlayerId, "loaded a deck into the " .. zone.name .. ".")
+  local label
+  if #names <= 1 then
+    label = names[1] or targetZone.name
+  elseif #names == 2 then
+    label = names[1] .. " and " .. names[2]
+  else
+    label = table.concat(names, ", ", 1, #names - 1) .. ", and " .. names[#names]
+  end
+  self:log(actingPlayerId, "loaded a deck into the " .. label .. ".")
   self:notify()
 end
 

@@ -224,6 +224,18 @@ return function(t)
       t.eq(lastLog(s), "Alice loaded a deck into the Draw Deck.")
       t.eq(defIds(inZone(s, "draw", "p1")), { "a", "a" })
     end)
+    t.it("loading a deck with subdecks fills every deck-building zone, not just the clicked one", function()
+      local g2 = game({ zones = {
+        zone({ id = "location", name = "Location Deck", dealsBuiltDeck = true, deckType = "location_deck" }),
+        zone({ id = "character", name = "Character Deck", dealsBuiltDeck = true, deckType = "character_deck" }),
+      } })
+      local s = Session.new({ game = g2, localPlayerId = "p1", now = now,
+        initialState = H.state({ players = { p1, p2 } }) })
+      s:loadDeckIntoZone("location", deck({ location_deck = { { "a", 2 } }, character_deck = { { "b", 1 } } }), "p1")
+      t.eq(defIds(inZone(s, "location", "p1")), { "a", "a" })
+      t.eq(defIds(inZone(s, "character", "p1")), { "b" })
+      t.eq(lastLog(s), "Alice loaded a deck into the Location Deck and Character Deck.")
+    end)
     t.it("deck widget synthetic zones resolve to the real zone and stay generic", function()
       -- From a hand (private) into a sub-zone of a visibleToAll zone: the
       -- deck widget's cards stay private, so the name isn't revealed.
