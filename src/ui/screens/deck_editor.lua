@@ -69,7 +69,25 @@ function E.new(game, opts)
   for _, s in ipairs(self.slots) do self.quantitiesBySlot[s.deckType] = newQuantities() end
   self.activeDeckType = self.slots[1].deckType
   self.filters = filterBar.newState(game)
+  self.rulebookOpen = false
+  self.rulebook = require("src.ui.screens.rulebook_viewer").new(game)
   return self
+end
+
+local function ctrlDown() return love.keyboard.isDown("lctrl", "rctrl") end
+
+function E:toggleRulebook()
+  self.rulebookOpen = not self.rulebookOpen
+  self.rulebook:toggle()
+end
+
+function E:keypressed(key, scancode, isrepeat)
+  if self.rulebookOpen then
+    if key == "r" and ctrlDown() and not isrepeat then self:toggleRulebook() end
+    return
+  end
+  if isrepeat then return end
+  if key == "r" and ctrlDown() then self:toggleRulebook() end
 end
 
 function E:active() return self.quantitiesBySlot[self.activeDeckType] end
@@ -326,6 +344,7 @@ function E:draw(x, y, w, h)
   self:drawDeckPanel(x + poolW + 1, by, deckW, bh)
   ui.popClip()
   ui.overlay(function() self:drawPreview() end)
+  if self.rulebookOpen then ui.overlay(function() self.rulebook:draw(function() self:toggleRulebook() end) end) end
 end
 
 ---------------------------------------------------------------------------

@@ -5,3 +5,6 @@
 
 # Cardflux server (separate git repo)
 /server/
+
+# Local game library (user data, not source)
+/game_library/

@@ -55,6 +55,8 @@ function T.new(opts)
   self.colorTintEnabled = true
   self.tabDown, self.spaceDown, self.altDown = false, false, false
   self.gameMenuOpen, self.logOpen, self.libraryOpen = false, false, false
+  self.rulebookOpen = false
+  self.rulebook = require("src.ui.screens.rulebook_viewer").new(self.game)
   self.lastPreviewAt = 0
   self.playmats, self.playmatIndex = {}, 0
   self:loadPlaymats()
@@ -545,6 +547,13 @@ function T:toggleLog()
   end
 end
 
+function T:toggleRulebook()
+  self.rulebookOpen = not self.rulebookOpen
+  self.rulebook:toggle()
+end
+
+local function ctrlDown() return love.keyboard.isDown("lctrl", "rctrl") end
+
 function T:keypressed(key, _, isrepeat)
   if key == "escape" then
     if isrepeat then return end
@@ -562,13 +571,18 @@ function T:keypressed(key, _, isrepeat)
     if key == "l" and not isrepeat then self:toggleLog() end
     return
   end
+  if self.rulebookOpen then
+    if key == "r" and ctrlDown() and not isrepeat then self:toggleRulebook() end
+    return
+  end
   if isrepeat then return end
   if self.spectator then
     if key == "home" or key == "h" then self.camX, self.camY, self.zoom = 0, 0, 1
     elseif key == "f1" then self.bordersHidden = not self.bordersHidden
     elseif key == "f2" then self.colorTintEnabled = not self.colorTintEnabled
     elseif key == "f12" then self:cyclePlaymat()
-    elseif key == "l" then self:toggleLog() end
+    elseif key == "l" then self:toggleLog()
+    elseif key == "r" and ctrlDown() then self:toggleRulebook() end
     return
   end
   if key == "q" then self:rotateHovered(false)
@@ -582,6 +596,7 @@ function T:keypressed(key, _, isrepeat)
   elseif key == "f2" then self.colorTintEnabled = not self.colorTintEnabled
   elseif key == "f12" then self:cyclePlaymat()
   elseif key == "l" then self:toggleLog()
+  elseif key == "r" and ctrlDown() then self:toggleRulebook()
   elseif DRAW_KEYS[key] then self:drawNFromHovered(DRAW_KEYS[key])
   end
 end
@@ -589,6 +604,7 @@ end
 -- Keys are only "ours" while no dialog, menu or text field has them.
 function T:keysAvailable()
   return not overlays.anyOpen() and not ui.focus and not self.gameMenuOpen and not self.logOpen
+    and not self.rulebookOpen
 end
 
 function T:update(dt)
@@ -1599,25 +1615,7 @@ end
 
 local PANEL = theme.fixed.overlayPanel
 local WHITE = theme.fixed.white
-
--- Shared frame: scrim (click closes), dark rounded panel, title row with X.
-local function panel(id, w, h, title, onClose, trailing)
-  local sw, sh = ui.screenSize()
-  local top = overlays.contentTop
-  ui.cover(-1e9, top, 2e9, 2e9)
-  love.graphics.setColor(0, 0, 0, 0.25)
-  love.graphics.rectangle("fill", 0, top, sw, sh - top)
-  local x, y = math.floor((sw - w) / 2), math.floor(top + (sh - top - h) / 2)
-  if ui.mousePressed(1) and not ui.hoverIgnoringLayer(x, y, w, h) then onClose() end
-  ui.rect("fill", x, y, w, h, 12, PANEL)
-  ui.text(title, x + 16, y + 12, { size = 18, weight = "bold", color = WHITE, h = 40, valign = "middle" })
-  if trailing then
-    ui.text(trailing, x, y + 12, { w = w - 56, h = 40, valign = "middle", align = "right", color = { 1, 1, 1, 0.7 } })
-  end
-  if ui.iconButton("close", x + w - 48, y + 12, { color = WHITE, tooltip = "Close", id = id .. ":close" }) then onClose() end
-  ui.divider(x, y + 64, w, { 1, 1, 1, 0.24 })
-  return x, y + 65, w, h - 65
-end
+local panel = require("src.ui.kit.panel")
 
 function T:drawGameMenu()
   local close = function() self:toggleGameMenu() end
@@ -1629,7 +1627,7 @@ function T:drawGameMenu()
   end
   local h = 64 + 16 + 40 + (self.onSaveGame and 52 or 0) + 52 + 52 + 16
   if self.onKickPlayer then h = h + 20 + 24 + math.max(1, #kickable) * 48 end
-  local x, y, w = panel("gamemenu", 360, h, "Game Menu", close)
+  local x, y, w = panel.draw("gamemenu", 360, h, "Game Menu", close)
   local yy = y + 16
   local white = WHITE
   if ui.button(self.leaveButtonLabel, x + 16, yy, w - 32, 40, { variant = "outlined", icon = "logout", color = white, id = "gm:leave" }) then
@@ -1673,7 +1671,7 @@ end
 function T:drawLog()
   local entries = self.state.log
   local hasSave = self.game.folderPath ~= nil
-  local x, y, w, h = panel("log", 480, 560, "Game Log", function() self:toggleLog() end)
+  local x, y, w, h = panel.draw("log", 480, 560, "Game Log", function() self:toggleLog() end)
   local listH = h - (hasSave and 73 or 0)
   if #entries == 0 then
     ui.text("No actions yet.", x, y, { w = w, h = listH, align = "center", valign = "middle", color = { 1, 1, 1, 0.54 } })
@@ -1760,7 +1758,7 @@ function T:drawSearch()
   table.sort(cards, function(a, b) return a.zIndex > b.zIndex end)
   local sw, sh = ui.screenSize()
   local pw, ph = math.min(1280, sw - 40), math.min(720, sh - overlays.contentTop - 40)
-  local x, y, w, h = panel("search", pw, ph, title, function() self.controller:stopSearch() end,
+  local x, y, w, h = panel.draw("search", pw, ph, title, function() self.controller:stopSearch() end,
     #cards .. " card" .. (#cards == 1 and "" or "s"))
   if #cards == 0 then
     ui.text("Nothing here to search.", x, y, { w = w, h = h, align = "center", valign = "middle", color = { 1, 1, 1, 0.54 } })
@@ -1790,7 +1788,7 @@ function T:drawLibrary()
   local pw, ph = math.min(1280, sw - 40), math.min(720, sh - overlays.contentTop - 40)
   local saved = theme.c
   theme.c = theme.dark
-  local x, y, w, h = panel("library", pw, ph, "Card Library", function() self.libraryOpen = false end,
+  local x, y, w, h = panel.draw("library", pw, ph, "Card Library", function() self.libraryOpen = false end,
     #visible .. " of " .. #game.cards .. " card" .. (#game.cards == 1 and "" or "s"))
   local yy = filterBar.drawFilters("lib", L, game, x + 16, y, w - 32) + 12
   yy = filterBar.drawSearch("lib", L, x + 16, yy, w - 32, { labelBackground = PANEL, clearColor = WHITE }) + 4
@@ -1855,6 +1853,7 @@ function T:draw(x, y, w, h)
   if self.libraryOpen then ui.overlay(function() self:drawLibrary() end) end
   ui.overlay(function() self:drawPreview() end)
   if self.logOpen then ui.overlay(function() self:drawLog() end) end
+  if self.rulebookOpen then ui.overlay(function() self.rulebook:draw(function() self:toggleRulebook() end) end) end
   if self.gameMenuOpen then ui.overlay(function() self:drawGameMenu() end) end
   ui.overlay(function() self:drawDragFeedback() end)
 end

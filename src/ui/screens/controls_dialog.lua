@@ -21,7 +21,12 @@ local function splitRow(line)
   return cells
 end
 
--- Markdown text -> list of blocks { kind = "h1"|"h2"|"h3"|"bold"|"p"|"bullet"|"table", ... }.
+-- Markdown text -> list of blocks { kind = "h1"|"h2"|"h3"|"bold"|"p"|"bullet"|"table"|"image", ... }.
+-- An "image" block only carries { alt, path } here - the path as written in
+-- the Markdown, unresolved. Nothing in this module touches the filesystem
+-- to load it (loadBlocks below only ever reads packed text files); it's up
+-- to the caller to resolve `path` and attach a drawable `image` to the
+-- block before drawBlocks renders it (see rulebook_viewer.lua).
 function M.parse(text)
   local blocks, para, tbl = {}, nil, nil
   local function flush()
@@ -56,7 +61,13 @@ function M.parse(text)
         flush()
         blocks[#blocks + 1] = { kind = "bold", text = line:sub(3, -3) }
       else
-        para = para and (para .. " " .. plain(line)) or plain(line)
+        local alt, imgPath = line:match("^!%[(.-)%]%((.-)%)$")
+        if imgPath then
+          flush()
+          blocks[#blocks + 1] = { kind = "image", alt = alt, path = imgPath }
+        else
+          para = para and (para .. " " .. plain(line)) or plain(line)
+        end
       end
     end
   end
@@ -113,19 +124,39 @@ end
 
 -- Renders a parsed block list (from M.loadBlocks/M.parse) at (x, y) within
 -- width w. Returns the height used.
-function M.drawBlocks(x, y, w, list)
+--
+-- opts (optional):
+--   showH1     also render h1 blocks (normally skipped: the dialog title
+--              already names the page, but a full-page viewer like the
+--              Rulebook has no such external title to stand in for it).
+--   onHeading(level, text, yOffset)  called for every h1/h2/h3 as it's
+--              encountered, before yy advances past it. yOffset is yy - y
+--              (distance from the top of this call's content, not an
+--              absolute screen coordinate), since y itself is already
+--              shifted by the caller's current scroll offset - so it's
+--              directly usable as a ui.scrollTo target regardless of
+--              however far the view happens to be scrolled this frame.
+function M.drawBlocks(x, y, w, list, opts)
   local c = theme.c
   local yy = y
   local first = true
   for _, b in ipairs(list) do
     if b.kind == "h1" then
-      -- The dialog title already names the page.
+      if opts and opts.showH1 then
+        if not first then yy = yy + 24 end
+        if opts.onHeading then opts.onHeading(1, b.text, yy - y) end
+        ui.text(b.text, x, yy, { size = 22, weight = "bold", color = c.onSurface })
+        yy = yy + 36
+      end
+      -- else: the dialog title already names the page.
     elseif b.kind == "h2" then
       if not first then yy = yy + 20 end
+      if opts and opts.onHeading then opts.onHeading(2, b.text, yy - y) end
       ui.text(b.text, x, yy, { size = 18, weight = "bold", color = c.primary })
       yy = yy + 30
     elseif b.kind == "h3" then
       yy = yy + 12
+      if opts and opts.onHeading then opts.onHeading(3, b.text, yy - y) end
       ui.text(b.text, x, yy, { size = 15, weight = "bold", color = c.onSurface })
       yy = yy + 26
     elseif b.kind == "bold" then
@@ -141,8 +172,26 @@ function M.drawBlocks(x, y, w, list)
       yy = yy + ui.textHeight(b.text, w, 13) + 10
     elseif b.kind == "table" then
       yy = yy + drawTable(b, x, yy, w) + 12
+    elseif b.kind == "image" then
+      yy = yy + 8
+      if b.image then
+        local iw, ih = b.image:getDimensions()
+        local scale = w / iw
+        love.graphics.setColor(1, 1, 1, 1) -- undo whatever color the last ui.text call left active
+        love.graphics.draw(b.image, x, yy, 0, scale, scale)
+        yy = yy + ih * scale + 12
+      else
+        -- No `image` attached (not loaded, failed, or this caller never
+        -- resolves image blocks at all) - show the alt text so the gap
+        -- isn't silently blank.
+        local ph = 72
+        ui.rect("fill", x, yy, w, ph, 4, theme.alpha(c.onSurfaceVariant, 0.15))
+        ui.text((b.alt and b.alt ~= "") and b.alt or "(image)", x, yy,
+          { w = w, h = ph, align = "center", valign = "middle", color = c.onSurfaceVariant })
+        yy = yy + ph + 12
+      end
     end
-    if b.kind ~= "h1" then first = false end
+    if b.kind ~= "h1" or (opts and opts.showH1) then first = false end
   end
   return yy - y
 end
