@@ -1,0 +1,353 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Game Session &amp; Controller — Cardflux Docs</title>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+<nav class="sidenav">
+  <a class="brand" href="index.html">Cardflux<small>Codebase Documentation</small></a>
+  <div class="group-label">Application</div>
+  <a href="architecture.html">Architecture &amp; App Lifecycle</a>
+  <a href="ui-framework.html">UI Toolkit (kit)</a>
+  <div class="group-label">User Interface</div>
+  <a href="ui-screens.html">Screens</a>
+  <a href="ui-gamedef-editor.html">Game Definition Editor</a>
+  <a href="ui-server-screens.html">Multiplayer Lobby Screens</a>
+  <a href="ui-table.html">Game Table Rendering</a>
+  <div class="group-label">Engine &amp; Data</div>
+  <a href="core.html">Core Rules Engine</a>
+  <a href="game.html" class="current">Game Session &amp; Controller</a>
+  <a href="data.html">Data &amp; Persistence</a>
+  <div class="group-label">Platform &amp; Network</div>
+  <a href="net.html">Networking</a>
+  <a href="platform.html">Platform Integration</a>
+  <div class="group-label">Server</div>
+  <a href="server.html">Cardflux Server (Go)</a>
+  <div class="group-label">Quality</div>
+  <a href="tests-tools.html">Tests &amp; Tools</a>
+</nav>
+<main class="page">
+  <header class="page-head">
+    <div class="crumb"><a href="index.html">Home</a> / Engine &amp; Data</div>
+    <h1>Game Session &amp; Controller <span class="badge lua">Lua</span></h1>
+    <div class="subtitle">Wiring a live game session to the table screen, locally or over the network.</div>
+  </header>
+
+  <div class="toc">
+    <div class="toc-title">On this page</div>
+    <ul>
+      <li><a href="#overview">How a game actually runs, end to end</a></li>
+      <li><a href="#session-lua">session.lua — the authoritative game state</a></li>
+      <li><a href="#host-engine-lua">host_engine.lua — the host's authoritative loop</a></li>
+      <li><a href="#controller-lua">controller.lua — what the table UI talks to</a></li>
+      <li><a href="#sound-lua">sound.lua — fire-and-forget sound effects</a></li>
+    </ul>
+  </div>
+
+  <h2 id="overview">How a game actually runs, end to end</h2>
+  <p>
+    Of the four files on this page, two — <code>session.lua</code> and <code>host_engine.lua</code> — belong to
+    the platform-agnostic engine described on <a href="core.html#shared-engine">core.html</a>: they're copied
+    verbatim into <code>server/engine/src/game/</code> and can run either inside the LÖVE client (LuaJIT) or
+    inside the dedicated Go server (gopher-lua). The other two, <code>controller.lua</code> and
+    <code>sound.lua</code>, are client-only — <code>controller.lua</code> has no <code>love.*</code> calls itself,
+    but it's only ever instantiated by client-side screen code, never by the server.
+  </p>
+  <p>There are three distinct ways a game ends up running, and the same engine files play different roles in each:</p>
+  <table>
+    <tr><th>Mode</th><th>Where <code>Session</code> lives</th><th>Where <code>host_engine.lua</code> runs</th><th>What the table talks to</th></tr>
+    <tr>
+      <td><strong>Local practice</strong> (<a href="ui-screens.html">practice_game.lua</a>, solo/hot-seat)</td>
+      <td>In the LÖVE client process, one <code>Session</code> shared by every seat.</td>
+      <td>Not used at all — there's no network, so there's nothing to broadcast or filter.</td>
+      <td><code>controller.Host</code>, calling the session directly in-process. <code>Session:setActiveSeat</code> lets the UI "act as" whichever seat's avatar was clicked (CONTROLS.md: "Click a player's avatar: practice games act as that seat").</td>
+    </tr>
+    <tr>
+      <td><strong>Direct host/join</strong> (<a href="net.html">host_server.lua</a> / <code>game_client.lua</code>, ad-hoc LAN/Discord-invite game)</td>
+      <td>In the LÖVE process of whichever player is hosting.</td>
+      <td>In the host's own LÖVE process, wired to that player's <code>host_server.lua</code> connection object.</td>
+      <td>Host player: <code>controller.Host</code> (direct, no network hop for the host's own actions). Every other player: <code>controller.Client</code>, which turns every table action into a <code>request*</code> message sent over <a href="net.html">the network protocol</a> to the host.</td>
+    </tr>
+    <tr>
+      <td><strong>Dedicated server game</strong> (<a href="ui-server-screens.html">room.lua</a>, via the Go lobby server)</td>
+      <td>Inside the Go server process, running under gopher-lua.</td>
+      <td>Also inside the Go server process, under gopher-lua — see <code>server/internal/engine/engine.go</code> on <a href="server.html">server.html</a> for exactly how Go drives this Lua object.</td>
+      <td>Every connected player, host included, is a <code>controller.Client</code> talking to the server over <a href="net.html#server-client">server_client.lua</a> — nobody's local client holds the authoritative <code>Session</code> at all.</td>
+    </tr>
+  </table>
+  <p>
+    In every mode the shape above <code>host_engine</code>/<code>controller</code> is the same: a mouse action on
+    <a href="ui-table.html">the table screen</a> calls a method on whatever <code>controller</code> object the
+    table was constructed with. A <code>Host</code> controller validates ownership itself and calls straight into
+    <code>Session</code>; a <code>Client</code> controller just serializes the call into a JSON request message and
+    sends it off, trusting the remote host engine to validate and apply it, then relies on the next broadcasted
+    <code>fullState</code> (filtered per-recipient by <a href="core.html#state-filter-lua">state_filter.lua</a>) to
+    reflect the result back. This is why <code>Session</code> and <code>table_actions.lua</code> only need to exist
+    once per authoritative copy of the game, never once per player.
+  </p>
+
+  <h2 id="session-lua">session.lua — the authoritative game state</h2>
+  <div class="filecard">
+    <div class="path">src/game/session.lua</div>
+    <div class="role">Port of <code>lib/game/game_session.dart</code>. Owns the single authoritative
+      <a href="core.html#models-tablestate">TableState</a> for a running game, wraps every
+      <a href="core.html#table-actions-lua">table_actions.lua</a> call with a human-readable game-log entry, and
+      notifies listeners whenever anything changes. <span class="badge">Mirrored to the server</span></div>
+  </div>
+  <p>
+    <code>Session</code> is a plain Lua metatable-based "class" (<code>Session.__index = Session</code>). Time is
+    injected: <code>opts.now</code> defaults to <code>love.timer.getTime</code>, but can be overridden (tests, or
+    the gopher-lua server where there's no <code>love</code> global at all) — it drives both the game-log's elapsed
+    clock and the arrow-preview lifetime timer. <code>Session:update()</code> must be called once per frame/tick to
+    fire any due timers.
+  </p>
+  <h3 id="session-construction">Construction</h3>
+  <div class="fn"><div class="sig">Session.new(opts) -&gt; Session</div>
+  <code>opts</code>: <code>{game, localPlayerId, initialState, isLocalPractice, clockStart, now}</code>. Builds a
+  <code>definitionsById</code> index over <code>opts.game.cards</code> up front (first-id-wins on duplicates) for
+  fast card-title/metadata lookups. <code>activeSeatId</code> starts <code>nil</code>; <code>listeners</code> and
+  <code>timers</code> start empty; <code>cardDragPreviews</code>/<code>arrowDragPreviews</code> (keyed by player id)
+  hold other players' cosmetic drag previews, relayed by <a href="#host-engine-lua">host_engine.lua</a>.
+  </div>
+  <div class="fn"><div class="sig">Session.dealFromZones(opts) -&gt; Session</div>
+  The main constructor for a <em>fresh</em> game. <code>opts</code>: <code>{game, players, localPlayerId,
+  deckConfigsByPlayerId, sharedDeckConfigsByZoneId, isLocalPractice, now, rng}</code>. Builds the initial deal:
+  <ul>
+    <li>If any shared zone has <code>standardDeck = true</code>, synthesizes a full 52-card deck via
+      <a href="core.html#models-standarddeck"><code>models.buildStandardDeckCards()</code></a> and merges its
+      definitions in alongside the game's own.</li>
+    <li>For each player, for each of their non-shared <code>"card"</code>-kind zones: if the zone
+      <code>dealsBuiltDeck</code>, pulls entries from that player's chosen <code>DeckConfig</code> (or — if no deck
+      configs were supplied at all, e.g. a quick practice game — from "one of everything" via
+      <code>DeckConfig.full</code>-style <code>fullDeckEntries</code>); otherwise uses the zone's own fixed
+      <code>entries</code>. Cards are instantiated with fresh UUIDs, shuffled first if <code>zone.autoShuffle</code>.</li>
+    <li>For each player's non-shared <code>"widget"</code>-kind zones, deals a docked <code>simpleCounter</code>
+      widget seeded from the zone's counter defaults.</li>
+    <li>For shared zones: the standard deck's entries, a loaded shared deck config, the zone's fixed entries (if
+      any, or if it's a discard pile), or — failing all of those — one of everything, in that priority order.</li>
+  </ul>
+  Returns a freshly-constructed <code>Session</code> wrapping the dealt <code>TableState</code> at
+  <code>revision = 0</code>.
+  </div>
+  <div class="fn"><div class="sig">Session.localPractice(opts) -&gt; Session</div>Thin wrapper over
+  <code>dealFromZones</code> that sets <code>localPlayerId = opts.players[1].id</code> and
+  <code>isLocalPractice = true</code> — used by <a href="ui-screens.html">practice_game.lua</a>.</div>
+
+  <h3 id="session-helpers">Lookups &amp; visibility</h3>
+  <div class="fn"><div class="sig">Session:actingPlayerId() -&gt; id</div>Returns <code>activeSeatId</code> if set (practice mode's "act as this seat"), else <code>localPlayerId</code>.</div>
+  <div class="fn"><div class="sig">Session:setActiveSeat(playerId)</div>Only takes effect when <code>isLocalPractice</code> is true — clicking an avatar in a networked game has no such effect.</div>
+  <div class="fn"><div class="sig">Session:findCard(id) / findWidget(id) / definition(definitionId) / playerName(playerId)</div>Straightforward lookups via the model's own id-lookup helpers and the cached <code>definitionsById</code>.</div>
+  <div class="fn"><div class="sig">Session:zoneDefinition(zoneId) -&gt; ZoneDefinition</div>Unwraps a synthetic deck-widget zone id (<a href="core.html#deck-widget-zones-lua"><code>deck_widget_zones.parse</code></a>) to find the real <code>ZoneDefinition</code> underneath; <strong>throws</strong> if the resolved id isn't a real zone — the one place in this file that errors rather than failing silently.</div>
+  <div class="fn"><div class="sig">Session:isPubliclyVisible(card) -&gt; boolean</div>A card is visible to everyone only if it's face up <em>and</em> either it's on the table, or it's unowned, or it's in a zone marked <code>visibleToAll</code> (never true for a hand or a deck-widget zone). Used to decide whether a card's title can safely appear in the game log.</div>
+  <div class="fn"><div class="sig">Session:titleOf(card) / revealedCardName(oldCard, newCard)</div><code>revealedCardName</code> only returns a name if the card was publicly visible <em>before or after</em> the change — this is how the log can say <em>"played a card to the table"</em> for something that was secret until just now versus naming it outright when it was already public.</div>
+
+  <h3 id="session-log">Logging</h3>
+  <div class="fn"><div class="sig">Session:elapsedMs() -&gt; integer</div><code>max(0, floor((now() - clockStart) * 1000))</code>.</div>
+  <div class="fn"><div class="sig">Session:log(actingPlayerId, action)</div>Appends a new <a href="core.html#models-logentry">LogEntry</a> (<code>"&lt;player name&gt; &lt;action&gt;"</code>) directly onto <code>self.state.log</code> via <code>util.copyWith</code> — note this bypasses <code>table_actions.lua</code> entirely and does <strong>not</strong> bump the revision by itself; logging always happens alongside a real state-changing call that bumps the revision on its own.</div>
+  <div class="fn"><div class="sig">Session:logPlayedToTable(actingPlayerId, oldCard, instanceId)</div>Shared helper behind the "played &lt;card&gt; to the table from hand/the &lt;zone&gt;." log lines used by several of the card operations below.</div>
+
+  <h3 id="session-card-ops">Card operations</h3>
+  <p>Each of these calls the matching pure function in <a href="core.html#table-actions-lua">table_actions.lua</a>, assigns the result back to <code>self.state</code>, appends a game-log entry describing what happened (using the pre-change card to decide what's nameable), and calls <code>self:notify()</code>.</p>
+  <table>
+    <tr><th>Method</th><th>Log line / notable behavior</th></tr>
+    <tr><td><code>moveCard(id, x, y, actingPlayerId)</code></td><td>Logs "played ... to the table from hand/the &lt;zone&gt;." only if the card wasn't already on the table.</td></tr>
+    <tr><td><code>moveStack(rootId, x, y)</code></td><td>No log entry at all — just state + notify.</td></tr>
+    <tr><td><code>moveGroup(primaryId, passengerRootIds, x, y, actingPlayerId)</code></td><td>Same "played to the table" log, keyed off the primary card only.</td></tr>
+    <tr><td><code>rotateStack(rootId, clockwise, actingPlayerId)</code></td><td>"rotated &quot;Name&quot;." if the card is publicly visible, else "rotated a card."</td></tr>
+    <tr><td><code>bringToFront(rootId)</code></td><td>No log entry.</td></tr>
+    <tr><td><code>flipCard(id, actingPlayerId)</code></td><td>Logs "flipped &quot;Name&quot; face up/face down." (direction read from the <em>new</em> state) or the nameless variant if the card has no definition title to show (e.g. it's an unrevealed/hidden instance).</td></tr>
+    <tr><td><code>giveCard(id, newOwnerId, actingPlayerId)</code></td><td><strong>Refuses silently</strong> via <code>isInPile</code> if the card currently sits in a multi-card table pile — piles never mix owners, so neither giving nor releasing a piled card is allowed. Logs "gave ... to &lt;player&gt;." or "released ... back to the table." for <code>newOwnerId == nil</code>.</td></tr>
+    <tr><td><code>canStackOnto(id, ontoId) -&gt; boolean</code></td><td>Not a mutator — the ownership-compatibility check: resolves the dragged card's effective owner (nil if <code>unownable</code>), then requires every card already in the target pile to share that same owner. This is the actual enforcement of "piles never mix owners" that CONTROLS.md describes; <code>table_actions.stackCard</code> itself has no such check.</td></tr>
+    <tr><td><code>stackCard(id, ontoId, actingPlayerId)</code></td><td>Calls <code>canStackOnto</code> first and does nothing at all if it fails. Otherwise same "played to the table" logging as <code>moveCard</code>.</td></tr>
+    <tr><td><code>reorderHand(id, targetIndex, ownerId)</code></td><td>No log entry.</td></tr>
+    <tr><td><code>moveToHand(id, ownerId)</code></td><td>Logs "picked up &quot;Name&quot; into their hand." / "picked up a card into their hand."</td></tr>
+  </table>
+
+  <h3 id="session-draw-deal">Drawing, dealing, shuffling, searching</h3>
+  <table>
+    <tr><th>Method</th><th>Behavior</th></tr>
+    <tr><td><code>isInPile(id) -&gt; boolean</code></td><td>True only for a table card whose resolved stack has more than one member.</td></tr>
+    <tr><td><code>drawCard(pileId, ownerId, count=1)</code></td><td>Logs "drew a card." / "drew N cards."</td></tr>
+    <tr><td><code>shufflePile(rootId, actingPlayerId)</code></td><td>Logs "shuffled a pile of cards."</td></tr>
+    <tr><td><code>drawFromZone(zoneId, zoneOwnerId, toOwnerId, count=1)</code></td><td>Logs "drew a/N card(s) from the &lt;zone name&gt;."</td></tr>
+    <tr><td><code>returnToZone(id, zoneId, zoneOwnerId, toBottom, actingPlayerId)</code></td><td>Logs "discarded ..." if the target zone is a discard pile, else "returned ... to the &lt;zone&gt;."</td></tr>
+    <tr><td><code>shuffleZone(zoneId, zoneOwnerId, actingPlayerId)</code></td><td><strong>No-op</strong> (not even a state change) if the zone's <code>shuffleable</code> flag is false. Otherwise logs "shuffled the &lt;zone&gt;."</td></tr>
+    <tr><td><code>loadDeckIntoZone(zoneId, deck, actingPlayerId)</code></td><td>Materializes every entry of <code>deck</code> (a <a href="core.html#models-deck">DeckConfig</a>) that still has a matching card definition, shuffles if the zone auto-shuffles, deals them in via <code>table_actions.dealNewCards</code>, and stamps <strong>the zone definition's own id</strong> as <code>zoneId</code> on every new card (a comment notes this intentionally matches the original Dart even for a deck-widget's zone, rather than its synthetic id). Logs "loaded a deck into the &lt;zone&gt;."</td></tr>
+    <tr><td><code>startSearchZone(zoneId, zoneOwnerId, searcherId)</code> / <code>startSearchPile(pileRootInstanceId, searcherId)</code></td><td>Logs "opened a search on the &lt;zone&gt;." / "opened a search on a pile of cards."</td></tr>
+    <tr><td><code>stopSearch(searcherId)</code></td><td>Logs "closed their search." only if that searcher actually had an open search.</td></tr>
+  </table>
+
+  <h3 id="session-widgets">Board widgets</h3>
+  <table>
+    <tr><th>Method</th><th>Behavior</th></tr>
+    <tr><td><code>createWidget(id, kind, x, y, actingPlayerId)</code></td><td>Only a <code>"deckBuilder"</code> widget gets stamped with an <code>ownerId</code> (the creator); every other kind is created unowned.</td></tr>
+    <tr><td><code>createArrow(id, x, y, x2, y2, creatorId)</code></td><td>Creates the arrow widget, then schedules (<code>self:after(Session.arrowLifetime, ...)</code>) its own deletion 5 seconds later if it still exists — the "fades after 5 seconds" arrow from CONTROLS.md. <code>Session.arrowLifetime = 5</code>.</td></tr>
+    <tr><td><code>moveWidget / setWidgetColors / duplicateWidget / attachWidgetToCard</code></td><td>Thin wrappers over the matching <code>table_actions</code> calls; <code>attachWidgetToCard</code> additionally logs "attached a counter/a token/a widget to ...".</td></tr>
+    <tr><td><code>setWidgetValue(id, value, actingPlayerId)</code></td><td>Only logs ("set &lt;label&gt; to &lt;clamped value&gt;.") when the widget is a <code>simpleCounter</code>; label is the owning zone's name if docked, else "a counter".</td></tr>
+    <tr><td><code>deleteWidget(id)</code></td><td>No log entry (even though deleting a deck widget can spill many cards back onto the table).</td></tr>
+  </table>
+
+  <h3 id="session-packs-library">Packs &amp; the card library</h3>
+  <div class="fn"><div class="sig">Session:generatePack(setId, actingPlayerId, rng)</div>Looks up the <a href="core.html#models-pack-set-tag">GameSet</a> and its cards, delegates the actual selection to <a href="core.html#pack-generator-lua"><code>pack_generator.selectPackCards</code></a>, deals the result straight into the acting player's hand face-up, and logs "generated a pack from the &lt;set&gt; set."</div>
+  <div class="fn"><div class="sig">Session:createCardFromLibrary(definitionId, x, y, actingPlayerId)</div>Deals one fresh instance of an existing card definition onto the table (not the hand) at the given point — the in-game Card Library's "place a card" action. No-ops silently if the definition id isn't known. Logs <code>'created "Name" from the card library.'</code></div>
+
+  <h3 id="session-networking">Networking hooks</h3>
+  <div class="fn"><div class="sig">Session:applyRemoteState(newState)</div>Client-side: adopts <code>newState</code> only if its <code>revision</code> is strictly greater than the current one (guards against out-of-order delivery), then notifies listeners. This is the one place a <code>Session</code> running as a <em>client</em> (not authoritative) ever changes state, bypassing table_actions entirely since the state already arrived pre-computed from the host.</div>
+  <div class="fn"><div class="sig">Session:syncConnectedPlayerIds(connectedNonHostIds)</div>Host-side: given a set of currently-connected non-host player ids, updates every player's <code>connected</code> flag (the host itself is always considered connected), logging "connected."/"disconnected." for whoever changed state, and bumps the revision directly (bypassing <code>table_actions</code>, since connection state isn't really a table action). Called from <a href="#host-engine-lua"><code>host_engine:onRoster</code></a>.</div>
+
+  <h2 id="host-engine-lua">host_engine.lua — the host's authoritative loop</h2>
+  <div class="filecard">
+    <div class="path">src/game/host_engine.lua</div>
+    <div class="role">Port of <code>lib/game/host_game_engine.dart</code>. The glue between a raw network connection
+      object (anything implementing the small <code>server</code> interface below) and a <a href="#session-lua">Session</a>:
+      applies incoming client requests as that connection's player (with ownership checks of its own, independent
+      of <code>Session</code>'s), broadcasts a per-recipient-filtered full state once per revision change, and
+      relays cosmetic drag/arrow previews between clients. <span class="badge">Mirrored to the server</span></div>
+  </div>
+  <p>
+    <code>E.new(session, server, hostPlayerId)</code> takes any <code>server</code> object exposing
+    <code>onIncoming</code>, <code>onRoster</code>, <code>reclaimableIdCheck</code> (settable callback fields),
+    plus <code>roster()</code>, <code>sendTo(id, type, payload)</code> and <code>broadcast(type, payload,
+    exceptId)</code>. In the direct host/join mode that's <a href="net.html#host-server">host_server.lua</a>;
+    inside the Go server it's whatever Go-side object <code>server/internal/engine/engine.go</code> exposes to the
+    embedded Lua state (see <a href="server.html">server.html</a>).
+  </p>
+  <h3 id="host-engine-lifecycle">Lifecycle</h3>
+  <div class="fn"><div class="sig">E:start()</div>Subscribes to the session (<code>self.session:addListener(function() self:broadcast() end)</code> — every state change triggers an attempted broadcast), wires its own <code>handleMessage</code>/<code>onRoster</code> into the server's callback fields, installs a <code>reclaimableIdCheck</code> (lets a disconnected player's id be reclaimed by a reconnecting client — true only if that id belongs to a currently-disconnected player), seeds <code>previouslyConnected</code> from the server's current roster, and does an initial broadcast.</div>
+  <div class="fn"><div class="sig">E:dispose()</div>Unsubscribes the listener and clears all three callback fields on the server object.</div>
+  <div class="fn"><div class="sig">E:onRoster(roster)</div>Called whenever the underlying connection's player roster changes. Any newly-connected non-host player is sent a one-time <code>"gameData"</code> message (the full <a href="core.html#models-gamedefinition">GameDefinition</a>, JSON-encoded) so they have the card/zone definitions before any state arrives. Any player who just disconnected has their drag/arrow previews cleared (so a frozen "ghost" preview doesn't linger for everyone else). Finally calls <code>Session:syncConnectedPlayerIds</code> to update connection flags and log the join/leave.</div>
+  <div class="fn"><div class="sig">E:broadcast()</div>No-ops if <code>state.revision</code> hasn't advanced since the last broadcast (<code>lastBroadcastRevision</code>). Otherwise computes the set of <code>visibleToAll</code> zone ids once, then sends every <strong>non-host</strong> player their own <code>"fullState"</code> message — the state run through <a href="core.html#state-filter-lua"><code>state_filter.filterForRecipient</code></a> for that specific player. The host never gets this message because the host's own client already holds (or in the dedicated-server case, is literally running inside the same process as) the unfiltered <code>Session</code>.</div>
+
+  <h3 id="host-engine-permissions">Permission checks</h3>
+  <p>These mirror (and are independent of) <code>Session:canStackOnto</code>/<code>isOwnedOrUnowned</code> on the client side — the host engine never trusts a client's own claim about what it's allowed to do.</p>
+  <table>
+    <tr><th>Method</th><th>Returns true when...</th></tr>
+    <tr><td><code>E:zoneOwnerId(zoneId, requester)</code></td><td>For a deck-widget zone, the owner of the widget it belongs to; for a real zone, <code>nil</code> if shared, else the requester themself.</td></tr>
+    <tr><td><code>E:allowedDeckWidgetZone(zoneId, requester)</code></td><td>True for any non-deck-widget zone id; for a deck-widget zone, only if the requester owns that widget.</td></tr>
+    <tr><td><code>E:allowedCard(id, requester)</code></td><td>The card exists and is either unowned or owned by the requester.</td></tr>
+    <tr><td><code>E:movableWidget(id, requester)</code></td><td>Widget doesn't exist (trivially movable — the id might be about to be created) OR it's not docked in a zone AND it's unowned or owned by the requester.</td></tr>
+    <tr><td><code>E:allowedWidget(id, requester)</code></td><td>Widget exists and is unowned or owned by the requester (no docked-zone exception, unlike <code>movableWidget</code>).</td></tr>
+    <tr><td><code>E:allowedDelete(id, requester)</code></td><td>Widget exists, passes <code>movableWidget</code>, and has no <code>creatorId</code> or the requester is that creator.</td></tr>
+    <tr><td><code>E:allowedDrawOrShuffle(rootId, requester)</code></td><td>Every card in the resolved pile is unowned or owned by the requester.</td></tr>
+  </table>
+
+  <h3 id="host-engine-messages">Incoming request messages</h3>
+  <div class="fn"><div class="sig">E:handleMessage(clientId, msg)</div>
+  The dispatch table at the heart of the networked protocol: a big <code>if/elseif</code> chain on <code>msg.type</code>,
+  wrapped in <code>pcall</code> so a malformed or malicious message from one client can never crash the host (errors
+  are swallowed with a <code>print</code> log line, not propagated). Every branch validates permissions first via the
+  table above, then calls straight into the matching <code>Session</code> method, always passing <code>clientId</code>
+  as the acting player — a client can never act as anyone but itself. The request types (each a literal string, the
+  wire-level name used by <a href="#controller-lua">controller.Client</a> and <a href="net.html">the network layer</a>):
+  </div>
+  <table>
+    <tr><th>Message type</th><th>Session call (after permission check)</th></tr>
+    <tr><td><code>requestMove</code></td><td><code>moveCard</code></td></tr>
+    <tr><td><code>requestMoveGroup</code></td><td><code>moveGroup</code> — passenger list is filtered down to only cards the client is allowed to touch</td></tr>
+    <tr><td><code>requestMoveStack</code></td><td><code>moveStack</code></td></tr>
+    <tr><td><code>requestRotateStack</code></td><td><code>rotateStack</code></td></tr>
+    <tr><td><code>requestBringToFront</code></td><td><code>bringToFront</code></td></tr>
+    <tr><td><code>requestFlip</code></td><td><code>flipCard</code></td></tr>
+    <tr><td><code>requestGiveCard</code></td><td><code>giveCard</code> — only if <code>newOwnerId</code> is nil or an actual player id</td></tr>
+    <tr><td><code>requestStack</code></td><td><code>stackCard</code> — requires both the moved card and the target card to exist</td></tr>
+    <tr><td><code>requestMoveToHand</code></td><td><code>moveToHand</code></td></tr>
+    <tr><td><code>requestReorderHand</code></td><td><code>reorderHand</code></td></tr>
+    <tr><td><code>requestDraw</code></td><td><code>drawCard</code></td></tr>
+    <tr><td><code>requestShuffle</code></td><td><code>shufflePile</code></td></tr>
+    <tr><td><code>requestDrawFromZone</code></td><td><code>drawFromZone</code> — no explicit ownership gate beyond zone-owner resolution</td></tr>
+    <tr><td><code>requestReturnToZone</code></td><td><code>returnToZone</code> — requires both card permission and deck-widget-zone permission</td></tr>
+    <tr><td><code>requestShuffleZone</code></td><td><code>shuffleZone</code></td></tr>
+    <tr><td><code>requestStartSearchZone</code></td><td><code>startSearchZone</code></td></tr>
+    <tr><td><code>requestStartSearchPile</code></td><td><code>startSearchPile</code></td></tr>
+    <tr><td><code>requestStopSearch</code></td><td><code>stopSearch</code></td></tr>
+    <tr><td><code>requestCreateWidget</code></td><td><code>createWidget</code> — <code>kind</code> must be a known <a href="core.html#models-constants">BoardWidgetKind</a></td></tr>
+    <tr><td><code>requestCreateArrow</code></td><td><code>createArrow</code></td></tr>
+    <tr><td><code>requestMoveWidget</code></td><td><code>moveWidget</code></td></tr>
+    <tr><td><code>requestSetWidgetValue</code></td><td><code>setWidgetValue</code></td></tr>
+    <tr><td><code>requestDeleteWidget</code></td><td><code>deleteWidget</code></td></tr>
+    <tr><td><code>requestSetWidgetColors</code></td><td><code>setWidgetColors</code></td></tr>
+    <tr><td><code>requestDuplicateWidget</code></td><td><code>duplicateWidget</code></td></tr>
+    <tr><td><code>requestAttachWidgetToCard</code></td><td><code>attachWidgetToCard</code></td></tr>
+    <tr><td><code>requestGeneratePack</code></td><td><code>generatePack</code> — no permission gate at all (any connected player can open a pack from any set)</td></tr>
+    <tr><td><code>requestCreateCardFromLibrary</code></td><td><code>createCardFromLibrary</code> — likewise ungated</td></tr>
+    <tr><td><code>requestLoadDeckIntoZone</code></td><td><code>loadDeckIntoZone</code>, after decoding the payload's <code>deck</code> via <a href="core.html#models-deck"><code>DeckConfig.fromJson</code></a></td></tr>
+    <tr><td><code>cardDragPreview</code> / <code>cardDragPreviewEnd</code></td><td>Not a <code>Session</code> call — see drag previews below</td></tr>
+    <tr><td><code>arrowDragPreview</code> / <code>arrowDragPreviewEnd</code></td><td>Likewise</td></tr>
+  </table>
+
+  <h3 id="host-engine-previews">Drag previews (DragPreviewSink)</h3>
+  <p>
+    Separate from the authoritative <code>TableState</code> entirely: while a player is mid-drag, other players
+    should see the card/arrow moving smoothly in real time without that generating a flood of real,
+    revision-bumping state mutations. These messages are purely cosmetic and never touch <code>table_actions.lua</code>.
+  </p>
+  <div class="fn"><div class="sig">E:publishCardDragPreview(playerId, ids, fx, fy)</div>No-ops if either fractional coordinate is missing. Stores the preview on <code>session.cardDragPreviews[playerId]</code> and re-broadcasts it to everyone <em>except</em> the host player (<code>E:exceptFor</code>) via the raw <code>server:broadcast</code> — bypassing per-recipient state filtering, since drag previews aren't subject to the same hidden-information rules as real state (a card id already known to be in play is simply shown moving).</div>
+  <div class="fn"><div class="sig">E:clearCardDragPreview(playerId)</div>Removes the stored preview and broadcasts a <code>cardDragPreviewEnd</code>, but only if one was actually set (avoids spamming no-op end messages).</div>
+  <div class="fn"><div class="sig">E:publishArrowDragPreview / clearArrowDragPreview</div>Same pattern for the Tab+drag arrow-draw preview from CONTROLS.md.</div>
+  <p>On the client side, <code>cardDragPreview</code>/<code>arrowDragPreview</code> messages are <em>sent</em> by <a href="#controller-lua">controller.Client</a>'s <code>previewCardDrag</code>/<code>previewArrowDrag</code> and are consumed by whatever renders remote cursors on <a href="ui-table.html">the table screen</a> (not covered by this file — this file only relays them).</p>
+
+  <h2 id="controller-lua">controller.lua — what the table UI talks to</h2>
+  <div class="filecard">
+    <div class="path">src/game/controller.lua</div>
+    <div class="role">Port of <code>lib/game/table_controller.dart</code>. Defines the single interface
+      <a href="ui-table.html">the table screen</a> is written against: two implementations,
+      <code>M.Host</code> and <code>M.Client</code>, with identical method sets, so the table code never needs to
+      know or care which mode it's running in.</div>
+  </div>
+  <div class="note">
+    Every public method on both <code>Host</code> and <code>Client</code> has the same name and argument order — this
+    is the whole point of the abstraction. The table screen is constructed with <em>some</em> controller object and
+    simply calls, say, <code>controller:moveCard(id, x, y)</code> without an <code>if isHost then ... else ...
+    end</code> anywhere in its own code.
+  </div>
+
+  <h3 id="controller-host">Host (M.Host)</h3>
+  <p><code>Host.new(session, previewSink)</code> — <code>previewSink</code> is optional and, when present, is the <a href="#host-engine-lua">host_engine</a> instance itself (anything exposing <code>publishCardDragPreview</code>/<code>clearCardDragPreview</code>/<code>publishArrowDragPreview</code>/<code>clearArrowDragPreview</code>).</p>
+  <div class="fn"><div class="sig">Host:acting() -&gt; id</div>Delegates to <code>session:actingPlayerId()</code> — respects practice mode's active-seat override.</div>
+  <div class="fn"><div class="sig">Host:isOwnedOrUnowned(instanceId) / isOwnedOrUnownedStack(rootId) -&gt; boolean</div>Client-side mirrors of the same ownership logic <a href="#host-engine-permissions">host_engine</a> enforces authoritatively — in local/host-authoritative modes there's no separate network hop to reject an action on, so these checks have to happen right here before calling into <code>Session</code> at all.</div>
+  <div class="fn"><div class="sig">Host:zoneOwnerId(zoneId) -&gt; id|nil</div>Same resolution logic as <code>host_engine:zoneOwnerId</code> (deck-widget unwrap, shared-zone check, else the acting player), duplicated here rather than shared because this runs client-side against the local <code>Session</code> directly.</div>
+  <p>Every other <code>Host</code> method (<code>moveCard, moveGroup, moveStack, rotateStack, bringToFront, flipCard, giveCard, stackCard, moveToHand, reorderHand, drawCard, shufflePile, drawFromZone, returnToZone, shuffleZone, loadDeckIntoZone, startSearchZone, startSearchPile, stopSearch, createWidget, createArrow, moveWidget, setWidgetValue, deleteWidget, setWidgetColors, duplicateWidget, attachWidgetToCard, generatePack, createCardFromLibrary</code>) follows the same shape: optionally gate on one of the two ownership checks above, then call the matching <code>self.session:&lt;method&gt;(..., self:acting())</code>.</p>
+  <div class="fn"><div class="sig">Host:previewCardDrag(primaryId, passengerRootIds, fx, fy) / endCardDragPreview() / previewArrowDrag(fx, fy, fx2, fy2) / endArrowDragPreview()</div>Forward straight to <code>previewSink</code> if one was supplied (no-op otherwise — practice mode has no preview sink since there's nobody else to show a preview to).</div>
+
+  <h3 id="controller-client">Client (M.Client)</h3>
+  <p><code>Client.new(send)</code> — <code>send(type, payloadObject)</code> is the only dependency; in practice it's a thin wrapper that hands the message off to <a href="net.html#server-client">server_client.lua</a> or <a href="net.html#game-client">game_client.lua</a> for actual transmission.</p>
+  <p>Every method builds the matching request payload (a <a href="core.html#json-lua"><code>json.object(...)</code></a> literal with exactly the keys <a href="#host-engine-messages">host_engine's dispatch table</a> expects) and calls <code>self.send(type, payload)</code> — there is <strong>no local validation or optimistic update</strong> at all; the client simply fires the request and waits for the next <code>fullState</code> broadcast to reflect whatever the host actually did (or silently refused). This keeps the client dumb and the host/server the single source of truth. The method-name-to-message-type mapping exactly matches the table in <a href="#host-engine-messages">host_engine.lua</a> above (e.g. <code>Client:moveCard</code> sends <code>"requestMove"</code>, <code>Client:giveCard</code> sends <code>"requestGiveCard"</code> with <code>newOwnerId</code> coerced to <code>json.null</code> when nil since JSON has no bare "undefined").</p>
+  <div class="fn"><div class="sig">Client:previewCardDrag / endCardDragPreview / previewArrowDrag / endArrowDragPreview</div>Send the <code>cardDragPreview</code>/<code>cardDragPreviewEnd</code>/<code>arrowDragPreview</code>/<code>arrowDragPreviewEnd</code> messages described under <a href="#host-engine-previews">host_engine's preview relay</a> above.</div>
+
+  <h2 id="sound-lua">sound.lua — fire-and-forget sound effects</h2>
+  <div class="filecard">
+    <div class="path">src/game/sound.lua</div>
+    <div class="role">Port of <code>lib/game/sound_service.dart</code>. Client-only; plays short effect clips with
+      up to 4 overlapping voices per effect so rapid repeated actions (several quick card draws) don't cut each
+      other off.</div>
+  </div>
+  <table>
+    <tr><th>Effect key</th><th>File</th></tr>
+    <tr><td><code>draw</code></td><td><code>assets/audio/draw.wav</code></td></tr>
+    <tr><td><code>playCard</code></td><td><code>assets/audio/playcard.wav</code></td></tr>
+    <tr><td><code>shuffle</code></td><td><code>assets/audio/shuffle.wav</code></td></tr>
+    <tr><td><code>tap</code></td><td><code>assets/audio/tap.wav</code></td></tr>
+    <tr><td><code>untap</code></td><td><code>assets/audio/untap.wav</code></td></tr>
+    <tr><td><code>error</code></td><td><code>assets/audio/error.wav</code></td></tr>
+  </table>
+  <div class="fn"><div class="sig">S.play(effect) -&gt; boolean</div>
+  On first use of a given effect key, loads a <code>love.audio.newSource(path, "static")</code> and clones it 3
+  more times into a 4-voice pool (<code>VOICES = 4</code>), cached in the module-local <code>pools</code> table
+  keyed by effect name. Each call takes the next voice round-robin (<code>pool.next</code> wraps mod 4), stops it
+  if it's still playing from a previous trigger, and restarts it — this is what lets the same effect overlap itself
+  up to 4 times without an unbounded number of sources. The whole body runs inside a <code>pcall</code>, and the
+  function returns <code>false</code> (or the <code>pcall</code>'s own ok flag) on any failure rather than throwing —
+  deliberately silent, per the file's header comment, so a missing/corrupt audio asset never crashes gameplay. Also
+  no-ops immediately if <code>love.audio</code> isn't available at all (test mode disables the audio module, see
+  <a href="architecture.html">conf.lua</a>).
+  </div>
+
+  <div class="nextprev">
+    <a href="core.html">&larr; Core Rules Engine</a>
+    <a href="data.html">Data &amp; Persistence &rarr;</a>
+  </div>
+</main>
+</body>
+</html>

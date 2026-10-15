@@ -1,0 +1,499 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Screens — Cardflux Docs</title>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+<nav class="sidenav">
+  <a class="brand" href="index.html">Cardflux<small>Codebase Documentation</small></a>
+  <div class="group-label">Application</div>
+  <a href="architecture.html">Architecture &amp; App Lifecycle</a>
+  <a href="ui-framework.html">UI Toolkit (kit)</a>
+  <div class="group-label">User Interface</div>
+  <a href="ui-screens.html" class="current">Screens</a>
+  <a href="ui-gamedef-editor.html">Game Definition Editor</a>
+  <a href="ui-server-screens.html">Multiplayer Lobby Screens</a>
+  <a href="ui-table.html">Game Table Rendering</a>
+  <div class="group-label">Engine &amp; Data</div>
+  <a href="core.html">Core Rules Engine</a>
+  <a href="game.html">Game Session &amp; Controller</a>
+  <a href="data.html">Data &amp; Persistence</a>
+  <div class="group-label">Platform &amp; Network</div>
+  <a href="net.html">Networking</a>
+  <a href="platform.html">Platform Integration</a>
+  <div class="group-label">Server</div>
+  <a href="server.html">Cardflux Server (Go)</a>
+  <div class="group-label">Quality</div>
+  <a href="tests-tools.html">Tests &amp; Tools</a>
+</nav>
+<main class="page">
+  <header class="page-head">
+    <div class="crumb"><a href="index.html">Home</a> / User Interface</div>
+    <h1>Screens</h1>
+    <div class="subtitle">General-purpose screens that make up the app's primary navigation flow.</div>
+  </header>
+
+  <div class="toc">
+    <div class="toc-title">On this page</div>
+    <ul>
+      <li><a href="#overview">Overview &amp; navigation flow</a></li>
+      <li><a href="#home">home.lua — Home</a></li>
+      <li><a href="#game-picker">game_picker.lua — Game Picker</a></li>
+      <li><a href="#player-count">player_count.lua — Player Count</a></li>
+      <li><a href="#practice-select">practice_select.lua — Practice Game Select</a></li>
+      <li><a href="#practice-game">practice_game.lua — Practice Game</a></li>
+      <li><a href="#multiplayer">multiplayer.lua — Host / Join / Play Online</a></li>
+      <li><a href="#multiplayer-host-setup">HostSetup (lobby)</a></li>
+      <li><a href="#multiplayer-assign-seats">AssignSeats</a></li>
+      <li><a href="#multiplayer-host-game-select">HostGameSelect</a></li>
+      <li><a href="#multiplayer-host-game">HostGame</a></li>
+      <li><a href="#multiplayer-join">Join</a></li>
+      <li><a href="#multiplayer-client-game">ClientGame</a></li>
+      <li><a href="#load-saved-game">load_saved_game.lua — Load a Saved Game</a></li>
+      <li><a href="#deck-editor">deck_editor.lua — Deck Editor</a></li>
+      <li><a href="#deck-library-dialog">deck_library_dialog.lua — Load/Save Deck dialog</a></li>
+      <li><a href="#file-picker-dialog">file_picker_dialog.lua — In-app file picker</a></li>
+      <li><a href="#controls-dialog">controls_dialog.lua — Controls (Markdown renderer)</a></li>
+      <li><a href="#settings-dialog">settings_dialog.lua — Settings</a></li>
+      <li><a href="#support-dialog">support_dialog.lua — Support the Author</a></li>
+    </ul>
+  </div>
+
+  <h2 id="overview">Overview &amp; navigation flow</h2>
+  <p>
+    Every file on this page lives under <code>src/ui/screens/</code> and is a "screen" in the sense defined by the
+    app shell on <a href="architecture.html">architecture.html</a>: a plain Lua table/module instance pushed onto
+    <code>src/app.lua</code>'s screen stack (<code>App.push</code>/<code>App.pop</code>/<code>App.replace</code>),
+    exposing some subset of <code>title</code>, <code>showBack</code>, <code>onBack()</code>,
+    <code>draw(x, y, w, h)</code>, <code>update(dt)</code>, <code>keypressed</code>/<code>keyreleased</code>,
+    <code>textinput</code>, <code>enter()</code>/<code>leave()</code>/<code>resume()</code>, <code>filedropped</code>
+    and <code>quit()</code>. All drawing goes through the immediate-mode widgets documented on
+    <a href="ui-framework.html">ui-framework.html</a> (<code>ui.button</code>, <code>ui.textField</code>,
+    <code>overlays.dialog</code>, etc).
+  </p>
+  <p>Most of these files are direct ports of a predecessor Flutter app — their header comments name the
+    <code>.dart</code> file they replace, which is a useful cross-reference if you ever find the design history
+    confusing (there is no Flutter code in this repository any more; the comments are historical breadcrumbs only).</p>
+  <p>The primary navigation graph, ignoring dialogs, looks like this:</p>
+  <pre>Home
+ ├─ Host Game ──────────► player_count.host() ─► multiplayer.HostSetup ─► (AssignSeats if 3-4p) ─► HostGameSelect ─► HostGame (the table)
+ ├─ Practice Offline ───► player_count.practice() ─► practice_select ─► practice_game (the table)
+ ├─ Deck Editor ────────► deck_editor.GameSelect ─► deck_editor.Editor
+ ├─ Join a Game (inline)► multiplayer.Join ─► (server detected) server.login lobby, or (raw host) multiplayer.ClientGame (the table)
+ ├─ Settings (corner icon) ─► settings_dialog
+ ├─ Game Definition Editor (corner icon) ─► gamedef_editor.Entry  (see ui-gamedef-editor.html)
+ └─ Support the Author (corner icon) ─► support_dialog</pre>
+  <p>
+    <code>load_saved_game.lua</code> is reached from both the practice and host flows ("Load a Saved Game...") as an
+    alternative to dealing a fresh game. <code>deck_library_dialog.lua</code>, <code>file_picker_dialog.lua</code>,
+    <code>controls_dialog.lua</code> and <code>support_dialog.lua</code> are all opened as overlay dialogs from other
+    screens rather than being destinations in their own right.
+  </p>
+
+  <h2 id="home">home.lua — Home</h2>
+  <div class="filecard">
+    <div class="path">src/ui/screens/home.lua</div>
+    <div class="role">The app's landing screen: profile, Join/Host, and secondary actions.</div>
+  </div>
+  <p>
+    Port of <code>home_screen.dart</code>, extended with an inline Join panel (host/port fields directly on Home,
+    plus one-tap reconnect to the last server) and a responsive layout: a two-column layout once the content area is
+    at least <code>WIDE_BREAKPOINT = 760</code> logical pixels wide (<code>Home:drawWide</code>), falling back to a
+    single centered column with a Join/Host segmented toggle when narrower (<code>Home:drawNarrow</code>).
+  </p>
+  <p><code>Home.new(message)</code> constructs the screen; an optional <code>message</code> is shown as a warning
+    banner (this is how <a href="#multiplayer-host-game"><code>App.popToHome(message)</code></a> surfaces "You ended
+    the game." / "You left the game." etc back on Home). <code>showBack = false</code> since Home is always the
+    bottom of the stack.</p>
+  <div class="fn">
+    <div class="sig">Home.openEditPlayerSettings()</div>
+    Opens the "Edit Player Settings" dialog (name, color via
+    <a href="ui-framework.html">ui/kit/colorpicker.lua</a>, and an avatar image). Avatar changes are staged in a
+    local <code>st</code> table and only committed to <code>App.profile</code> and
+    <a href="data.html">src/data/profile.lua</a> when Save is pressed; a chosen avatar is copied in via
+    <code>profile.saveAvatar</code> and invalidated in <a href="data.html">src/data/image_cache.lua</a> so the new
+    image reloads immediately.
+  </div>
+  <div class="fn">
+    <div class="sig">Home.confirmUpdate() / Home.runUpdate()</div>
+    Port of the update-confirm / update-progress dialogs: <code>confirmUpdate</code> asks to install
+    <code>updater.state.tag</code> (populated by <a href="platform.html">src/platform/updater.lua</a>);
+    <code>runUpdate</code> opens a non-dismissible progress dialog, calls <code>updater.apply(progressCb,
+    doneCb)</code>, and on success schedules <code>love.event.quit()</code> ~0.3s later (checked in
+    <code>Home:update</code>) so the external updater helper can swap the install files once Cardflux has exited.
+  </div>
+  <div class="fn">
+    <div class="sig">Home:drawJoinFields(cx, yy, w, recent) / Home:drawRecentServersPopup(...)</div>
+    The shared guts of the Join UI used by both the wide Join card and the narrow Join tab: a "LAST PLAYED" banner
+    with one-tap Reconnect when <code>profile.getRecentServers()</code> is non-empty, an IP field with a
+    recent-servers dropdown, a port field, and Connect. <code>Home:connect(host, port)</code> pushes
+    <a href="#multiplayer-join"><code>multiplayer.Join</code></a> with <code>autoConnect = true</code>.
+    <code>Home.joinFieldsHeight(hasRecent)</code> is exposed so callers can reserve exactly the right height without
+    duplicating the layout math.
+  </div>
+  <p>
+    <code>Home:drawCornerTools</code> draws the three small icon buttons in the bottom-right corner: Settings
+    (<a href="#settings-dialog">settings_dialog</a>), the build icon (Game Definition Editor, see
+    <a href="ui-gamedef-editor.html">ui-gamedef-editor.html</a>) and a coffee-cup icon
+    (<a href="#support-dialog">support_dialog</a>). The build number from <a href="architecture.html">src/version.lua</a>
+    is drawn bottom-left.
+  </p>
+
+  <h2 id="game-picker">game_picker.lua — Game Picker</h2>
+  <div class="filecard">
+    <div class="path">src/ui/screens/game_picker.lua</div>
+    <div class="role">Not a screen itself — a reusable grid-of-game-tiles component embedded by other screens.</div>
+  </div>
+  <p>
+    Port of <code>game_picker.dart</code> + <code>game_grid.dart</code>. <code>GamePicker.new(onGameChosen, opts)</code>
+    loads the game library folder (<a href="data.html">src/data/paths.lua</a>'s <code>gamesDir()</code>) via
+    <a href="data.html">src/data/game_loader.lua</a>'s <code>loadGamesFromDirectory</code>, always appending the
+    built-in Standard 52-Card Deck game (<code>loader.loadStandardDeck()</code>) unless
+    <code>opts.excludeStandardDeck</code> is set (deck editors hide it since it can't be customized). Loading is
+    deferred to the next <code>update()</code> call (<code>pendingLoad = 2</code> frames) purely so a progress
+    indicator gets drawn before the (blocking) directory scan runs.
+  </p>
+  <p>
+    <code>P.drawGrid(scrollId, games, x, y, w, viewH, pad, onTap)</code> is the reusable tile-grid renderer (up to
+    <code>MAX_COLUMNS = 7</code> columns of 268px tiles) and is also called directly by other screens that want a
+    grid of games without the rest of the GamePicker chrome (e.g. the Game Definition Editor's Entry screen on
+    <a href="ui-gamedef-editor.html">ui-gamedef-editor.html</a>, and the server's Card Shop screen on
+    <a href="ui-server-screens.html">ui-server-screens.html</a>). <code>P.gridHeight(w, count)</code> lets a caller
+    size a non-scrolling viewport to exactly fit.
+  </p>
+  <p>
+    <code>P.maybeMoveLibraryFolder(oldRoot, newRoot, whatLabel, after)</code> (port of
+    <code>move_library_prompt.dart</code>) is the confirmation shown whenever the user picks a new games/decks
+    folder that isn't empty: offers to move the old folder's contents into the new one via
+    <a href="data.html">src/data/gamedef_ops.lua</a>'s <code>moveDirectoryContents</code>. It's reused by
+    <code>chooseDirectory</code> here, by the gamedef editor's folder picker, and by
+    <a href="#deck-library-dialog">deck_library_dialog.lua</a>'s folder picker.
+  </p>
+
+  <h2 id="player-count">player_count.lua — Player Count</h2>
+  <div class="filecard">
+    <div class="path">src/ui/screens/player_count.lua</div>
+    <div class="role">A tiny generic "pick a number" screen, parameterized for Host or Practice.</div>
+  </div>
+  <p>
+    Ports <code>player_count_screen.dart</code> (host: 2-4 players) and
+    <code>practice_player_count_screen.dart</code> (practice: 1-4 decks) as two factory functions,
+    <code>S.host()</code> and <code>S.practice()</code>, that build the same generic screen
+    (<code>S.new(title, question, counts, labelFor, onChoose)</code>) with different button sets.
+    <code>S.host()</code> pushes <a href="#multiplayer-host-setup"><code>multiplayer.HostSetup.new(n)</code></a>;
+    <code>S.practice()</code> pushes <a href="#practice-select"><code>practice_select.new(n)</code></a>.
+  </p>
+
+  <h2 id="practice-select">practice_select.lua — Practice Game Select</h2>
+  <div class="filecard">
+    <div class="path">src/ui/screens/practice_select.lua</div>
+    <div class="role">Choose a game to practice offline with the chosen number of local seats.</div>
+  </div>
+  <p>
+    Port of <code>practice_game_select_screen.dart</code>. Wraps a <a href="#game-picker">GamePicker</a> and, on
+    choosing a game, builds a <code>PlayerInfo</code> list (see <a href="core.html">src/core/models.lua</a>) — seat 1
+    is the local player using their real name/color from <code>App.profile</code>; the remaining seats are
+    "Player 2".."Player N" colored from <a href="core.html">src/core/color.lua</a>'s
+    <code>boardWidgetColorPalette</code>, skipping colors already in use. It then pushes
+    <a href="#practice-game"><code>practice_game.new({game, players, deckConfigsByPlayerId = {}})</code></a> — an
+    empty (not nil) deck map, since practice mode deals built-deck zones empty and expects each seat to load a deck
+    at the table, same as the Flutter original. A "Load a Saved Game..." button instead routes through
+    <a href="#load-saved-game">load_saved_game.lua</a>.
+  </p>
+
+  <h2 id="practice-game">practice_game.lua — Practice Game</h2>
+  <div class="filecard">
+    <div class="path">src/ui/screens/practice_game.lua</div>
+    <div class="role">The screen that actually hosts an offline practice session — one player acting as every seat.</div>
+  </div>
+  <p>
+    Port of <code>practice_game_screen.dart</code>. Creates a
+    <a href="game.html#session-lua"><code>Session</code></a> — either <code>Session.localPractice(...)</code> for a
+    fresh deal, or <code>Session.new({initialState = loadedState, isLocalPractice = true, ...})</code> when resuming
+    a save (resuming re-derives the session clock's start time from the save's last log entry's
+    <code>elapsedMs</code>, so elapsed-time displays keep counting from where the save left off instead of resetting
+    to zero). It then builds a <a href="ui-table.html"><code>TableScreen</code></a> with
+    <code>controller.Host.new(session)</code> (practice mode is always "hosted" locally, with no network peer — see
+    <a href="game.html#controller-lua">src/game/controller.lua</a>) and <code>isMirrored = false</code> (practice always
+    sits the local player at the bottom, since they can click any avatar to act as any seat).
+  </p>
+  <p>
+    <code>S:saveGame()</code> opens <a href="ui-framework.html">src/ui/kit/save_name_dialog.lua</a> pre-populated
+    with existing saves from <a href="data.html">src/data/save_files.lua</a>, and writes a
+    <code>models.SavedGame</code> (clearing <code>state.searches</code> first, since in-flight search dialogs aren't
+    meaningful to persist). Discord Rich Presence is kept in sync via <code>publishPresence</code>/
+    <a href="platform.html">src/platform/discord.lua</a>'s <code>setPlaying</code>/<code>setIdle</code>, hooked to
+    the session's listener mechanism (see <a href="game.html">game.html</a>) so presence updates whenever the roster
+    changes.
+  </p>
+
+  <h2 id="multiplayer">multiplayer.lua — Host / Join / Play Online</h2>
+  <div class="filecard">
+    <div class="path">src/ui/screens/multiplayer.lua</div>
+    <div class="role">The single largest screens file: six screen types covering hosting, joining, and playing a networked game.</div>
+  </div>
+  <p>
+    Ports <code>host_setup_screen.dart</code>, <code>assign_seats_screen.dart</code>, <code>game_select_screen.dart</code>,
+    <code>host_game_screen.dart</code>, <code>join_screen.dart</code> and <code>client_game_screen.dart</code> into one
+    module (<code>M</code>) exporting <code>HostSetup</code>, <code>AssignSeats</code>, <code>HostGameSelect</code>,
+    <code>HostGame</code>, <code>Join</code> and <code>ClientGame</code>. It pulls together nearly every other
+    subsystem: <a href="net.html">src/net/protocol.lua</a>, <code>host_server.lua</code>, <code>game_client.lua</code>,
+    <code>netinfo.lua</code>; <a href="game.html">src/game/session.lua</a>, <code>host_engine.lua</code>,
+    <code>controller.lua</code>, <code>sound.lua</code>; <a href="data.html">src/data/profile.lua</a>,
+    <code>save_files.lua</code>, <code>deck_library.lua</code>, <code>game_loader.lua</code>; and
+    <a href="platform.html">src/platform/discord.lua</a> for Rich Presence and game invites.
+  </p>
+  <div class="note">
+    A module-local helper, <code>avatarKeys(bytesById)</code>, interns raw avatar PNG bytes into
+    <a href="data.html">image_cache</a> keys (hashed with <code>love.data.hash("md5", ...)</code>) so repeated calls
+    with the same bytes don't re-register the image. It's exported as <code>M.avatarKeys</code> and reused by
+    <code>HostGame:update</code> and <code>ClientGame:handleMessage</code> to keep the table's avatar images current
+    as players join, leave or change their picture mid-game.
+  </div>
+
+  <h3 id="multiplayer-host-setup">HostSetup (lobby)</h3>
+  <p>
+    <code>HostSetup.new(maxPlayers)</code> immediately starts a <a href="net.html#host-server">HostServer</a>
+    (binding a TCP port) and begins resolving the public IPv4 address via
+    <a href="net.html#netinfo">src/net/netinfo.lua</a>. It shows LAN addresses, the public address, and
+    <a href="net.html#upnp">UPnP</a> port-forwarding status for "Manual IP" sharing, or — via a segmented toggle — an
+    "Invite via Discord" mode that lists Discord friends and sends each one a Rich Presence game invite carrying
+    <code>publicIP:port</code> as the join secret (<code>HostSetup:sendInvite</code>,
+    <a href="platform.html#discord">src/platform/discord.lua</a>). Once the roster fills to <code>maxPlayers</code>,
+    <code>HostSetup:update</code> auto-advances to <code>AssignSeats</code> (3-4 players) or straight to
+    <code>HostGameSelect</code> (2 players, where seating order is unambiguous).
+  </p>
+
+  <h3 id="multiplayer-assign-seats">AssignSeats</h3>
+  <p>
+    Shown only for 3-4 player games, where the physical seating around the table matters (see
+    <a href="core.html#seat-utils-lua">src/core/seat_utils.lua</a>). Draws a small schematic of the table (top row /
+    "(shared table)" / bottom row) and a dropdown per seat to swap players into position, then calls
+    <code>server:setSeatOrder(...)</code> and advances to <code>HostGameSelect</code>.
+  </p>
+
+  <h3 id="multiplayer-host-game-select">HostGameSelect</h3>
+  <p>
+    Wraps a <a href="#game-picker">GamePicker</a> for the host to choose which game to play (or "Load a Saved
+    Game..."). <code>resolveSharedDeckConfigs(game)</code> pre-resolves any shared zone that names a
+    <code>deckName</code> (rather than being a player-built deck) by looking it up in
+    <a href="data.html#deck-library">src/data/deck_library.lua</a>, so <code>HostGame</code> doesn't need to touch
+    the filesystem again.
+  </p>
+
+  <h3 id="multiplayer-host-game">HostGame</h3>
+  <p>
+    The actual hosted table. Broadcasts <code>gameData</code> to every connected client immediately, builds the
+    <a href="game.html#session-lua">Session</a> (dealt fresh via <code>Session.dealFromZones</code>, or resumed from a
+    save), then creates a <a href="game.html#host-engine-lua">HostEngine</a> that owns authoritative game-rule
+    enforcement and starts it. <code>controller.Host.new(session, engine)</code> is handed to the
+    <a href="ui-table.html">TableScreen</a> so local input goes through the same validation path remote clients'
+    messages do. <code>HostGame:endGame</code> disposes the engine, stops the server (reason
+    <code>"hostLeft"</code>, which <code>ClientGame</code> below turns into a user-facing message) and pops back to
+    Home with a confirmation banner.
+  </p>
+
+  <h3 id="multiplayer-join">Join</h3>
+  <p>
+    The client half of connecting: an IP/port form (with the same recent-servers dropdown pattern as
+    <a href="#home">Home</a>) that, on Connect, creates a <a href="net.html#game-client">GameClient</a> and watches
+    its <code>onStatus</code> callback. A status of <code>"server"</code> means the address turned out to be a full
+    Cardflux lobby server (not a direct peer-to-peer host) — the screen hands the raw connection to
+    <a href="net.html#server-client">src/net/server_client.lua</a>'s <code>adopt</code> and replaces itself with
+    <a href="ui-server-screens.html">src/ui/screens/server/login.lua</a>. A status of <code>"connected"</code> with
+    an assigned player id means a direct game host accepted the connection — the screen saves a reconnect token
+    (<code>profile.saveReconnect</code>, keyed by host:port, consumed on a later reconnect attempt) and replaces
+    itself with <code>ClientGame</code>.
+  </p>
+
+  <h3 id="multiplayer-client-game">ClientGame</h3>
+  <p>
+    The client-side table screen, driven entirely by messages from the host (<code>client.onMessage</code> routed
+    into <code>ClientGame:handleMessage</code>). It is reused, via its <code>opts</code> table, both for a
+    direct peer-to-peer game and for a game running on a Cardflux server (where <code>client</code> is actually
+    <code>server_client:gameChannel()</code> — see <a href="ui-server-screens.html">ui-server-screens.html</a>'s
+    <code>room.lua</code>): <code>opts.localGame</code> supplies locally-cached game art so a server game doesn't
+    need every image round-tripped over the network, <code>opts.onExit</code> redirects "leave" back to the server
+    lobby instead of all the way Home, and <code>opts.spectator</code>/<code>opts.collectionMode</code>/
+    <code>opts.deckStore</code> flow straight through to <a href="ui-table.html">TableScreen</a>.
+  </p>
+  <p>
+    Message handling builds up the session lazily: <code>gameData</code> gives the <code>GameDefinition</code> (run
+    through <code>resolveLocalImages</code> to merge in any locally-cached art), <code>lobbyRosterUpdate</code>
+    tracks who's connected and their avatars before the game itself starts, and the first <code>fullState</code>
+    message constructs the <a href="game.html#session-lua">Session</a> and the <a href="ui-table.html">TableScreen</a>
+    (with <code>controller.Client.new(sendFn)</code> — every local action is sent to the host rather than applied
+    directly). Subsequent <code>fullState</code> messages go through <code>session:applyRemoteState</code> instead.
+    <code>cardDragPreview(End)</code> and <code>arrowDragPreview(End)</code> messages update the live
+    cursor-drag/arrow previews other players see while someone is mid-drag (see <a href="ui-table.html">ui-table.html</a>).
+  </p>
+
+  <h2 id="load-saved-game">load_saved_game.lua — Load a Saved Game</h2>
+  <div class="filecard">
+    <div class="path">src/ui/screens/load_saved_game.lua</div>
+    <div class="role">Browse a game's saves and resume one, remapping saved players onto the current seats.</div>
+  </div>
+  <p>
+    Ports <code>load_saved_game_screen.dart</code> and <code>seat_match_screen.dart</code>. Step one is a
+    <a href="#game-picker">GamePicker</a> to pick which game's save folder to browse
+    (<a href="data.html#save-files">src/data/save_files.lua</a>'s <code>listSaveGames</code>); step two lists that
+    game's saves, graying out ones whose <code>playerCount</code> doesn't match the current session's player count.
+  </p>
+  <p>
+    Picking a compatible save calls <code>remap.matchPlayersByName</code>
+    (<a href="core.html#save-remap-lua">src/core/save_remap.lua</a>) to pair saved players to current players by name.
+    Any saved player that can't be matched automatically triggers the nested <code>SeatMatch</code> screen — a
+    dropdown per unmatched saved player to manually choose which current player they now are — before finally
+    calling <code>remap.buildLoadedTableState</code> to produce a <code>TableState</code> with ids rewritten onto
+    the current roster, dropping (with a confirmation if any exist) cards whose definition no longer exists in the
+    game (it may have been edited in the <a href="ui-gamedef-editor.html">Game Definition Editor</a> since the save
+    was made).
+  </p>
+
+  <h2 id="deck-editor">deck_editor.lua — Deck Editor</h2>
+  <div class="filecard">
+    <div class="path">src/ui/screens/deck_editor.lua</div>
+    <div class="role">Build/edit a DeckConfig: a card pool on the left, the deck list on the right.</div>
+  </div>
+  <p>
+    Ports <code>deck_editor_game_select_screen.dart</code> and <code>deck_editor_screen.dart</code>. Exports
+    <code>{ GameSelect, Editor, buildSlots }</code>. <code>GameSelect</code> is a thin
+    <a href="#game-picker">GamePicker</a> wrapper (excluding the Standard 52-Card Deck, which can't be customized);
+    picking a game opens <code>Editor.new(game, opts)</code>.
+  </p>
+  <div class="fn">
+    <div class="sig">buildSlots(game)</div>
+    A deck isn't always one list: a game can declare multiple deck-building zones with distinct
+    <code>deckType</code>s (e.g. a main deck and a separate sideboard). This builds one "slot" per distinct
+    <code>deckType</code> found among <code>GameDefinition.deckBuildingZones(game)</code> (see
+    <a href="core.html#models-lua">src/core/models.lua</a>), labeled by the first zone that uses it, required unless
+    every zone using it has <code>deckOptional</code> set — or, if the game declares no deck-building zones at all,
+    a single implicit <code>main_deck</code> slot.
+  </div>
+  <p>
+    Left-clicking a pool card calls <code>E:addCopy(id)</code>; right-clicking calls <code>E:removeCopy(id)</code>.
+    Quantities are tracked per slot as an <em>insertion-ordered</em> map (<code>{order = {...ids}, qty = {id =
+    n}}</code>) so the saved file and on-screen deck list preserve the order cards were added, matching the
+    original Dart <code>Map</code> semantics. <code>E:saveDeck()</code> and <code>E:openDeck()</code> delegate to
+    <a href="#deck-library-dialog">deck_library_dialog.lua</a>'s <code>promptSaveDeck</code>/<code>open</code>.
+  </p>
+  <div class="note">
+    <strong>Collection mode.</strong> When opened with <code>opts.ownedQty</code> (a server's collection-mode
+    deck editor — see <a href="ui-server-screens.html">ui-server-screens.html</a>), the pool is filtered down to
+    owned, <code>unownable</code> or <code>isFreeCard</code> cards (<code>E:visibleCards</code>), copies are capped
+    at the owned quantity (<code>E:ownedLimit</code>/<code>E:addCopy</code>), and <code>E:clampToCollection</code>
+    trims any over-the-limit copies left over after loading a deck built before a collection shrank (e.g. cards
+    sold or lost). <code>opts.store</code> (a <a href="data.html#deck-store">src/data/deck_store.lua</a> store)
+    redirects Open/Save at a server instead of the local deck library folder.
+  </div>
+
+  <h2 id="deck-library-dialog">deck_library_dialog.lua — Load/Save Deck dialog</h2>
+  <div class="filecard">
+    <div class="path">src/ui/screens/deck_library_dialog.lua</div>
+    <div class="role">The 760×560 "Load Deck" overlay opened at the table, plus the Save Deck flow shared by the Deck Editor and the table.</div>
+  </div>
+  <p>
+    Port of <code>widgets/deck_library_screen.dart</code>, rendered as an <code>overlays.dialog</code> rather than a
+    full screen. <code>D.open(game, zones, onDeckChosen, opts)</code> lists every deck for the game — either from
+    the local folder (<a href="data.html#deck-library">src/data/deck_library.lua</a>'s
+    <code>loadAllDecksForGame</code>) or, when <code>opts.store.kind == "server"</code>, from a server's deck list
+    (<a href="data.html#deck-store">deck_store.lua</a>) — as a grid of card-back tiles sized like the Deck Editor's
+    pool. <code>zones</code> (the <code>ZoneDefinition</code>s being filled) drives validation: a deck missing any
+    non-optional zone's <code>deckType</code> is rejected with an inline error rather than loaded
+    (<code>missingRequired</code>).
+  </p>
+  <p>
+    Right-clicking a non-built-in deck opens a context menu to delete it (<code>deleteDeck</code>, routed through
+    the store for server decks or <a href="data.html#fs">src/data/fs.lua</a>'s <code>remove</code> locally).
+    "Browse for file..." (local only) opens <a href="#file-picker-dialog">file_picker_dialog.lua</a> to load an
+    arbitrary deck JSON from disk via <code>decks.readDeckFile</code>, rejecting legacy-format files with a
+    pointed error message (<code>models.LegacyDeckFormatError</code>).
+  </p>
+  <p>
+    <code>D.promptSaveDeck(game, deck, onSaved, opts)</code> opens
+    <a href="ui-framework.html">src/ui/kit/save_name_dialog.lua</a> pre-filled with existing deck names to reuse;
+    for a server store it delegates to <code>D.promptSaveServerDeck</code>, which additionally offers an "Also save
+    a copy to my local deck library" checkbox (<code>store.alsoLocal</code>).
+  </p>
+
+  <h2 id="file-picker-dialog">file_picker_dialog.lua — In-app file picker</h2>
+  <div class="filecard">
+    <div class="path">src/ui/screens/file_picker_dialog.lua</div>
+    <div class="role">A from-scratch, overlay-based file/folder browser that replaces the OS-native picker.</div>
+  </div>
+  <p>
+    Added to work around a DWM bug: the native Windows file dialog (see <a href="platform.html">src/platform/
+    file_dialog.lua</a>) has an unfixable z-order quirk when Cardflux's borderless, fullscreen-shaped window is
+    maximized, and there was no native implementation at all on Mac. This module reimplements a minimal
+    browser — up-one-level, refresh, an editable path field, and a scrollable listing (directories always shown,
+    files filtered by the caller's extension list via <code>extensionSet</code>) — entirely as an
+    <code>overlays.dialog</code>, exposing the same <code>opts</code> shape (<code>title</code>,
+    <code>filters</code>, <code>initialDir</code>) the old native-dialog wrapper used, so callers didn't need to
+    change. <code>M.openFile(opts, onResult)</code> and <code>M.pickFolder(opts, onResult)</code> both resolve
+    asynchronously: <code>onResult(path)</code> fires exactly once, with <code>nil</code> on cancel.
+  </p>
+  <p>This is a good example of the "in-app overlay with an async callback" pattern used throughout the UI for
+    anything that would otherwise need a blocking native dialog — the same shape shows up in
+    <a href="#deck-library-dialog">deck_library_dialog.lua</a> and <a href="ui-framework.html">save_name_dialog.lua</a>.</p>
+
+  <h2 id="controls-dialog">controls_dialog.lua — Controls (Markdown renderer)</h2>
+  <div class="filecard">
+    <div class="path">src/ui/screens/controls_dialog.lua</div>
+    <div class="role">A tiny hand-rolled Markdown parser/renderer, built to display CONTROLS.md in-app.</div>
+  </div>
+  <p>
+    Rather than maintain the controls reference in two places, this module parses the actual
+    <code>CONTROLS.md</code> file shipped inside the <code>.love</code> archive (packed in by
+    <code>tools/build.ps1</code>) at runtime, so the in-app dialog and the file in the repository can never drift
+    apart. <code>M.parse(text)</code> understands the small subset of Markdown the file actually uses — <code>#</code>/
+    <code>##</code>/<code>###</code> headings, pipe tables (with the <code>|---|</code> separator row discarded),
+    <code>- </code> bullets, a whole-line <code>**bold**</code> treated as a sub-heading, and plain paragraphs — and
+    reduces it to a flat list of typed blocks. <code>M.drawBlocks(x, y, w, list)</code> renders that block list with
+    the app's own text/table widgets. <code>M.loadBlocks(source)</code> caches the parsed result by file path so it
+    is only parsed once per path.
+  </p>
+  <p>
+    This parser is intentionally generic over its source file — <a href="#support-dialog">support_dialog.lua</a>
+    reuses <code>M.loadBlocks</code>/<code>M.drawBlocks</code> directly to render <code>SUPPORT-ME.md</code> instead.
+  </p>
+
+  <h2 id="settings-dialog">settings_dialog.lua — Settings</h2>
+  <div class="filecard">
+    <div class="path">src/ui/screens/settings_dialog.lua</div>
+    <div class="role">The app preferences dialog, opened from Home and the in-game menu.</div>
+  </div>
+  <p>
+    A single dialog organized into labeled sections (the file's own header comment says new settings should be
+    added as new sections): <strong>Display</strong> (UI scale dropdown, sourced from <code>App.uiScaleOptions</code>
+    and written back via <code>App.setUiScaleSetting</code> — see <a href="architecture.html">architecture.html</a>'s
+    discussion of scale), <strong>Appearance</strong> (dark mode, persisted through
+    <a href="data.html#profile">src/data/profile.lua</a>'s <code>setDarkMode</code>), <strong>Hand</strong> (sliders
+    driven by <a href="data.html#hand-table-settings">src/data/hand_settings.lua</a>'s declarative <code>defs</code> list —
+    applied live while dragging, saved only once the slider is released) and <strong>Table</strong> (the selection
+    highlight color, via <a href="data.html#hand-table-settings">src/data/table_settings.lua</a> and
+    <a href="ui-framework.html">colorpicker.lua</a>).
+  </p>
+  <p><code>opts.inGame</code> changes the Appearance section's subtitle to note that the game table always renders
+    in the light theme regardless of the dark-mode setting (see <code>forceLightTheme</code> on
+    <a href="architecture.html">src/app.lua</a>).</p>
+
+  <h2 id="support-dialog">support_dialog.lua — Support the Author</h2>
+  <div class="filecard">
+    <div class="path">src/ui/screens/support_dialog.lua</div>
+    <div class="role">A small dialog pointing to the author's Ko-fi page, rendering SUPPORT-ME.md.</div>
+  </div>
+  <p>
+    The simplest screen file in the app: it reuses <a href="#controls-dialog">controls_dialog.lua</a>'s Markdown
+    renderer wholesale to display <code>SUPPORT-ME.md</code>, with a "Visit Ko-fi.com" action button that opens
+    <code>M.kofiUrl</code> via <code>love.system.openURL</code>.
+  </p>
+
+  <div class="nextprev">
+    <a href="ui-framework.html">&larr; UI Toolkit (kit)</a>
+    <a href="ui-gamedef-editor.html">Game Definition Editor &rarr;</a>
+  </div>
+</main>
+</body>
+</html>

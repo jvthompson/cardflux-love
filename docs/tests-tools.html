@@ -1,0 +1,400 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Tests &amp; Tools — Cardflux Docs</title>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+<nav class="sidenav">
+  <a class="brand" href="index.html">Cardflux<small>Codebase Documentation</small></a>
+  <div class="group-label">Application</div>
+  <a href="architecture.html">Architecture &amp; App Lifecycle</a>
+  <a href="ui-framework.html">UI Toolkit (kit)</a>
+  <div class="group-label">User Interface</div>
+  <a href="ui-screens.html">Screens</a>
+  <a href="ui-gamedef-editor.html">Game Definition Editor</a>
+  <a href="ui-server-screens.html">Multiplayer Lobby Screens</a>
+  <a href="ui-table.html">Game Table Rendering</a>
+  <div class="group-label">Engine &amp; Data</div>
+  <a href="core.html">Core Rules Engine</a>
+  <a href="game.html">Game Session &amp; Controller</a>
+  <a href="data.html">Data &amp; Persistence</a>
+  <div class="group-label">Platform &amp; Network</div>
+  <a href="net.html">Networking</a>
+  <a href="platform.html">Platform Integration</a>
+  <div class="group-label">Server</div>
+  <a href="server.html">Cardflux Server (Go)</a>
+  <div class="group-label">Quality</div>
+  <a href="tests-tools.html" class="current">Tests &amp; Tools</a>
+</nav>
+<main class="page">
+  <header class="page-head">
+    <div class="crumb"><a href="index.html">Home</a> / Quality</div>
+    <h1>Tests &amp; Tools</h1>
+    <div class="subtitle">The Lua unit test suite, its hand-rolled harness, and the standalone compatibility-check tool.</div>
+  </header>
+
+  <div class="toc">
+    <div class="toc-title">On this page</div>
+    <ul>
+      <li><a href="#running">Running the test suite</a></li>
+      <li><a href="#runner">tests/runner.lua — the harness</a></li>
+      <li><a href="#helpers">tests/helpers.lua — shared fixtures</a></li>
+      <li><a href="#models-test">models_test.lua</a></li>
+      <li><a href="#utils-test">utils_test.lua</a></li>
+      <li><a href="#table-actions-test">table_actions_test.lua</a></li>
+      <li><a href="#selection-test">selection_test.lua</a></li>
+      <li><a href="#session-test">session_test.lua</a></li>
+      <li><a href="#data-test">data_test.lua</a></li>
+      <li><a href="#net-test">net_test.lua</a></li>
+      <li><a href="#server-client-test">server_client_test.lua</a></li>
+      <li><a href="#platform-test">platform_test.lua</a></li>
+      <li><a href="#updater-test">updater_test.lua</a></li>
+      <li><a href="#asset-worker-test">asset_worker_test.lua</a></li>
+      <li><a href="#deck-editor-test">deck_editor_test.lua</a></li>
+      <li><a href="#compat-check">tools/compat_check — library compatibility tool</a></li>
+      <li><a href="#go-tests">Go-side tests (server)</a></li>
+    </ul>
+  </div>
+
+  <h2 id="running">Running the test suite</h2>
+  <p>
+    Cardflux has no external test framework — it ships a ~130-line hand-rolled runner and runs
+    entirely inside the LÖVE executable, launched in a special mode rather than as a separate script.
+    From the project root:
+  </p>
+  <pre><code>lovec . --test
+lovec . --test selection      <span style="color:#8893a3">-- only tests whose full name contains "selection" (case-insensitive)</span></code></pre>
+  <p>
+    <code>main.lua</code> checks for the <code>--test</code> flag before anything else loads. If present, it sets the
+    global <code>TEST_MODE = true</code> (read in <code>conf.lua</code>, see <a href="architecture.html#conf-lua">architecture.html</a>),
+    and <code>love.load</code> takes a completely different path than the real app: instead of calling
+    <code>src.app.load</code>, it calls the local <code>runTests(args)</code> function:
+  </p>
+  <ol>
+    <li>It scans the optional second CLI token: if the token right after <code>--test</code> doesn't itself start
+      with <code>--</code>, it's taken as a name filter and threaded through to the runner.</li>
+    <li>It lists every file in the <code>tests/</code> folder via <code>love.filesystem.getDirectoryItems</code>, keeping
+      only names matching <code>_test%.lua$</code>, and sorts them alphabetically so runs are deterministic.</li>
+    <li>It calls <code>require("tests.runner").run(files, filterArg)</code> (documented below).</li>
+    <li>It quits the process with <code>love.event.quit(ok and 0 or 1)</code> — a real, scriptable exit code, so the
+      suite is CI-friendly even though it's "just" a LÖVE game binary.</li>
+  </ol>
+  <div class="note">
+    <strong>Isolated save identity.</strong> <code>conf.lua</code>'s <code>love.conf</code> branches on the same
+    <code>TEST_MODE</code> flag: it sets <code>t.identity = "cardflux_tests"</code> (LÖVE's save-directory identity,
+    normally <code>"cardflux"</code>) and disables the window, audio, sound and joystick modules. This means test runs
+    read and write an entirely separate save folder from a real play session — tests that create settings, save
+    files, scratch directories, avatars, etc. (see <a href="#data-test">data_test.lua</a> below) can never clobber
+    the user's actual profile, decks or saved games, and can run headless.
+  </div>
+
+  <h2 id="runner">tests/runner.lua — the harness</h2>
+  <div class="filecard">
+    <div class="path">tests/runner.lua</div>
+    <div class="role">Minimal BDD-style test harness: registration (describe/it), assertions, and a text report.</div>
+  </div>
+  <p>
+    The module builds a table <code>T</code> that every <code>*_test.lua</code> file receives as its single argument.
+    There is no global test registry or auto-discovery magic beyond the filename scan in <code>main.lua</code> — each
+    test file is a Lua chunk that <code>return</code>s a single <code>function(t) ... end</code>, and the runner loads,
+    calls, and aggregates results from each in turn.
+  </p>
+
+  <h3 id="runner-describe-it">Grouping and naming</h3>
+  <div class="fn">
+    <span class="sig">T.describe(name, fn)</span>
+    <p>Pushes <code>name</code> onto a <code>prefixStack</code>, calls <code>fn</code> immediately (synchronously — there is
+      no deferred scheduling), then pops. Nesting <code>describe</code> blocks nests the prefix.</p>
+  </div>
+  <div class="fn">
+    <span class="sig">T.it(name, fn)</span>
+    <p>Builds the test's full dotted name as <code>"file_test &gt; describe... &gt; name"</code> via <code>fullName</code>
+      (joined with <code>" &gt; "</code>). If a <code>filterArg</code> was supplied, the test is skipped unless the
+      lower-cased full name contains the lower-cased filter as a substring — this is how
+      <code>--test selection</code> narrows to one file's tests without needing exact matches. Otherwise it runs
+      <code>fn</code> under <code>xpcall</code>; a thrown assertion failure (a table with <code>testFailure = true</code>)
+      or any other Lua error is caught, given a traceback via <code>debug.traceback</code>, and recorded into
+      <code>results.failures</code>. Passes increment <code>results.passed</code>.</p>
+  </div>
+
+  <h3 id="runner-asserts">Assertions</h3>
+  <table>
+    <tr><th>Function</th><th>Checks</th></tr>
+    <tr><td><code>t.eq(actual, expected, msg?)</code></td><td>Deep structural equality (<code>deepEqual</code>, below) — the workhorse assertion used almost everywhere in this suite, since most production functions return whole Lua tables (card instances, table states, deck configs, …).</td></tr>
+    <tr><td><code>t.ok(v, msg?)</code></td><td>Truthy.</td></tr>
+    <tr><td><code>t.notOk(v, msg?)</code></td><td>Falsy.</td></tr>
+    <tr><td><code>t.isNil(v, msg?)</code></td><td><code>v == nil</code> exactly.</td></tr>
+    <tr><td><code>t.near(actual, expected, eps?, msg?)</code></td><td>Numeric tolerance compare (default <code>eps = 1e-9</code>) — used for floating-point geometry and offset math.</td></tr>
+    <tr><td><code>t.errors(fn, msg?)</code></td><td>Passes only if calling <code>fn()</code> raises (via <code>pcall</code>).</td></tr>
+    <tr><td><code>t.ids(list, key?)</code></td><td>Not an assertion — a helper that maps a list of model instances to just one field (default <code>"instanceId"</code>), so assertions can compare short id lists instead of whole objects.</td></tr>
+  </table>
+  <p>
+    <code>deepEqual(a, b)</code> recursively compares tables key-by-key in both directions (so extra keys on either
+    side fail the comparison) and falls back to <code>==</code> for non-tables — it is exposed as <code>T.deepEqual</code>
+    and underlies <code>t.eq</code>. <code>serialize(v, depth)</code> renders a Lua value as a compact literal
+    (<code>{a=1, b="x"}</code> style, numeric array part first, keys sorted, depth-capped at 3) purely to build
+    readable failure messages — it is not used for anything functional.
+  </p>
+
+  <h3 id="runner-run">Running a batch and reporting</h3>
+  <div class="fn">
+    <span class="sig">T.run(files, filterArg) → allPassed:boolean</span>
+    <p>For each file path, loads it with <code>love.filesystem.load</code>, calls the returned chunk to get the
+      file's <code>function(t)</code>, sets <code>prefixStack</code> to that file's base name (stripped of the
+      <code>_test.lua</code> suffix) as the outermost name segment, then <code>pcall</code>s the registration function
+      with <code>T</code> itself. A failure to even load/register a file (e.g. a syntax error) is recorded as its own
+      failure entry named <code>"&lt;file&gt; (load)"</code>. After every file has registered and run its
+      <code>t.it</code> blocks, it prints <code>FAIL: &lt;name&gt;</code> plus the indented error/traceback for every
+      failure, then a one-line <code>"N passed, M failed"</code> summary, and returns whether the failure count was
+      zero (this becomes the process's exit code via <code>main.lua</code>).</p>
+  </div>
+
+  <h2 id="helpers">tests/helpers.lua — shared fixtures</h2>
+  <div class="filecard">
+    <div class="path">tests/helpers.lua</div>
+    <div class="role">Terse constructors for the core model types, used by nearly every other test file to avoid repeating full field lists.</div>
+  </div>
+  <p>
+    Builds on <a href="core.html">src/core/models.lua</a>'s model constructors (<code>CardInstance.new</code>,
+    <code>BoardWidgetInstance.new</code>, <code>PlayerInfo.new</code>, <code>TableState.new</code>,
+    <code>CardDefinition.new</code>) by filling in sane defaults for every field a test doesn't care about:
+  </p>
+  <table>
+    <tr><th>Helper</th><th>Purpose</th></tr>
+    <tr><td><code>H.card(f)</code></td><td>A <code>CardInstance</code> defaulting to <code>zone="table"</code>, face-down, z-index 0; accepts either <code>f.instanceId</code> or the shorter <code>f.id</code>.</td></tr>
+    <tr><td><code>H.widget(f)</code></td><td>A <code>BoardWidgetInstance</code> defaulting <code>kind="token"</code>; copies every field from <code>f</code> first, so it also accepts kind-specific fields (<code>value</code>, <code>attachedCardId</code>, etc).</td></tr>
+    <tr><td><code>H.player(id, name?, role?, color?)</code></td><td>A <code>PlayerInfo</code>, defaulting the role to <code>"client"</code> and the name to the id.</td></tr>
+    <tr><td><code>H.state(f)</code></td><td>A <code>TableState</code> with empty <code>players</code>/<code>cards</code>/<code>revision 0</code>/<code>widgets</code>/<code>searches</code>/<code>log</code> unless overridden — the standard starting point for exercising <a href="core.html#table-actions-lua">table_actions.lua</a>.</td></tr>
+    <tr><td><code>H.find(list, id, key?)</code></td><td>Linear search by id (default key <code>instanceId</code>) — the main way tests pull a single card/widget back out of a mutated state to assert on it.</td></tr>
+    <tr><td><code>H.cardDef(id, types?, extra?)</code></td><td>A minimal <code>CardDefinition</code> (title defaults to the id) with an optional types list and a free-form <code>extra</code> field overlay.</td></tr>
+  </table>
+
+  <h2 id="models-test">models_test.lua</h2>
+  <p>Cross-links: <a href="core.html#models-lua">core.html — models.lua</a>, <a href="core.html#color-lua">color.lua</a>, and the shared <code>lib/json.lua</code> encoder (also documented on <a href="core.html">core.html</a>).</p>
+  <p><em>What would silently break without it:</em> any drift between how a model is read from JSON and how it's written back — the single most load-bearing property this file protects is <strong>round-trip fidelity</strong> (decode → model → encode reproduces the original bytes, field order included), because save games, decks and game definitions are the actual user-facing file formats on disk, shared with the original Flutter app.</p>
+  <ul>
+    <li><strong>json round-trip quirks</strong> — large integers stay integral (no <code>4283782756.0</code>), doubles print shortest-round-trip, key order is preserved on encode (object fields aren't re-sorted), Dart-style pretty-printing matches exactly, unicode/surrogate-pair escapes decode correctly, and malformed JSON (<code>tryDecode</code>) fails softly instead of throwing.</li>
+    <li><strong>color hex conversions</strong> (<code>color.hexFromColor</code>/<code>colorFromHex</code>) round-trip and fall back to a caller-supplied default on bad input.</li>
+    <li><strong><code>CardDefinition</code>, <code>CardInstance</code>, <code>BoardWidgetInstance</code>, <code>ZoneDefinition</code></strong> — every field round-trips, and encoding omits fields still at their default value (so a freshly-created record serializes to a minimal JSON object, matching what the original Flutter client would write) while still writing an explicitly-<code>false</code> boolean like <code>faceUp</code> when it differs from a type's implied default. <code>util.copyWith(..., { field = util.NIL })</code> (see <a href="core.html#util-lua">util.lua</a>) is exercised as the way to explicitly null out a field.</li>
+    <li><strong><code>GameDefinition</code></strong> — cards nested inside <code>sets</code> get stamped with their set's id on load and are written back <em>without</em> a redundant <code>setId</code> (since nesting already implies it); legacy flat <code>cardBackImagePath</code> migrates into the newer <code>cardBacks</code> list; <code>deckTypes</code>/<code>needsDeckBuilding</code> derive correctly from zones that <code>dealsBuiltDeck</code>. A full round-trip of the bundled <code>assets/games/standard_52/standard_52.json</code> asset is checked byte-for-byte at a fixed point (decode→encode→decode→encode == itself) — this is the test most likely to catch a breaking change to the on-disk game-definition schema.</li>
+    <li><strong><code>DeckConfig</code></strong> — the old flat <code>entries</code> format throws a structured <code>{ legacyDeckFormat = true }</code> error rather than silently misparsing; <code>isStarter</code> is optional, case-insensitive on read (<code>IsStarter</code>), and only written when <code>true</code>; <code>DeckConfig.full(game)</code> builds a one-of-everything deck.</li>
+    <li><strong><code>TableState</code> / <code>SavedGame</code> / <code>LogEntry</code> / <code>ActiveSearch</code> / <code>PlayerInfo</code></strong> round-trip together as a whole saved-game graph; <code>formatElapsedTime</code> and <code>buildStandardDeckCards</code> (the built-in 52-card deck used when a game asks for a "standard deck" zone, see <a href="core.html">core.html</a>) are spot-checked.</li>
+  </ul>
+
+  <h2 id="utils-test">utils_test.lua</h2>
+  <p>
+    Despite the filename, this is the broadest single test file in the suite — a condensed port of seven
+    separate Dart test files. It exercises most of <a href="core.html">core.html</a>'s pure logic modules directly
+    against hand-built states from <a href="#helpers">helpers.lua</a>, with no I/O.
+  </p>
+  <ul>
+    <li><strong><code>seat_utils.computeHandRowLayout</code></strong> (<a href="core.html#seat-utils-lua">seat_utils.lua</a>) — for 2, 3 and 4-player tables, verifies which seats land in the viewer's own "bottom row" vs. the opposing "top row", and that far-side viewers see a mirrored/rotated arrangement rather than the same absolute seating — this is what lets every player's screen show "me at the bottom" regardless of turn order.</li>
+    <li><strong><code>geometry.lua</code></strong> (<a href="core.html#geometry-lua">geometry.lua</a>) — table-centering offsets, vertical clamp of a card's center against table bounds including a pan margin, and the canonical-(0..1)-to-pixel conversion (and its inverse) used for every card and widget position on the table.</li>
+    <li><strong><code>deck_widget_zones.lua</code></strong> (<a href="core.html#deck-widget-zones-lua">deck_widget_zones.lua</a>) — the synthetic zone-id scheme (<code>deckWidget:&lt;widgetId&gt;:&lt;realZoneId&gt;</code>) used so a player-placed Deck Widget can have its own private main/side/discard zones; checks the id round-trips even when the real zone id itself contains colons, and that malformed strings parse to <code>nil</code> rather than a partial/garbage table.</li>
+    <li><strong><code>state_filter.filterForRecipient</code></strong> (<a href="core.html#state-filter-lua">state_filter.lua</a>) — the server-authoritative "fog of war" function: opponents' hand cards and the contents of private (non-shared, non-visible) zones are replaced with a generic hidden-card placeholder (<code>models.hiddenDefinitionId</code>) for a given recipient, while a player's own hand, shared zones, and the open table stay untouched. This is the single function standing between "secret information" and a cheating client, so its test coverage (own hand vs. others', private vs. shared vs. explicitly-visible zones, deck-widget synthetic zones) is a correctness-critical boundary.</li>
+    <li><strong><code>pack_generator.selectPackCards</code></strong> (<a href="core.html#pack-generator-lua">pack_generator.lua</a>) — the Pack Generator widget's and the server's collection-mode pack algorithm: with no tag settings picks N distinct cards; with tag settings (e.g. "2 Rare") it fills each tag quota without double-counting a card that matches two tags; it degrades gracefully (shortfall) when the pool doesn't have enough matching cards rather than erroring; and with a seeded RNG (<code>util.seededRng</code>) it is fully deterministic — which both tests and the real server (for provably-fair pack opening) rely on.</li>
+    <li><strong><code>card_filters.lua</code></strong> (<a href="core.html#card-filters-lua">card_filters.lua</a>) — sort orders (name/set/race-tag-group) and the combined filter predicate (<code>cardMatchesFilters</code>: tag selection, tag exclusion, set exclusion, free-text search) used by the Card Library, Deck Editor and gamedef editor's card browsers.</li>
+    <li><strong><code>save_remap.lua</code></strong> (<a href="core.html#save-remap-lua">save_remap.lua</a>) — re-loading a saved game with a <em>different</em> set of connected players: <code>matchPlayersByName</code> maps saved player ids to current ones by display name (and correctly refuses to guess when names are ambiguous/duplicated), and <code>buildLoadedTableState</code> rewrites every card/widget owner id through that map, drops cards whose definition no longer exists in the game, clears dangling <code>stackParentId</code> references into cards that got dropped, and preserves revision/log/searches structure. This is what makes "load a save with a different group of friends" not corrupt state.</li>
+    <li><strong><code>ui.clampLines</code></strong> (<a href="ui-framework.html">src/ui/kit/ui.lua</a>) — word-wrap-aware text truncation with a trailing ellipsis, tested against a fake monospace font stand-in so it runs headless without a real font.</li>
+  </ul>
+
+  <h2 id="table-actions-test">table_actions_test.lua</h2>
+  <p>Cross-link: <a href="core.html#table-actions-lua">core.html — table_actions.lua</a>, the pure state-transition functions that are the actual rules engine (every card/widget move, flip, draw, shuffle, stack and deck-widget operation on the table).</p>
+  <p><em>What would silently break without it:</em> this is the largest and most important test file in the client, because <code>table_actions.lua</code> is <strong>the</strong> authoritative game logic shared verbatim between the LÖVE client's local/practice mode and the Go server's embedded engine (see <a href="server.html">server.html</a>) — a regression here is a regression in actual gameplay rules, not just test coverage.</p>
+  <ul>
+    <li><strong><code>moveCard</code> / <code>moveStack</code> / <code>moveGroup</code></strong> — repositioning detaches a card from any pile/zone, always produces a new immutable state object (never mutates the input — every test checks <code>s.revision == 0, "original state untouched"</code>), bumps z-index to bring the moved thing to front, drags along attached widgets (tokens stick to the card they're on), and a multi-select group move translates every passenger by the primary's delta while still re-ordering z front-to-back.</li>
+    <li><strong>Ownership on move</strong> — cards flagged <code>unownable</code> (set by a game's rules, e.g. community cards) lose their owner the instant they're set loose on the table; normal owned cards keep theirs.</li>
+    <li><strong><code>rotateStack</code> / <code>flipCard</code> / <code>giveCard</code> / <code>bringToFront</code></strong> — rotation only applies to table cards (not hand cards), accumulates across repeated calls, flipping toggles <code>faceUp</code> and still bumps z, and <code>giveCard</code> changes/clears <code>ownerId</code>.</li>
+    <li><strong><code>stackCard</code></strong> — the pile-forming operation: snaps onto the target's position, links <code>stackParentId</code>, clears any zone membership and (for unownable cards) ownership; is a safe no-op stacking onto itself or a missing target.</li>
+    <li><strong><code>moveToHand</code> / <code>reorderHand</code></strong> — picking a card up always makes it face-up, strips zone/stack links and resets rotation; reordering within a hand is index-based and clamps out-of-range indices to the end, leaving other players' hands untouched.</li>
+    <li><strong><code>drawCard</code> / <code>drawFromZone</code></strong> — drawing from a pile always takes the physically topmost card first and only reaches the pile's root/anchor card last; a count-based draw happens as a single state revision (not N separate revisions) and clamps the count to what's actually available; drawing from a zone correctly enforces/ignores ownership depending on whether the zone is private or shared.</li>
+    <li><strong><code>returnToZone</code></strong> — returning a card to a zone snaps it to the zone anchor's position, can go to the top (default) or bottom (<code>toBottom</code>) of the pile, picks up ownership from the zone's owner (or stays unowned for a shared zone), and respects an explicit face-up/face-down flag; a card already in that zone is a no-op.</li>
+    <li><strong><code>shuffleZone</code> / <code>shufflePile</code></strong> — shuffling always flips every card face-down and reassigns a contiguous new z-order (checked by sorting the resulting z-indices), and is a no-op for a single-card zone/pile.</li>
+    <li><strong>Searches</strong> (<code>startSearch</code>/<code>stopSearch</code>) — starting a second search for the same player replaces (doesn't duplicate) their entry; stopping a search that doesn't exist is a true no-op (same table reference returned, not just equal).</li>
+    <li><strong>Widgets</strong> — creation, arrows, free movement (which detaches any card attachment and zeroes the stored offset), re-attaching to a card (which recomputes a relative offset), value/color setting (<code>setWidgetValue</code> clamps into <code>[0, 99999]</code>), and duplication (copies kind/value/colors, not position). <code>deleteWidget</code> on a Deck Builder widget specifically "spills" every card that was living in that widget's private synthetic zones back onto the open table (restoring ordinary ownership rules) rather than deleting the cards — this is the one case in the file with genuinely non-obvious, must-get-right behavior.</li>
+    <li><strong><code>dealNewCards</code></strong> — appended cards always get freshly-assigned ascending z-indices regardless of whatever z-index they arrived with (so a client can't desync the stacking order by sending arbitrary z values).</li>
+  </ul>
+
+  <h2 id="selection-test">selection_test.lua</h2>
+  <p>Cross-links: <a href="ui-table.html">ui-table.html — src/ui/table/selection.lua</a>, <a href="core.html#geometry-lua">core.html — geometry.lua</a> (world size constants).</p>
+  <p><em>What would silently break without it:</em> box-selection hit testing and the "keep everything on the table" clamp used after every drag — both involve rotated-rectangle and circle geometry that's easy to get subtly wrong at the edges.</p>
+  <ul>
+    <li><code>rectFromPoints</code> normalizes a drag in any of the four directions into a positive-width/height rect.</li>
+    <li><code>boxHits</code> — axis-aligned rect-vs-rect overlap for ordinary items; for a <em>rotated</em> card it uses the card's actual rotated bounding box (a card rotated 90° has a wider effective hit box than its unrotated footprint, and the test specifically catches the case where the naive unrotated box would miss a selection the rotated one should catch); for widgets with a circular hit area it tests distance-to-closest-point-on-the-box against the radius, including the tricky corner case.</li>
+    <li><code>halfExtents</code> swaps width/height for any odd quarter-turn (90°/270°, in either rotation direction, including angles greater than one full turn) and keeps them for even turns.</li>
+    <li><code>clampWorldCenter</code> — leaves fully-on-table items alone, and otherwise pulls an item's center back so it stays within the table's pan margin from any of the four edges, using the item's <em>rotated</em> half-extents so a turned card isn't allowed to poke further off-table than an unrotated one would be.</li>
+  </ul>
+
+  <h2 id="session-test">session_test.lua</h2>
+  <p>Cross-link: <a href="game.html">game.html — src/game/session.lua and src/game/controller.lua</a>.</p>
+  <p><em>What would silently break without it:</em> the orchestration layer above <code>table_actions.lua</code> — dealing decks into zones at game start, the human-readable game log line generated for each action, host-side ownership enforcement, and the client-side network request serialization. A regression here either corrupts a new game's starting layout or produces wrong/missing log entries and network payloads, which is much harder to notice in manual testing than a broken card move.</p>
+  <ul>
+    <li><strong><code>Session.dealFromZones</code></strong> — the single function that sets up a fresh table: deals each player's configured deck into zones marked <code>dealsBuiltDeck</code> (falling back to one copy of every card in the game if no deck config was supplied for a player), respects optional vs. required sub-decks (a missing optional subdeck just deals nothing instead of erroring), deals static zone <code>entries</code> and honors a zone's <code>faceUp</code> flag, creates one widget per <code>kind = "widget"</code> zone (e.g. a shared life-counter) seeded with its configured starting value/color, deals shared zones (pool/discard/standard-52/named-deck-by-zone-id) with correct emptiness and unownable-card handling, and — when a zone is marked <code>autoShuffle</code> — shuffles while preserving the exact multiset of cards and assigning a clean sequential z-order.</li>
+    <li><strong>Practice seats</strong> — in local practice mode a single human can act as any seat (<code>setActiveSeat</code>) and <code>actingPlayerId()</code> follows that; the same call is a no-op for a real (non-practice) hosted session, since who you're "acting as" there is fixed to your network identity.</li>
+    <li><strong>Action log generation</strong> — this is the largest block of the file: every mutating call on <code>Session</code> (<code>moveCard</code>, <code>flipCard</code>, <code>drawCard</code>, <code>drawFromZone</code>, <code>shufflePile</code>/<code>shuffleZone</code>, <code>returnToZone</code>, <code>giveCard</code>, <code>rotateStack</code>, <code>moveToHand</code>, widget value/attach changes, searches, pack generation, card-library creation, deck loading) appends a specific, exactly-worded log line, and the test pins the exact English wording (e.g. <code>'Alice played "Ace" to the table from hand.'</code> vs. the generic <code>"Alice played a card to the table from the Draw Deck."</code> when the card came from a zone other players can't see into). It also confirms non-shuffleable zones silently decline to shuffle (no log line, no revision bump), that connect/disconnect events log only on <em>change</em> and never for the host, and that deck-widget synthetic zone ids resolve back to a real, nameable zone in log text without leaking which synthetic sub-zone was used.</li>
+    <li><strong>Stacking rules</strong> (ownership-aware, routed through <code>Session</code> rather than called directly on <code>table_actions</code>) — a card only stacks onto a pile with the same effective owner (unowned/unownable cards treated as a third "owner"); stacking that would mix owners is silently refused (no error, no state change) rather than allowed or logged; giving away a card that's part of a pile never changes its owner (only the detached top of a stack is up for grabs).</li>
+    <li><strong>Arrow widgets expire</strong> — a drawn arrow (Tab+drag on the table, per <a href="../CONTROLS.md">CONTROLS.md</a>) is removed by <code>Session:update()</code> once 5 simulated seconds have passed, using an injectable <code>now()</code> clock so the test doesn't need a real wall-clock sleep.</li>
+    <li><strong>Controllers</strong> (<a href="game.html">game.html — controller.lua</a>) — <code>controller.Host</code> is the authority wrapper: it enforces that a client can't move another player's card and resolves ambiguous "my shared-zone draw" vs. "another player's private zone of the same id" semantics using the active seat. <code>controller.Client</code> is the non-host, network-facing half: every action method serializes to a specific message type/payload shape (<code>requestMove</code>, <code>requestGiveCard</code>, <code>requestMoveGroup</code>, <code>requestReturnToZone</code>, <code>requestStopSearch</code>) and the test pins the exact JSON emitted, because this wire format must stay compatible with the original Flutter client/server (see <a href="net.html">net.html</a> and <a href="server.html">server.html</a>).</li>
+  </ul>
+
+  <h2 id="data-test">data_test.lua</h2>
+  <p>Cross-link: <a href="data.html">data.html</a> — this single file (the longest test file by line count) covers the majority of <code>src/data/*</code>, plus one UI module and one platform module it happens to share fixture needs with.</p>
+  <p><em>What would silently break without it:</em> file-format compatibility with the original Flutter app's on-disk layout, and correctness of path/image/profile handling across Windows' quirks (case-insensitive extensions, non-ASCII paths, landscape-vs-portrait card art).</p>
+  <ul>
+    <li><strong>Game loader</strong> (<a href="data.html">game_loader.lua</a>) — the bundled standard-52 definition loads all 52 cards; <code>gamedef.json</code> is found case-insensitively while ignoring unrelated files in a game folder; image paths on cards/sets/backs resolve relative to the right subfolder; a malformed file is reported as a load error (not a crash) and a missing folder yields an empty list rather than erroring; a game library scan appends the built-in standard-52 "game" automatically and expands any zone that requests a <code>standardDeck</code>.</li>
+    <li><strong>Image resolver</strong> (<a href="data.html">image_resolver.lua</a>) — bare-path resolution with an optional subfolder; <code>mergeLocalImagePaths</code> (used when joining a multiplayer game hosted by someone else: the host's card data arrives over the network, but image <em>paths</em> must point at the local copy of that game's folder, dropping any image the local copy doesn't have); the full default/alternate/unique/missing card-back resolution chain, including the special <code>__unique__</code> back that looks for a sibling <code>&lt;cardfile&gt;_BACK.ext</code> file; pack-generator and game-logo image discovery.</li>
+    <li><strong>Gamedef ops</strong> (<a href="data.html">gamedef_ops.lua</a>) — name/path helpers (case-insensitive extension checks, path-equality across slash styles, unique-id generation like <code>a → a_001 → a_002</code>); copying picked images into a game folder, including a feature where landscape-oriented PNGs get auto-rotated to portrait when building card art from a folder of images (verified pixel-exact via a marker pixel) but only when explicitly requested; building a full set of <code>CardDefinition</code>s directly from a folder of image files (auto-detecting which files are "back" art by a <code>_BACK</code> suffix match against a supplied name list); writing a pretty-printed <code>gamedef.json</code> with bare (non-absolute) image paths; game-id validation (rejects empty/<code>".."</code>, otherwise permissive); scanning a whole game library sorted by display name; detecting duplicate card ids and duplicate card images across a game (and a "merge duplicate image cards" operation that unions their type tags); finding cards that don't belong to any defined set (which a save/export step would otherwise silently drop); extracting "rarity" tags from a game's tag groups; and a from/to directory migration helper used when the user moves their games library location.</li>
+    <li><strong>Deck library</strong> (<a href="data.html">deck_library.lua</a>) — scanning a game's user-saved decks together with any built-in decks shipped inside the game folder, flagging old-format deck files as "legacy" rather than erroring, filtering strictly to the right game id, and deck-name validation.</li>
+    <li><strong>Save files</strong> (<a href="data.html">save_files.lua</a>) — write → list → read round-trips a full <code>SavedGame</code>; listing is newest-first and silently skips a corrupt save file rather than failing the whole listing; log export formats elapsed-time-prefixed lines and writes them next to other log files without disturbing unrelated ones; save/log filenames follow a fixed, parseable naming scheme.</li>
+    <li><strong>WebP decoding</strong> (<a href="data.html">image_utils.lua</a>, <a href="data.html">image_worker.lua</a>) — this test is conditionally skipped when no <code>libwebp*.dll</code> is sitting next to the executable (WebP support is optional/best-effort on Windows); when present, it round-trips a lossless-encoded image both through the main-thread decode path and through a real <code>love.thread</code> worker thread (the same code path used for actual card-art decoding off the main thread), confirming both agree on dimensions and pixel content.</li>
+    <li><strong>Avatar handling</strong> (<a href="data.html">profile.lua</a>) — saving a profile avatar resizes anything wider than 256px down to a 256-max bounding box (preserving aspect ratio) while leaving smaller images alone, and replaces any previously-saved avatar file even if it had a different extension (so a user switching from a <code>.jpg</code> to a <code>.png</code> avatar doesn't end up with two stale files).</li>
+    <li><strong>Hand settings / table settings</strong> (<a href="data.html">hand_settings.lua</a>, <a href="data.html">table_settings.lua</a>) — numeric settings clamp into valid ranges, only get persisted to the underlying key-value <a href="data.html">settings.lua</a> store when they differ from the default (so a never-touched install has an empty settings file), and a "transient" set variant can skip persistence entirely; <code>reset()</code> removes the stored override rather than writing back the default value.</li>
+    <li><strong>Recent servers</strong> (<a href="data.html">profile.lua</a>) — the "Join Game" recent-server list caps at 5 entries, de-duplicates by host:port by moving the existing entry to the front instead of adding a second one, and supports removing a single entry.</li>
+    <li><strong>Controls dialog markdown parser</strong> (<a href="ui-screens.html">src/ui/screens/controls_dialog.lua</a>) — <code>controls.parse</code> turns <a href="../CONTROLS.md">CONTROLS.md</a>'s actual Markdown (headings, pipe tables, bold lines, bullet lists, paragraphs) into a block list the in-game Controls dialog renders with the custom UI toolkit (<a href="ui-framework.html">ui-framework.html</a>) rather than a browser — since <code>CONTROLS.md</code> is read directly from the packaged game at runtime, this test both checks the tiny parser's block-kind detection and inline bold/code handling, and incidentally guarantees the file is present and parseable in the build.</li>
+  </ul>
+
+  <h2 id="net-test">net_test.lua</h2>
+  <p>Cross-links: <a href="net.html">net.html — src/net/upnp.lua</a>, <a href="platform.html">platform.html — src/platform/discord.lua</a>.</p>
+  <p><em>What would silently break without it:</em> the string/XML parsing inside UPnP port-mapping (the actual network call to a router can't be exercised in CI, so this is the only safety net for that logic) and Discord Rich Presence join-secret parsing.</p>
+  <ul>
+    <li><strong>UPnP</strong> — case-insensitive <code>LOCATION</code> header extraction from an SSDP discovery response; resolving a device's relative <code>controlURL</code> against its description-document URL (absolute, root-relative, and already-absolute-URL cases) plus a base-URL splitter; scanning a device's XML service list to find specifically the WAN <em>IP</em> connection service (not the sibling WAN common-interface or PPP services that can appear in the same list) and extracting its control URL, including tolerating stray whitespace inside the XML tag; and building the exact SOAP XML envelope body for an <code>AddPortMapping</code> call.</li>
+    <li><strong>Discord</strong> — <code>parseJoinSecret</code> extracts host/port from a secret shaped <code>"host:port"</code> and rejects malformed ones; before <code>discord.init()</code> has ever been called, every Discord API surface (<code>setIdle</code>, <code>update</code>, <code>fetchInvitableFriends</code>, <code>ensureAuthorizedAndConnected</code>) must behave as a safe no-op/failure rather than erroring — this matters because the app runs fine with <code>--no-discord</code> or when the Discord SDK simply isn't available.</li>
+  </ul>
+
+  <h2 id="server-client-test">server_client_test.lua</h2>
+  <p>Cross-link: <a href="net.html">net.html — src/net/server_client.lua and src/net/protocol.lua</a>.</p>
+  <p><em>What would silently break without it:</em> the lobby/room client's request-response correlation and event routing — the layer that turns raw protocol messages from the Go server into the callbacks and typed events the UI screens consume.</p>
+  <p>
+    Uses a hand-written fake connection object (records every <code>send</code>, replays a queued <code>inbox</code> on
+    <code>poll</code>) rather than a real socket, so these tests are pure logic tests with no actual networking:
+  </p>
+  <ul>
+    <li><strong>Password hashing</strong> — pins the exact algorithm (<code>sha256("cardflux:" .. email .. ":" .. password)</code>) the client must use so it matches the Go server's own hash, and confirms the email is case/whitespace-normalized first (so <code>"Alice@Example.COM "</code> and <code>"alice@example.com"</code> hash identically).</li>
+    <li><strong>Request/response correlation</strong> — outgoing requests get sequential <code>rid</code>s, and responses are matched back to their original callback by <code>rid</code> even when they arrive out of order; if the connection drops while requests are still pending, every pending callback fires with a synthetic <code>{error = "disconnected"}</code> rather than hanging forever.</li>
+    <li><strong>Message routing</strong> — lobby-level messages (<code>lobbyState</code>, <code>tokens</code>) update the client's own cached state directly, while in-game messages (<code>gameData</code>, <code>fullState</code>) are forwarded to a separate "game channel" object rather than handled inline — this is the seam between the lobby UI and the actual game table. Closing the current room clears <code>roomId</code> and fires a <code>roomClosed</code> event with the reason.</li>
+    <li><strong>Scheduled shutdown</strong> — a <code>serverShutdown</code> push both fires an event with the countdown and pops a warning dialog through the shared overlay system (<a href="ui-framework.html">ui-framework.html</a>) directly from the networking layer.</li>
+    <li><strong>Trading</strong> — a <code>tradeInvite</code> push fires its event; a <code>trade</code> push seeds the running trade state and its chat log only on the *first* push for a given trade id, and a repeat push for the same trade does not duplicate the already-seeded chat; a plain <code>chat</code> message tagged with a <code>tradeId</code> is appended to the separate <code>tradeChat</code> list, never to lobby/room chat; closing a trade clears the cached trade object and reports why.</li>
+  </ul>
+
+  <h2 id="platform-test">platform_test.lua</h2>
+  <p>Cross-link: <a href="platform.html">platform.html — src/platform/updater.lua, winproc.lua, winhttp.lua</a>.</p>
+  <p><em>What would silently break without it:</em> the self-update mechanism's release-selection and shell-quoting logic — bugs here either fail to detect a real update or, worse, generate a broken/dangerous PowerShell helper script.</p>
+  <ul>
+    <li><strong><code>buildFromTag</code></strong> extracts the numeric build suffix from a GitHub tag like <code>v0.1.0+49</code> (and returns <code>nil</code> for tags without one, or a nil input) — this is how the updater compares "newer" independent of the <code>name</code> version string (see <a href="architecture.html#version-lua">src/version.lua</a>'s comment on why the LÖVE port numbers builds separately from the Flutter app).</li>
+    <li><strong><code>pickRelease</code></strong> only returns a release when its build number is strictly greater than the current one <em>and</em> it actually carries an asset with the expected exact filename — a release missing the asset, or GitHub's "Not Found" error body, both yield <code>nil</code> rather than crashing the update check.</li>
+    <li><strong><code>pathsInside</code></strong> filters a list of folder paths down to just the ones nested under the install directory — specifically so the updater's directory sync can exclude a user's <code>game_library</code>/<code>deck_library</code> folders from being overwritten, while not accidentally matching a similarly-named sibling install folder.</li>
+    <li><strong><code>helperScript</code></strong> — the generated PowerShell script text that performs the actual file swap (<code>robocopy ... /MIR</code> plus an exclude list) after the app exits; the test pins exact single-quote escaping of paths containing an apostrophe (<code>C:\It's Here</code> → <code>C:\It''s Here</code>), which is exactly the kind of bug that would otherwise only surface on a specific user's machine.</li>
+    <li><strong><code>winproc.quoteArg</code></strong> — Windows command-line argument quoting (backslash-before-quote escaping rules), tested against the classic edge cases (trailing backslash before a closing quote, embedded quotes).</li>
+    <li><strong><code>winhttp.parseUrl</code></strong> — accepts only <code>https://</code> URLs (the updater never downloads over plain HTTP), splitting host/port/path and defaulting the port to 443.</li>
+  </ul>
+
+  <h2 id="updater-test">updater_test.lua</h2>
+  <div class="note">
+    There is no separate <code>updater_test.lua</code> file in <code>tests/</code> — the updater's own logic is covered by
+    <a href="#platform-test">platform_test.lua</a> above (<code>buildFromTag</code>, <code>pickRelease</code>, <code>pathsInside</code>,
+    <code>helperScript</code>), alongside the Windows process/HTTP helpers it depends on. This entry exists so every
+    file named in the test folder's listing is accounted for on this page.
+  </div>
+
+  <h2 id="asset-worker-test">asset_worker_test.lua</h2>
+  <p>Cross-link: <a href="net.html">net.html — src/net/asset_worker.lua</a>.</p>
+  <p><em>What would silently break without it:</em> the client's game-asset cache reuse logic — getting this wrong means either re-downloading images the player already has (wasting their bandwidth and the server's) or, worse, silently keeping a stale/corrupted file that doesn't match what the server actually has.</p>
+  <p>
+    Runs the real worker as a genuine <code>love.thread</code> (not a mock), talking to it over
+    <code>love.thread.newChannel()</code> exactly as production code does, but pointed at <code>127.0.0.1:1</code> (a port
+    nothing listens on) so any attempt to actually download fails loudly — meaning a passing test proves the file was
+    served from a local source, not silently fetched over the network:
+  </p>
+  <ul>
+    <li>A file already sitting in the destination cache folder — even if LÖVE never "knew" about it — is matched by SHA-256 and reused with zero network activity.</li>
+    <li>A file can be found and copied from a local game-library folder carrying the same game id, without needing to be in the asset cache at all.</li>
+    <li>A file can be found and copied from <em>another</em> previously-connected server's own asset cache under the same game id (so switching between two servers hosting the same game doesn't force a re-download).</li>
+    <li>If a locally-available file has the right size but different content (hash mismatch), it is correctly treated as not matching — the job reports an error (since nothing else to fetch it from is configured in the test) rather than silently accepting the wrong bytes, and the mismatched local file is left untouched rather than overwritten.</li>
+  </ul>
+
+  <h2 id="deck-editor-test">deck_editor_test.lua</h2>
+  <p>Cross-link: <a href="ui-screens.html">ui-screens.html — src/ui/screens/deck_editor.lua</a>.</p>
+  <p><em>What would silently break without it:</em> deck-building slot grouping and, in collection-mode, the enforcement that a player can't put more copies of a card into a deck than they actually own — a client-side mirror of a rule the server also enforces (see <a href="server.html">server.html</a>), but one that must still be right locally so the editor's own UI (copy counts, what's shown in the pool) doesn't lie to the player.</p>
+  <ul>
+    <li><strong>Slot building</strong> (<code>DE.buildSlots</code>) — a game with no deck-building zones gets a single implicit <code>main_deck</code> slot labeled "Deck"; otherwise zones are grouped by their <code>deckType</code> into one slot per type, labeled after the first zone of that type, and a slot is "required" if <em>any</em> zone of that type is non-optional (so one optional and one required zone sharing a type still makes the combined slot required).</li>
+    <li><strong>Editing</strong> (<code>DE.Editor</code>) — adding/removing copies preserves insertion order in the resulting deck config; separate deck-type slots (e.g. main vs. side) are tracked independently via <code>activeDeckType</code>; loading an existing <code>DeckConfig</code> populates the editor and silently drops any card id the current game doesn't define (protecting against decks exported from a different/older version of a game).</li>
+    <li><strong>Collection-mode ownership limits</strong> — copies of a normal card are capped at the player's owned quantity <em>across every slot combined</em> (so you can't put the same owned copy into both a main deck and a side deck); cards marked <code>unownable</code> or <code>isFreeCard</code> are always available in unlimited quantity and are treated as implicitly owned by the card pool filter; loading a deck that calls for more copies than are owned trims it down to what's actually owned, with later slots losing out first when there's a shortfall; the pool view (<code>visibleCards</code>) only shows cards the player owns at least one copy of, plus unownable/free cards.</li>
+  </ul>
+
+  <h2 id="compat-check">tools/compat_check — library compatibility tool</h2>
+  <div class="filecard">
+    <div class="path">tools/compat_check/main.lua</div>
+    <div class="path">tools/compat_check/conf.lua</div>
+    <div class="role">A separate, standalone LÖVE program (its own <code>conf.lua</code>, its own entry point) — not part of the test suite and not run by <code>--test</code>.</div>
+  </div>
+  <p>
+    It is invoked directly as its own LÖVE project, pointed at a real, user-owned Cardflux game/deck library
+    (typically the original Flutter app's data folder) rather than at fixtures:
+  </p>
+  <pre><code>lovec tools/compat_check &lt;libraryRoot&gt; [--all-images]</code></pre>
+  <p>where <code>&lt;libraryRoot&gt;</code> must contain a <code>game_library/</code> and a <code>deck_library/</code> subfolder.</p>
+  <h3 id="compat-check-why">Why this exists as a separate tool, not a test</h3>
+  <p>
+    The unit test suite only ever exercises small, hand-built or synthetic fixtures — it never has access to (and
+    should never depend on) a real user's actual game collection, which can contain arbitrarily large sets of custom
+    games, decks and save files that vary machine to machine and were authored by the <em>other</em>, Flutter-based
+    Cardflux client. <code>compat_check</code> exists specifically to answer "does this Lua port read everything a
+    real Flutter-authored library already has on disk, and does re-saving it stay faithful to the original
+    bytes/schema?" — a question that is about compatibility with external, pre-existing data rather than about the
+    port's own internal correctness, and that can't be captured as a small deterministic fixture. It is meant to be
+    run by hand against a developer's or tester's real library, not in CI.
+  </p>
+  <h3 id="compat-check-what">What it checks</h3>
+  <p>
+    It walks every game in <code>game_library/</code> via <a href="data.html">game_loader.lua</a>, and for each one:
+  </p>
+  <ul>
+    <li>Round-trips the raw <code>gamedef.json</code> bytes through decode→model→encode and classifies the result as
+      <em>identical</em>, <em>identical except Dart's <code>1.0</code>-vs-<code>1</code> number formatting</em>, a
+      known/expected migration (legacy <code>cardBackImagePath</code> → <code>cardBacks</code>, which the original
+      Flutter app itself performs on save), merely <em>reordered</em> (same data, different key order — harmless),
+      or a genuine <strong>DATA DIFFERS</strong> problem, in which case it prints a structural JSON diff (path-by-path,
+      capped at 8 differences) of exactly what changed.</li>
+    <li>Verifies every card's image file actually exists on disk, and — either for one sample file per extension
+      (default) or for every single image when run with <code>--all-images</code> — that it actually decodes via
+      <a href="data.html">image_utils.decodeFile</a>.</li>
+    <li>Checks that every card using the special <code>__unique__</code> card back actually has a matching
+      <code>&lt;name&gt;_BACK.&lt;ext&gt;</code> file (noting, rather than failing, that the Flutter client shows an
+      error placeholder for the same case rather than crashing).</li>
+    <li>Confirms the game's logo and pack-generator images (if any) resolve.</li>
+    <li>Round-trips every built-in deck and every save file found inside the game's own folder the same way as the
+      game definition, and separately flags any save that references a card id no longer defined in the game.</li>
+    <li>Then walks <code>deck_library/</code> similarly: for every deck file under a per-game subfolder, it flags a
+      folder name that doesn't match any loaded game, classifies old-format deck files as expected rejections
+      (<code>"old format (Flutter also rejects it)"</code>) rather than errors, round-trips readable decks, and flags
+      decks referencing unknown card ids or declaring a <code>gameId</code> that doesn't match the folder they're
+      filed under.</li>
+  </ul>
+  <p>
+    All output is both printed to the console and written to <code>compat_report.txt</code> in the tool's own save
+    directory, and the process exits non-zero if any problem was found — so it can still be wired into a manual
+    release checklist even though it isn't part of automated CI.
+  </p>
+
+  <h2 id="go-tests">Go-side tests (server)</h2>
+  <p>
+    The Go lobby server has its own, separate test suite (<code>internal/engine/engine_test.go</code>,
+    <code>internal/server/server_test.go</code>, <code>version_test.go</code>), run with <code>go test ./...</code> from
+    the <code>server/</code> directory, plus a <code>server/tools/build.ps1</code> script that runs those tests before
+    incrementing the build number and producing Windows/Linux binaries. These exercise the embedded Lua rules engine
+    (a gopher-lua-hosted copy of this client's own <code>src/core/*</code> and <code>src/game/{session,host_engine}.lua</code>,
+    kept in sync via <code>server/tools/sync-engine.ps1</code>) and the server's accounts/rooms/decks/trading/admin
+    logic using fake in-process TCP clients. See <a href="server.html">server.html</a> for full detail on the Go
+    codebase and the engine-mirroring workflow — it is not duplicated here since it is not Lua and not part of this
+    client's own test run.
+  </p>
+
+  <div class="nextprev">
+    <a href="server.html">&larr; Cardflux Server (Go)</a>
+    <a href="index.html">Home &rarr;</a>
+  </div>
+</main>
+</body>
+</html>

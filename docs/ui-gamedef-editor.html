@@ -1,0 +1,382 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Game Definition Editor — Cardflux Docs</title>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+<nav class="sidenav">
+  <a class="brand" href="index.html">Cardflux<small>Codebase Documentation</small></a>
+  <div class="group-label">Application</div>
+  <a href="architecture.html">Architecture &amp; App Lifecycle</a>
+  <a href="ui-framework.html">UI Toolkit (kit)</a>
+  <div class="group-label">User Interface</div>
+  <a href="ui-screens.html">Screens</a>
+  <a href="ui-gamedef-editor.html" class="current">Game Definition Editor</a>
+  <a href="ui-server-screens.html">Multiplayer Lobby Screens</a>
+  <a href="ui-table.html">Game Table Rendering</a>
+  <div class="group-label">Engine &amp; Data</div>
+  <a href="core.html">Core Rules Engine</a>
+  <a href="game.html">Game Session &amp; Controller</a>
+  <a href="data.html">Data &amp; Persistence</a>
+  <div class="group-label">Platform &amp; Network</div>
+  <a href="net.html">Networking</a>
+  <a href="platform.html">Platform Integration</a>
+  <div class="group-label">Server</div>
+  <a href="server.html">Cardflux Server (Go)</a>
+  <div class="group-label">Quality</div>
+  <a href="tests-tools.html">Tests &amp; Tools</a>
+</nav>
+<main class="page">
+  <header class="page-head">
+    <div class="crumb"><a href="index.html">Home</a> / User Interface</div>
+    <h1>Game Definition Editor</h1>
+    <div class="subtitle">The in-app editor for authoring a game's cards, zones, sets and rules.</div>
+  </header>
+
+  <div class="toc">
+    <div class="toc-title">On this page</div>
+    <ul>
+      <li><a href="#overview">What a "game definition" is</a></li>
+      <li><a href="#gamedef-editor">gamedef_editor.lua — Entry &amp; Editor</a></li>
+      <li><a href="#entry-screen">Entry screen</a></li>
+      <li><a href="#editor-screen">Editor screen</a></li>
+      <li><a href="#common">gamedef/common.lua — shared helpers</a></li>
+      <li><a href="#settings-tab">gamedef/settings_tab.lua — General tab</a></li>
+      <li><a href="#zones-tab">gamedef/zones_tab.lua — Zones tab</a></li>
+      <li><a href="#sets-tab">gamedef/sets_tab.lua — Sets tab</a></li>
+      <li><a href="#card-view-tab">gamedef/card_view_tab.lua — Cards tab</a></li>
+      <li><a href="#dialogs">gamedef/dialogs.lua — Tools-menu dialogs</a></li>
+    </ul>
+  </div>
+
+  <h2 id="overview">What a "game definition" is</h2>
+  <p>
+    A <strong>game definition</strong> (a "gamedef") is the complete description of one playable card game: its
+    name, its card backs, its tag groups (the vocabulary used to classify and filter cards — things like "Rarity"
+    or "Color"), its board <strong>zones</strong> (piles and widget slots, shared or per-player), its card
+    <strong>sets</strong> (folders of card art), and every individual <strong>card</strong> definition. On disk it
+    is a folder containing a <code>gamedef.json</code> file plus one subfolder of images per set. The exact shape
+    of every field below (<code>GameDefinition</code>, <code>ZoneDefinition</code>, <code>CardDefinition</code>,
+    <code>GameSet</code>, <code>TagGroup</code>, <code>CardBackDefinition</code>, <code>PackSetting</code>, ...) is
+    defined in <a href="core.html#models-lua">src/core/models.lua</a>; this page covers the editor UI built around that
+    data model, not the model itself.
+  </p>
+  <p>
+    The editor is reached from <a href="ui-screens.html#home">Home</a>'s corner tools (the build icon) and pushes
+    <code>gamedef_editor.Entry.new()</code>. Loading and saving the JSON file, copying art into the game's folder,
+    and the duplicate-detection logic used by the Tools menu all live in
+    <a href="data.html#gamedef-ops">src/data/gamedef_ops.lua</a>, which every file on this page calls into rather
+    than touching the filesystem directly.
+  </p>
+  <div class="note">
+    The editor keeps its working <code>GameDefinition</code> with <strong>bare image file names</strong> (e.g.
+    <code>"card.png"</code>, not a resolved absolute path) — see <code>gamedef_ops.loadGameDefFile</code>. Anything
+    in the editor that needs to actually draw an image (the Cards tab's preview, a card-back thumbnail, ...) builds
+    a short-lived display copy with the path resolved through
+    <a href="data.html#image-resolver">src/data/image_resolver.lua</a>; the resolved path is never written back.
+    That is why <code>common.displayCard</code>/<code>common.displayCardBacks</code> exist — every tab uses them
+    rather than resolving paths itself.
+  </div>
+
+  <h2 id="gamedef-editor">gamedef_editor.lua — Entry &amp; Editor</h2>
+  <div class="filecard">
+    <div class="path">src/ui/screens/gamedef_editor.lua</div>
+    <div class="role">Ports game_definition_editor_entry_screen.dart and game_definition_editor_screen.dart: pick/create a game, then edit it across four tabs.</div>
+  </div>
+  <p>
+    Exports <code>{ Entry, Editor, newGameDefinition, openExistingGameDefinition }</code>. The module-level
+    <code>M.newGameDefinition(onCreated)</code> and <code>M.openExistingGameDefinition(onOpened)</code> are shared
+    by both screens below (and also by <a href="ui-screens.html#home">Home</a>'s "New"/"Open" affordances via the
+    Entry screen), so "create" and "open" behave identically no matter where they're invoked from.
+  </p>
+
+  <h3 id="entry-screen">Entry screen</h3>
+  <p>
+    <code>Entry.new()</code> scans the whole games library folder (<a href="data.html#paths">src/data/paths.lua</a>'s
+    <code>gamesDir()</code>) via <code>ops.scanGameLibrary</code>, deferring the actual scan by two frames
+    (<code>pendingScan</code>) purely so a progress bar is visible first. It then shows every discovered game as a
+    tile grid — reusing <a href="ui-screens.html#game-picker"><code>GamePicker.drawGrid</code></a> directly rather
+    than a full <code>GamePicker</code> instance, since Entry needs its own folder-choosing and New/Open buttons
+    around the grid rather than GamePicker's. Clicking a tile opens that game in the <code>Editor</code>
+    (<code>openEditor(folderPath, game)</code>); "New Game Definition..." and "Open Existing..." are full-width
+    buttons below the grid, both just calling the module-level helpers above and then <code>App.push(Editor.new(...))</code>.
+  </p>
+  <p>
+    <code>Entry:changeRoot()</code> picks a new library folder (through
+    <a href="platform.html#file-dialog">src/platform/file_dialog.lua</a>) and, if the old folder has files,
+    confirms via <a href="ui-screens.html#game-picker"><code>GamePicker.maybeMoveLibraryFolder</code></a> before
+    calling <code>paths.setGamesDir</code> and re-scanning. <code>Entry:resume()</code> (called when the editor
+    screen above it on the stack is popped) re-reads <code>paths.gamesDir()</code> and refreshes, so a folder
+    change made elsewhere in the app is picked up when the user returns to this screen.
+  </p>
+  <div class="fn">
+    <div class="sig">M.newGameDefinition(onCreated)</div>
+    A small dialog prompting for a game id. Validates with <code>ops.validateGameId</code> and checks the id isn't
+    already taken under the library root, then calls <code>ops.createGameDefinition(root, id)</code> to write a
+    stub <code>gamedef.json</code> and returns the new <code>(folderPath, game)</code> to <code>onCreated</code>.
+  </div>
+  <div class="fn">
+    <div class="sig">M.openExistingGameDefinition(onOpened)</div>
+    Opens a native/in-app file picker (<a href="ui-screens.html#file-picker-dialog">file_picker_dialog.lua</a> is
+    what actually renders it) filtered to <code>.json</code>, loads the chosen file with
+    <code>ops.loadGameDefFile</code>, and calls <code>onOpened(folder, game)</code> — or toasts an error if the file
+    isn't a valid game definition.
+  </div>
+
+  <h3 id="editor-screen">Editor screen</h3>
+  <p>
+    <code>Editor.new(folderPath, game)</code> builds the four tab objects up front and keeps them alive for the
+    editor's whole lifetime (so switching tabs never re-creates their state):
+  </p>
+  <table>
+    <tr><th>Tab</th><th>Index</th><th>Module</th><th>Edits</th></tr>
+    <tr><td>General</td><td>1</td><td><a href="#settings-tab">gamedef/settings_tab.lua</a></td><td>name, card backs, tag groups</td></tr>
+    <tr><td>Zones</td><td>2</td><td><a href="#zones-tab">gamedef/zones_tab.lua</a></td><td><code>game.zones</code></td></tr>
+    <tr><td>Sets</td><td>3</td><td><a href="#sets-tab">gamedef/sets_tab.lua</a></td><td><code>game.sets</code>, adds cards</td></tr>
+    <tr><td>Cards</td><td>4</td><td><a href="#card-view-tab">gamedef/card_view_tab.lua</a></td><td><code>game.cards</code></td></tr>
+  </table>
+  <p>
+    Every tab edits the shared <code>self.game</code> table (owned by the <code>Editor</code>, passed to each tab
+    as <code>editor.game</code>) directly and in place — there is no separate "apply changes" step and, notably,
+    <strong>no unsaved-changes prompt</strong> on leaving the editor (matching the original Flutter behavior,
+    called out explicitly in the file's header comment). The toolbar (built with
+    <a href="ui-framework.html#widgets-lua"><code>widgets.editorToolbar</code></a>) carries New, Open, a Tools menu and
+    Save; <a href="ui-framework.html#widgets-lua"><code>widgets.tabBar</code></a> renders the four-tab strip below it.
+  </p>
+  <div class="fn">
+    <div class="sig">Editor:save() / Editor:write()</div>
+    <code>save()</code> first checks <code>ops.cardsOutsideSets(game)</code> — cards with no <code>setId</code> are
+    silently dropped by the file format once a game actually uses sets, so this warns (naming up to five affected
+    cards) and requires an explicit "Save Anyway" before calling <code>write()</code>, which calls
+    <code>ops.writeGameDefinition(folderPath, game)</code> and clears the image resolver's cache (in case any image
+    file was replaced during this session).
+  </div>
+  <div class="fn">
+    <div class="sig">Editor:openToolsMenu()</div>
+    Opens a context menu with two entries, both deferring to <a href="#dialogs">gamedef/dialogs.lua</a>: "Check for
+    Duplicate Card IDs..." and "Merge Duplicate Card Images...".
+  </div>
+
+  <h2 id="common">gamedef/common.lua — shared helpers</h2>
+  <div class="filecard">
+    <div class="path">src/ui/screens/gamedef/common.lua</div>
+    <div class="role">The grab-bag of layout constants and small widgets every tab in this editor is built from.</div>
+  </div>
+  <p>
+    This file has no screen of its own — it is pure shared infrastructure, required by every other file in
+    <code>gamedef/</code>. The pieces worth knowing about, since they recur constantly across the tab files above
+    and below:
+  </p>
+  <div class="fn">
+    <div class="sig">C.keyOf(obj)</div>
+    Generates (and memoizes, via a weak-keyed table) a stable string id for any Lua table — zones, tag groups,
+    card backs, sets, cards — so widget ids built from <code>keyOf(obj)</code> stay attached to the same logical
+    row across reorders, even though the underlying objects have no natural id field of their own usable as a
+    widget key (and a zone's own <code>id</code> field is itself user-editable text).
+  </div>
+  <div class="fn">
+    <div class="sig">C.displayCard(folderPath, card) / C.displayCardBacks(folderPath, cardBacks)</div>
+    Returns shallow copies with <code>imagePath</code> resolved to a real path via
+    <a href="data.html#image-resolver"><code>image_resolver.resolveBareImagePath</code></a>, for drawing only (see
+    the note above on bare vs. resolved paths).
+  </div>
+  <div class="fn">
+    <div class="sig">C.chooseImage(destFolder, correctCardOrientation, onResult)</div>
+    The shared "pick an image file and copy it into the game folder" flow: opens a file picker filtered to
+    <code>ops.imageFilterList</code>, calls <code>ops.copyPickedImage</code> (optionally auto-rotating for a
+    card's declared orientation), invalidates the image cache and resolver for the copied-over path, and calls
+    <code>onResult(fileName)</code> with the bare file name (or <code>nil</code> on cancel/failure, after a toast).
+  </div>
+  <p>Layout helpers used throughout: <code>C.column(x, w)</code> centers a max-760px-wide content column;
+    <code>C.sectionHeader</code> draws a section title with an optional info tooltip, a count badge and a
+    right-aligned action button; <code>C.groupLabel</code> draws a small primary-colored sub-heading;
+    <code>C.toggleRow</code>/<code>C.toggleGrid</code> lay out labeled on/off switches (one or two columns,
+    depending on available width); <code>C.collapseHeader</code> is the chevron+title+trailing-text row used for
+    every collapsible section; <code>C.stepper</code> is the −/qty/+/remove control used for quantity fields (pack
+    settings, deck entries); <code>C.imagePreviewBox</code>/<code>C.drawImageInBox</code> draw a card-shaped or
+    arbitrary image thumbnail with contain/cover fitting and optional rounding.</p>
+
+  <h2 id="settings-tab">gamedef/settings_tab.lua — General tab</h2>
+  <div class="filecard">
+    <div class="path">src/ui/screens/gamedef/settings_tab.lua</div>
+    <div class="role">Port of widgets/game_settings_tab.dart: the game's name, its card backs, and its tag groups.</div>
+  </div>
+  <p>
+    Three sections, top to bottom: the game <strong>name</strong> field; <strong>Card Backs</strong>, a
+    drag-reorderable list where the first entry is the game's default back (each row has a clickable thumbnail to
+    choose/clear its image, a name field, and an orientation dropdown — see
+    <code>T:drawCardBackRow</code>); and <strong>Tag Groups</strong>, a drag-reorderable list of named groups, each
+    expandable to show its tags as removable, drag-to-reorder <em>chips</em> (<code>T:drawTagChips</code>) plus a
+    field to add a new tag.
+  </p>
+  <p>
+    The chip drag-reorder (<code>T:drawTagChips</code>) is a good example of this app's general "press-and-drag
+    with a threshold" pattern: a press is recorded but doesn't become a drag until the mouse has moved more than 4
+    logical pixels, at which point an insertion-point indicator (a thin vertical bar) tracks the nearest chip and a
+    release commits the move via <a href="ui-framework.html#widgets-lua"><code>widgets.moveItem</code></a>. The same
+    pattern, generalized to full rows via a <code>widgets.reorder</code> handle object, drives every other
+    drag-reorderable list in this editor (card backs here, tag groups here, zones on the
+    <a href="#zones-tab">Zones tab</a>).
+  </p>
+  <p>
+    Tags defined here are the vocabulary used everywhere else: as filter chips in
+    <a href="ui-framework.html#card-filter-bar-lua">card_filter_bar.lua</a>, as the toggleable chips on each card's
+    form on the <a href="#card-view-tab">Cards tab</a>, and (for any tag group the game nominates as its "Rarity"
+    group) as the keys for a set's pack-generation weights on the <a href="#sets-tab">Sets tab</a>.
+  </p>
+
+  <h2 id="zones-tab">gamedef/zones_tab.lua — Zones tab</h2>
+  <div class="filecard">
+    <div class="path">src/ui/screens/gamedef/zones_tab.lua</div>
+    <div class="role">Port of widgets/zones_tab.dart: a reorderable zone list on the left, the selected zone's settings on the right.</div>
+  </div>
+  <p>
+    A classic list/detail split: <code>T:drawList</code> renders the drag-reorderable zone list (an icon per row —
+    "layers" for a card zone, "widgets" for a widget zone — plus a one-line badge summary from
+    <code>badgesOf(zone)</code>, e.g. "Shared · Face up"); <code>T:drawDetail(zone, ...)</code> renders the form for
+    whichever zone is <code>self.selected</code>. "Add Zone" creates a bare <code>ZoneDefinition</code> and selects
+    it immediately.
+  </p>
+  <p>
+    The detail form always starts with Name, ID, and a Card Zone / Widget Zone segmented toggle
+    (<code>zone.kind</code>), then branches:
+  </p>
+  <div class="fn">
+    <div class="sig">T:drawCardZoneFields(zone, k, x, y, w)</div>
+    Ownership (<strong>Shared</strong> — one public pile instead of one private pile per player — and, only for
+    owned zones, <strong>Visible To All</strong>); Behavior (Face Up, Shuffleable, Auto Shuffle, Is Discard Pile);
+    then either <strong>Dealing</strong> (owned zones: <code>dealsBuiltDeck</code>, with a Deck Type field and an
+    optional-deck toggle shown only while that's on) or <strong>Shared Deck</strong> (shared zones: a Standard
+    52-Card Deck toggle, or a Deck Name naming a library deck to auto-load, plus a Left/Right <code>side</code>
+    picker); finally <strong>Starting Contents</strong>, a list of card+quantity entries — but only shown when no
+    other source (built deck, standard deck, or named deck) already fills the zone, since those take priority (see
+    <a href="game.html#session-lua">src/game/session.lua</a> for the precedence this UI is describing).
+  </div>
+  <div class="fn">
+    <div class="sig">T:drawWidgetZoneFields(zone, k, x, y, w)</div>
+    Currently a single widget kind, "Counter": a starting value (typed as text, parsed loosely — any non-numeric
+    input is treated as 0) and starting color / starting text color pickers.
+  </div>
+  <p>
+    Settings that don't apply to the zone's current configuration are <em>hidden</em> entirely rather than merely
+    disabled (their underlying values are preserved, just not editable) — e.g. Visible To All disappears once
+    Shared is on, and the whole Starting Contents section disappears once a deck source is configured. This keeps
+    the form from ever showing a control whose value has no effect.
+  </p>
+
+  <h2 id="sets-tab">gamedef/sets_tab.lua — Sets tab</h2>
+  <div class="filecard">
+    <div class="path">src/ui/screens/gamedef/sets_tab.lua</div>
+    <div class="role">Port of widgets/sets_tab.dart: bulk-import a folder of card art as a new set, and configure pack generation.</div>
+  </div>
+  <p>
+    "Add Set..." is the headline feature: it opens a folder picker, derives the set's id from the folder's own name
+    (<code>ops.deriveIdFromFolderPath</code>), and — after a one-frame delay so a spinner shows first — calls
+    <code>ops.copySetImages</code> to copy every image into <code>&lt;gameFolder&gt;/&lt;id&gt;/</code> and
+    <code>ops.buildCardsFromImageFolder</code> to synthesize one <code>CardDefinition</code> per image (deriving
+    each card's title from its file name, and guaranteeing unique ids against the game's existing cards). This is
+    the fast path for turning a folder of card scans into a playable set without touching the Cards tab at all.
+  </p>
+  <p>
+    Each set row shows its name (editable), id and card count, a delete button
+    (<code>T:confirmDelete</code> — removes the set <em>and</em> every card whose <code>setId</code> matches it,
+    after confirmation, since that's destructive to data the Cards tab owns), and — only when at least one card in
+    the set carries a tag from whichever tag group the game uses for rarity — a collapsible <strong>Pack
+    Settings</strong> section.
+  </p>
+  <div class="fn">
+    <div class="sig">packSummary(set) / rarityTags</div>
+    Pack Settings is a list of <code>(tag, count)</code> pairs — "deal <code>count</code> random cards carrying
+    <code>tag</code>" — consumed by the Pack Generator board widget and by a collection-mode server's pack-opening
+    logic (see <a href="core.html#pack-generator-lua">src/core/pack_generator.lua</a>). With no settings configured,
+    the collapsed summary reads "10 random cards" (the generator's built-in default), ignoring rarity entirely.
+    <code>ops.rarityTags(game.tagGroups)</code> decides which tag group, if any, counts as the rarity vocabulary
+    offered in the tag dropdown here.
+  </div>
+
+  <h2 id="card-view-tab">gamedef/card_view_tab.lua — Cards tab</h2>
+  <div class="filecard">
+    <div class="path">src/ui/screens/gamedef/card_view_tab.lua</div>
+    <div class="role">Ports widgets/card_view_tab.dart and card_detail_panel.dart: the busiest tab — a filtered pool, a live preview, and a per-card form, in three resizable columns.</div>
+  </div>
+  <p>
+    Three columns separated by draggable split handles (<code>splitHandle</code>, the same press-and-drag pattern
+    noted on the <a href="#settings-tab">General tab</a> but constrained to horizontal movement): a filtered card
+    pool grid (<code>T:drawPool</code>, reusing <a href="ui-framework.html#card-filter-bar-lua">card_filter_bar.lua</a>
+    for the filter/search chips), a live preview of the selected card (<code>T:drawPreview</code>), and its full
+    edit form (<code>T:drawForm</code>). Column widths are tracked as fractions (<code>poolFraction</code>,
+    <code>previewFraction</code>, with the form taking whatever remains) clamped to a 15% minimum each.
+  </p>
+  <div class="fn">
+    <div class="sig">T:syncFilters()</div>
+    Called every frame before drawing: prunes the filter state of any tag-group/tag/set id that no longer exists in
+    the game (since those are freely edited on other tabs, a filter can reference something that just got
+    deleted or renamed) and resets the sort key if it referenced a group that's gone.
+  </div>
+  <div class="fn">
+    <div class="sig">T:tabToCard(delta) / T:keypressed(key)</div>
+    Pressing Tab with no field focused moves the selection to the next/previous card in the current filtered view
+    (Shift+Tab goes backward). Two checkboxes under the preview — "Tab navigates inside form fields" and "Tab
+    focuses and selects Card Title" — change what Tab does <em>while a field in the form has focus</em>, letting a
+    user who is rapidly re-titling many cards tab straight from one title field to the next card's title field with
+    its text pre-selected, without touching the mouse.
+  </div>
+  <p>
+    The preview pane (<code>T:drawPreview</code>/<code>drawFrontPane</code>/<code>drawBackPane</code>) shows the
+    card's actual image at its native aspect ratio (unlike the cropped pool tiles), and — for a card with a
+    <code>cardBackId</code> set — both Front and Back side by side, with Previous/Next navigation and a position
+    counter ("<code>i / N</code>") against the current filtered list.
+  </p>
+  <p>
+    The form (<code>T:drawForm</code>) edits, in order: title and delete; orientation and set (side by side);
+    image (file name display, Choose/Clear — routed through <a href="#common">common.chooseImage</a>, with
+    orientation-aware auto-rotation); card back (a dropdown of the game's named backs, a Default option, or
+    "Unique" to pick this card's own back orientation independent of any named back); one collapsible chip section
+    per non-empty tag group (click a chip to toggle that tag on <code>card.types</code>); an <strong>Extra
+    Fields</strong> editor (free-form key/value pairs, stored as a JSON object on <code>card.extraFields</code> —
+    see <code>T:extraRows</code>/<code>writeExtraFields</code>, which round-trip through the ordered-key metadata
+    <a href="core.html#json-lua">lib/json.lua</a> attaches to decoded objects so field order in the saved file matches
+    what the user typed); and finally two toggles, <strong>Unownable</strong> (the card always stays unowned on
+    the table, so any player can interact with it — used for communal resources) and <strong>Free Card</strong>
+    (on a collection-mode server, every player always has unlimited copies of it regardless of what they've
+    unlocked).
+  </p>
+
+  <h2 id="dialogs">gamedef/dialogs.lua — Tools-menu dialogs</h2>
+  <div class="filecard">
+    <div class="path">src/ui/screens/gamedef/dialogs.lua</div>
+    <div class="role">Ports duplicate_card_ids_dialog.dart and duplicate_card_images_dialog.dart — the two entries under the editor toolbar's Tools button.</div>
+  </div>
+  <div class="fn">
+    <div class="sig">D.showDuplicateCardIds(editor)</div>
+    Finds every group of cards sharing the same <code>id</code> (<code>ops.duplicateIdGroups</code>) and shows one
+    editable ID field per affected card (grouped under its colliding id, with the card's title and set name for
+    context), so the user can manually re-key each one to something unique. The groups are computed once when the
+    dialog opens, so a row doesn't disappear mid-edit the instant its id becomes unique — Save applies every
+    pending id change at once and calls <code>models.GameDefinition.invalidateIndex(game)</code> (see
+    <a href="core.html#models-lua">src/core/models.lua</a>) to rebuild the id-based lookup index.
+  </div>
+  <div class="fn">
+    <div class="sig">D.showMergeDuplicateImages(editor)</div>
+    Finds groups of cards that share both a set and an image file (<code>ops.duplicateImageGroups</code>) — a
+    common artifact of re-importing art — and offers to merge each group into its first card, unioning their tags
+    (<code>ops.unionTypes</code>) and deleting the rest (<code>ops.mergeDuplicateImageCards</code>). The preview
+    lists, per group, the surviving card's title/set, how many cards will be merged into it, and the union of tags
+    it will end up with, before the user commits.
+  </div>
+  <p>
+    Both dialogs are read-only analyses until their action button is pressed — opening the Tools menu never
+    mutates <code>game.cards</code> by itself, and a group with nothing to merge/rename (an empty result) short-
+    circuits straight to a toast ("No duplicate card IDs found." / "No duplicate card images found.") instead of
+    opening an empty dialog.
+  </p>
+
+  <div class="nextprev">
+    <a href="ui-screens.html">&larr; Screens</a>
+    <a href="ui-server-screens.html">Multiplayer Lobby Screens &rarr;</a>
+  </div>
+</main>
+</body>
+</html>

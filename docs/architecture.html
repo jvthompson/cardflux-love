@@ -1,0 +1,540 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Architecture &amp; App Lifecycle — Cardflux Docs</title>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+<nav class="sidenav">
+  <a class="brand" href="index.html">Cardflux<small>Codebase Documentation</small></a>
+  <div class="group-label">Application</div>
+  <a href="architecture.html" class="current">Architecture &amp; App Lifecycle</a>
+  <a href="ui-framework.html">UI Toolkit (kit)</a>
+  <div class="group-label">User Interface</div>
+  <a href="ui-screens.html">Screens</a>
+  <a href="ui-gamedef-editor.html">Game Definition Editor</a>
+  <a href="ui-server-screens.html">Multiplayer Lobby Screens</a>
+  <a href="ui-table.html">Game Table Rendering</a>
+  <div class="group-label">Engine &amp; Data</div>
+  <a href="core.html">Core Rules Engine</a>
+  <a href="game.html">Game Session &amp; Controller</a>
+  <a href="data.html">Data &amp; Persistence</a>
+  <div class="group-label">Platform &amp; Network</div>
+  <a href="net.html">Networking</a>
+  <a href="platform.html">Platform Integration</a>
+  <div class="group-label">Server</div>
+  <a href="server.html">Cardflux Server (Go)</a>
+  <div class="group-label">Quality</div>
+  <a href="tests-tools.html">Tests &amp; Tools</a>
+</nav>
+<main class="page">
+  <header class="page-head">
+    <div class="crumb"><a href="index.html">Home</a> / Application</div>
+    <h1>Architecture &amp; App Lifecycle</h1>
+    <div class="subtitle">The LÖVE2D entry points and the application shell that every screen runs inside of.</div>
+  </header>
+
+  <div class="toc">
+    <div class="toc-title">On this page</div>
+    <ul>
+      <li><a href="#overview">Overview</a></li>
+      <li><a href="#love-callback-model">The LÖVE2D callback model</a></li>
+      <li><a href="#conf-lua">conf.lua: window &amp; test-mode setup</a></li>
+      <li><a href="#main-lua">main.lua: entry point &amp; the custom love.run</a></li>
+      <li><a href="#test-mode">Test mode</a></li>
+      <li><a href="#version-lua">version.lua</a></li>
+      <li><a href="#app-shell">src/app.lua: the application shell</a></li>
+      <li><a href="#screen-stack">The screen stack</a></li>
+      <li><a href="#screen-contract">The screen contract</a></li>
+      <li><a href="#player-profile">Player profile</a></li>
+      <li><a href="#discord-invites">Discord join invites</a></li>
+      <li><a href="#ui-scale">UI scale &amp; DPI</a></li>
+      <li><a href="#title-bar">The custom title bar</a></li>
+      <li><a href="#dev-hooks">Developer hooks (--eval, --shot, --script)</a></li>
+      <li><a href="#love-forwarders">LÖVE callback forwarders &amp; the global tick</a></li>
+      <li><a href="#quit">Shutdown (App.quit)</a></li>
+    </ul>
+  </div>
+
+  <h2 id="overview">Overview</h2>
+  <p>
+    Cardflux is a Windows desktop card-table application built on
+    <strong>LÖVE2D</strong> (a Lua game framework on top of SDL2). It began life as a
+    Flutter app — comments throughout the Lua source point back at the original
+    <code>.dart</code> files each module was "ported" from — and that history still
+    shapes the code: screens behave like Flutter widgets with a navigation stack,
+    colors follow a Material 3 scheme (see <a href="ui-framework.html#theme-lua">theme.lua</a>),
+    and dialogs/menus mimic Flutter's modal navigator.
+  </p>
+  <p>
+    Four files form the skeleton everything else hangs off of:
+  </p>
+  <div class="filecard">
+    <div class="path">conf.lua</div>
+    <div class="role">LÖVE configuration callback — window setup, DPI awareness, test-mode module stripping.</div>
+  </div>
+  <div class="filecard">
+    <div class="path">main.lua</div>
+    <div class="role">LÖVE entry point — defines <code>love.load</code> and all other <code>love.*</code> callbacks, and replaces <code>love.run</code> with a JIT-safe variant.</div>
+  </div>
+  <div class="filecard">
+    <div class="path">src/app.lua</div>
+    <div class="role">The application shell (singleton <code>App</code> table): screen stack, custom title bar, global per-frame ticking, input routing, UI scale.</div>
+  </div>
+  <div class="filecard">
+    <div class="path">src/version.lua</div>
+    <div class="role">Static version/build metadata consumed by the updater.</div>
+  </div>
+
+  <h2 id="love-callback-model">The LÖVE2D callback model</h2>
+  <p>
+    LÖVE does not have its own "main loop" that you write — instead, you define
+    global callback functions (<code>love.load</code>, <code>love.update</code>,
+    <code>love.draw</code>, <code>love.keypressed</code>, …) and the engine's
+    default <code>love.run</code> calls them every frame: pump OS events, step the
+    timer, call <code>love.update(dt)</code>, clear the screen, call
+    <code>love.draw()</code>, present. Cardflux defines all of the standard
+    callbacks in <code>main.lua</code>, each one just forwarding to the
+    <code>App</code> singleton in <code>src/app.lua</code> (lazily required via a
+    local <code>A()</code> helper so <code>src/app.lua</code> isn't loaded during
+    test mode). This indirection keeps <code>main.lua</code> tiny and keeps all the
+    actual behavior in one inspectable module.
+  </p>
+
+  <h2 id="conf-lua">conf.lua: window &amp; test-mode setup</h2>
+  <p>
+    <code>love.conf(t)</code> runs before any window exists and configures LÖVE itself.
+    Cardflux's <code>conf.lua</code> does a few notable things:
+  </p>
+  <ul>
+    <li>
+      <strong>Reads <code>--test</code> off <code>arg</code> directly</strong> (LÖVE
+      hasn't parsed game arguments yet at this point) and stores the result in the
+      global <code>TEST_MODE</code>, which both <code>conf.lua</code> and
+      <code>main.lua</code> branch on.
+    </li>
+    <li>
+      <strong>Per-monitor DPI awareness on Windows</strong> (<code>enableDpiAwareness</code>):
+      before the window is created, it uses LuaJIT's FFI to call
+      <code>SetProcessDpiAwarenessContext</code> (falling back to the older
+      <code>SetProcessDPIAware</code> on failure) so Windows gives the app real
+      pixels instead of upscaling a 96-DPI bitmap. This is why the app can render
+      crisp text at any monitor scale — the DPI scale is read back later in
+      <a href="platform.html#window"><code>src/platform/window.lua</code></a> and
+      multiplied into <code>App.effectiveScale()</code> (see <a href="#ui-scale">UI scale</a> below).
+      The whole call is wrapped in nested <code>pcall</code>s and skipped entirely
+      off-Windows or in test mode.
+    </li>
+    <li>
+      <strong>Window defaults:</strong> title "Cardflux", 1280×720 starting size,
+      960×600 minimum, resizable, <code>borderless = true</code> (the app draws its
+      own title bar — see <a href="#title-bar">below</a>), vsync on, 4x MSAA,
+      <code>highdpi = false</code> (intentional — the app manages its own scale
+      rather than letting LÖVE's high-DPI backbuffer handle it).
+    </li>
+    <li>
+      <strong>Test mode overrides:</strong> when <code>TEST_MODE</code> is set, the
+      identity (save-folder name) becomes <code>"cardflux_tests"</code> so tests
+      never read or write real user data, <code>t.window = false</code> skips
+      creating a window at all, and the audio/sound/joystick modules are disabled.
+    </li>
+    <li>
+      Physics, video and joystick modules are disabled unconditionally — the app
+      doesn't need them, so leaving them out trims startup time and binary surface.
+    </li>
+  </ul>
+
+  <h2 id="main-lua">main.lua: entry point &amp; the custom love.run</h2>
+  <p>
+    <code>love.load(args)</code> is the first real callback LÖVE invokes. In test
+    mode it hands off to <code>runTests(args)</code> (see <a href="#test-mode">below</a>)
+    and returns. Otherwise it supports a developer convenience,
+    <code>--identity &lt;name&gt;</code>, which calls
+    <code>love.filesystem.setIdentity(name)</code> to point the save directory at a
+    separate folder — handy for running two instances as two different "players"
+    locally. It then delegates everything else to <code>require("src.app").load(args)</code>.
+  </p>
+  <p>
+    Outside test mode, <code>main.lua</code> defines the rest of LÖVE's standard
+    callbacks (<code>love.update</code>, <code>love.draw</code>, <code>love.keypressed</code>,
+    <code>love.keyreleased</code>, <code>love.textinput</code>, the mouse callbacks,
+    <code>love.wheelmoved</code>, <code>love.resize</code>, <code>love.filedropped</code>,
+    <code>love.directorydropped</code>, <code>love.focus</code>, <code>love.quit</code>),
+    each one a one-line forward to the matching <code>App.*</code> method.
+  </p>
+
+  <h3 id="custom-love-run">Why love.run is overridden</h3>
+  <p>
+    The most unusual piece of <code>main.lua</code> is that it replaces
+    <code>love.run</code> itself, rather than relying on LÖVE 11's default
+    implementation. The code comment explains why: the custom title bar's window
+    drag/resize behavior (<a href="platform.html#window"><code>src/platform/window.lua</code></a>)
+    installs an SDL <em>hit-test callback</em> — a native C callback that SDL invokes
+    from inside <code>love.event.pump</code> to ask "what's under this point, titlebar
+    or client area?". That hit-test callback is itself implemented as an FFI
+    callback from Lua. LuaJIT's JIT compiler cannot re-enter an FFI callback from
+    a C call made by already-compiled (JIT'd) code — doing so would crash or
+    misbehave. The fix is <code>jit.off(loop)</code>: the per-frame <code>loop</code>
+    closure returned by <code>love.run</code> is explicitly excluded from JIT
+    compilation, forcing it to run in the interpreter so the FFI callback path
+    stays safe. Apart from that one addition, the loop is a faithful reproduction
+    of LÖVE 11's default <code>love.run</code>: pump events, dispatch
+    <code>love.handlers[name]</code> for each queued event (intercepting
+    <code>"quit"</code> to consult <code>love.quit()</code> first), step the timer,
+    call <code>update</code>, then if graphics is active clear/draw/present, then
+    sleep 1ms to avoid pegging a CPU core.
+  </p>
+  <div class="note">
+    This is a good example of the kind of constraint that only shows up once you
+    combine two features (a native hit-test callback <em>and</em> a JIT compiler) —
+    worth remembering if the window-dragging code ever needs to change.
+  </div>
+
+  <h2 id="test-mode">Test mode</h2>
+  <p>
+    When invoked with <code>--test</code>, <code>main.lua</code>'s <code>runTests</code>
+    scans the <code>tests/</code> directory (via <code>love.filesystem.getDirectoryItems</code>)
+    for every file matching <code>*_test.lua</code>, sorts them for determinism, and
+    hands the list to <code>require("tests.runner").run(files, filterArg)</code>.
+    An optional second CLI argument after <code>--test</code> (as long as it doesn't
+    itself look like a flag) is used as a name filter so a single test file/case
+    can be targeted. The process exits with code 0 or 1 via
+    <code>love.event.quit(ok and 0 or 1)</code> — this is what lets the test suite
+    run headlessly from a shell/CI without a window (recall <code>conf.lua</code>
+    sets <code>t.window = false</code> in this mode). Full detail on the test
+    runner and individual suites lives on the <a href="tests-tools.html">Tests &amp; Tools</a> page.
+  </p>
+
+  <h2 id="version-lua">version.lua</h2>
+  <p>
+    A plain data module returned as a table: <code>name</code> (semantic version,
+    e.g. <code>"0.2.0"</code>), <code>build</code> (an integer that increases with
+    every release and is compared against GitHub release tag suffixes like
+    <code>"+10"</code>), <code>releaseRepo</code>
+    (<code>"jvthompson/cardflux-love"</code>), <code>releaseAssetName</code>
+    (<code>"cardflux-windows.zip"</code>), and <code>exeName</code>
+    (<code>"Cardflux.exe"</code>). The in-file comment explains <em>why</em> the
+    build number is independent of any other numbering scheme in the project: the
+    LÖVE port is versioned separately from the original Flutter app it was ported
+    from, and must publish releases to its own GitHub repository — if it reused the
+    Flutter repo's build numbers, the updater would never see a build number higher
+    than what's already there and would think it's always up to date. This table is
+    consumed entirely by <a href="platform.html#updater"><code>src/platform/updater.lua</code></a>,
+    which polls <code>releaseRepo</code>'s GitHub releases, compares <code>build</code>
+    against the latest tag, and if newer, downloads <code>releaseAssetName</code> and
+    replaces <code>exeName</code>.
+  </p>
+
+  <h2 id="app-shell">src/app.lua: the application shell</h2>
+  <p>
+    <code>src/app.lua</code> returns a single table, <code>App</code>, that acts as
+    a global singleton for the whole running process — every screen, dialog and
+    background system reaches back into it. Its responsibilities: own the
+    navigation stack of "screens", draw the custom borderless-window title bar,
+    route every LÖVE input callback to the UI framework and the active screen, tick
+    the handful of systems that must keep running regardless of which screen is on
+    top (network sockets, image decoding, Discord presence, the updater), and track
+    cross-screen state like the player's profile and UI scale setting.
+  </p>
+
+  <h2 id="screen-stack">The screen stack</h2>
+  <p>
+    <code>App</code> keeps a local array <code>stack</code> of screen objects (not
+    exposed directly; manipulated only through the functions below). This is a
+    classic push-down navigator, equivalent to a Flutter <code>Navigator</code>:
+  </p>
+  <div class="fn">
+    <span class="sig">App.push(screen)</span>
+    <p>Pushes <code>screen</code> on top, blurs the UI focus (<code>ui.blur()</code>
+    — closing e.g. an open text field so it doesn't bleed into the new screen),
+    and calls <code>screen:enter()</code> if present.</p>
+  </div>
+  <div class="fn">
+    <span class="sig">App.pop()</span>
+    <p>Pops the top screen, calling its <code>:leave()</code> if present, blurs
+    focus, then calls <code>:resume()</code> on the screen now on top (if any) so
+    it can refresh itself (reload data that may have changed while it was
+    covered).</p>
+  </div>
+  <div class="fn">
+    <span class="sig">App.replace(screen)</span>
+    <p>Pops the current top (calling <code>:leave()</code>) and pushes
+    <code>screen</code> in its place — used when a screen should not remain in the
+    back-stack (e.g. moving from a lobby into an active game).</p>
+  </div>
+  <div class="fn">
+    <span class="sig">App.popToHome(message)</span>
+    <p>Unwinds the entire stack down to the bottom screen (assumed to be Home),
+    calling <code>:leave()</code> on everything removed, closes any open menus
+    (<code>overlays.closeMenus()</code>), and sets <code>home.message</code> so Home
+    can show an orange banner (e.g. "You were disconnected") before calling
+    <code>:resume()</code> on it. Used for abnormal exits from deep in a flow —
+    disconnects, kicked-from-game, fatal errors — without having to pop one frame
+    at a time.</p>
+  </div>
+  <div class="fn">
+    <span class="sig">App.top()</span>
+    <p>Returns the current top-of-stack screen (or <code>nil</code> if empty).</p>
+  </div>
+
+  <h2 id="screen-contract">The screen contract</h2>
+  <p>
+    A "screen" is a plain Lua table/object with no required base class — it just
+    needs to <em>optionally</em> implement whichever of the following fields or
+    methods are relevant to it (all are duck-typed, checked with
+    <code>if screen.x then</code>):
+  </p>
+  <table>
+    <tr><th>Member</th><th>Purpose</th></tr>
+    <tr><td><code>title</code></td><td>String shown in the custom title bar while this screen is on top.</td></tr>
+    <tr><td><code>showBack</code></td><td>Whether the back arrow is shown in the title bar (default <code>true</code> whenever the stack has more than one entry).</td></tr>
+    <tr><td><code>onBack()</code></td><td>Overrides what the title bar's back button does; if absent, it just calls <code>App.pop()</code>.</td></tr>
+    <tr><td><code>draw(x, y, w, h)</code></td><td>Called every frame inside the UI frame, given the content area below the title bar (and below the top-level clip <code>App.draw</code> pushes).</td></tr>
+    <tr><td><code>update(dt)</code></td><td>Per-frame update, called only while the screen is on top of the stack.</td></tr>
+    <tr><td><code>backgroundUpdate(dt)</code></td><td>Per-frame update called for <em>every</em> screen on the stack, even ones buried underneath others — used by screens that must keep ticking state (e.g. a network connection) while a dialog/sub-screen is pushed above them.</td></tr>
+    <tr><td><code>keypressed(key, scancode, isrepeat)</code> / <code>keyreleased(key, scancode)</code></td><td>Forwarded only when the UI framework and any open overlay didn't already consume the key.</td></tr>
+    <tr><td><code>textinput(text)</code></td><td>Forwarded only when no focused text field consumed it first.</td></tr>
+    <tr><td><code>enter()</code></td><td>Called once, right after being pushed.</td></tr>
+    <tr><td><code>leave()</code></td><td>Called once, right before being popped/replaced.</td></tr>
+    <tr><td><code>resume()</code></td><td>Called when this screen becomes the top again after something above it was popped (or after <code>popToHome</code>).</td></tr>
+    <tr><td><code>filedropped(file)</code> / <code>directorydropped(path)</code></td><td>OS drag-and-drop forwarded to the top screen only.</td></tr>
+    <tr><td><code>quit()</code></td><td>Return <code>true</code> to veto the app closing (e.g. to show an "are you sure" dialog first) — see <a href="#quit">App.quit</a>.</td></tr>
+    <tr><td><code>forceLightTheme</code></td><td>When truthy, <code>App.draw</code> forces <code>theme.c = theme.light</code> for this frame regardless of the user's dark-mode setting — used by the game table, which (like Flutter's own <code>Theme(data: AppTheme.light)</code> override around the table) is always rendered in light colors so felt/cards read correctly.</td></tr>
+  </table>
+  <p>
+    Screens live under <a href="ui-screens.html"><code>src/ui/screens/</code></a>
+    (general), <a href="ui-gamedef-editor.html"><code>src/ui/screens/gamedef/</code></a>
+    (the game-definition editor), <a href="ui-server-screens.html"><code>src/ui/screens/server/</code></a>
+    (multiplayer lobby) and <a href="ui-table.html"><code>src/ui/table/</code></a>
+    (the game table itself).
+  </p>
+
+  <h2 id="player-profile">Player profile</h2>
+  <p>
+    <code>App.profile</code> is a plain table (<code>{ name, color, avatarPath }</code>)
+    shared by every screen that needs to show "you" — defaulting to
+    <code>name = "Player"</code> and a blue-gray ARGB color. <code>App.loadProfile()</code>
+    pulls the persisted values from <a href="data.html#profile"><code>src/data/profile.lua</code></a>
+    (<code>getName</code>, <code>getColor</code>, <code>getAvatarPath</code>) and is
+    called once from <code>App.load</code>. <code>App.playerName()</code> trims
+    whitespace from the profile name and falls back to <code>"Player"</code> if it's
+    empty — the single accessor every screen should use rather than reading
+    <code>App.profile.name</code> directly, so blank names never leak into UI or
+    network messages.
+  </p>
+
+  <h2 id="discord-invites">Discord join invites</h2>
+  <p>
+    <code>App.showDiscordJoinPrompt(secret)</code> is the callback wired up to
+    <a href="platform.html#discord"><code>discord.onJoinSecret</code></a> from
+    <code>App.load</code>. Discord Rich Presence invites encode the host as a
+    <code>"host:port"</code> secret string; <code>discord.parseJoinSecret(secret)</code>
+    splits it, and if valid, <code>App</code> raises a confirm dialog ("Join the
+    Cardflux game at host:port?") whose confirm action pushes a
+    <a href="ui-screens.html#multiplayer">Join screen</a> pre-filled with
+    <code>{ host, port, autoConnect = true }</code> — this is also how a friend's
+    "Join Game" click in Discord can <em>cold-launch</em> the app straight into a
+    connection attempt, since <code>discord.init()</code> is set up this early in
+    <code>App.load</code>.
+  </p>
+
+  <h2 id="ui-scale">UI scale &amp; DPI</h2>
+  <p>
+    The UI is authored in fixed "logical units" (e.g. a button is always 40 units
+    tall) and LÖVE draws everything scaled up by a single factor via
+    <code>love.graphics.scale(theme.scale)</code> in <code>App.draw</code>, so the
+    same layout code produces sharp output at any display density. That factor is
+    computed by:
+  </p>
+  <div class="fn">
+    <span class="sig">App.effectiveScale()</span>
+    <p>
+      <code>window.dpiScale() * App.uiScaleSetting()</code>, i.e. the monitor's own
+      DPI scale (from <a href="platform.html#window"><code>src/platform/window.lua</code></a>,
+      populated using the DPI awareness enabled in <code>conf.lua</code>) multiplied
+      by the user's manual UI-scale preference. The result is then clamped so a
+      maximized window never shrinks below the logical minimum size: it takes
+      <code>window.desktopSize()</code> and caps the scale at
+      <code>min(scale, desktopW/960, desktopH/640)</code> (640 = 600 + 40 for the
+      title bar), and finally clamps to at least <code>0.5</code>.
+    </p>
+  </div>
+  <div class="fn">
+    <span class="sig">App.uiScaleSetting()</span> / <span class="sig">App.setUiScaleSetting(v)</span>
+    <p>
+      Reads/writes the user's chosen multiplier from
+      <a href="data.html#settings"><code>src/data/settings.lua</code></a> under
+      <code>settings.keys.uiScale</code>, clamped to <code>[0.5, 3]</code>; setting it
+      back to exactly <code>1</code> removes the stored key instead of writing
+      <code>1</code> explicitly (keeps the settings file clean). The selectable
+      presets are <code>App.uiScaleOptions = {0.75, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2}</code>,
+      consumed by the scale picker in
+      <a href="ui-screens.html#settings-dialog">Settings</a>.
+    </p>
+  </div>
+  <p>
+    <code>applyScale(force)</code> is a local function that recomputes the scale
+    every frame (cheaply short-circuiting if unchanged, unless <code>force</code>),
+    and when it does change calls <code>theme.setScale(s)</code> (rebuilds font
+    caches at the new pixel density — see <a href="ui-framework.html#theme-lua">theme.lua</a>)
+    and <code>window.setScale(s)</code>, then recomputes and applies the window's
+    minimum size in physical pixels via <code>window.setMinimumSize</code>. It's
+    called once with <code>force = true</code> during <code>App.load</code> (right
+    before maximizing the window) and unconditionally every frame from
+    <code>App.update</code>, and also on <code>F11</code> (toggling the window frame
+    changes the available size).
+  </p>
+  <p>
+    Mouse coordinates from LÖVE arrive in <em>physical</em> pixels; <code>App.mousepressed/released/moved</code>
+    divide by <code>theme.scale</code> before forwarding to the UI framework
+    (<code>ui.onMousePressed</code> etc.), so all UI and screen code only ever sees
+    logical coordinates.
+  </p>
+
+  <h2 id="title-bar">The custom title bar</h2>
+  <p>
+    Because <code>conf.lua</code> sets <code>t.window.borderless = true</code>, the
+    OS supplies no title bar, minimize/maximize/close buttons, or drag handle —
+    <code>App</code> draws its own (<code>drawTitleBar(w)</code>, called from
+    <code>App.draw</code> whenever <code>not window.framed</code> — i.e. the user
+    hasn't toggled back to a native frame with <strong>F11</strong>). It fills a
+    <code>TITLE_H</code>-tall strip (<code>window.titleBarHeight</code>) with
+    <code>theme.fixed.titleBar</code>, draws a back arrow (if the stack is deeper
+    than one and the top screen allows it), the screen's <code>title</code>, and
+    three icon buttons on the right: dark/light mode toggle (flips
+    <code>theme.setDark</code> and persists via <code>profile.setDarkMode</code>),
+    maximize/restore (<code>window.toggleMaximize</code>, checking
+    <code>love.window.isMaximized()</code>), and close (<code>love.event.quit()</code>).
+  </p>
+  <p>
+    The draggable region of the title bar — the strip between the end of the title
+    text and the start of the button row — is reported to
+    <a href="platform.html#window"><code>src/platform/window.lua</code></a>
+    through <code>window.setDragArea(fn)</code>, a predicate called by the native
+    window hit-test (the same FFI hit-test discussed in <a href="#custom-love-run">why love.run is overridden</a>)
+    to decide whether a click there should drag the window like a native title bar
+    would. <code>titleButtons.titleEnd</code> / <code>titleButtons.buttonsStart</code>
+    are recomputed every frame <code>drawTitleBar</code> runs, so the hit-test always
+    reflects the current title text's width.
+  </p>
+
+  <h2 id="dev-hooks">Developer hooks</h2>
+  <p>
+    <code>App.load</code> scans <code>args</code> for several developer-only flags
+    (none of which affect normal play), stored in a local <code>dev</code> table and
+    processed every frame by <code>devTick()</code> (called first thing in
+    <code>App.update</code>):
+  </p>
+  <table>
+    <tr><th>Flag</th><th>Effect</th></tr>
+    <tr><td><code>--no-discord</code></td><td>Skips <code>discord.init()</code> entirely.</td></tr>
+    <tr><td><code>--update-check</code></td><td>Forces the updater to check even if it normally wouldn't yet (passed to <code>updater.check(forceUpdateCheck)</code>).</td></tr>
+    <tr><td><code>--eval "&lt;lua&gt;"</code></td><td>On frame 3, compiles and runs the given Lua string once, with <code>App</code> injected into scope (via a metatable <code>__index</code> fallback to <code>_G</code>) — a quick way to poke at live state without rebuilding.</td></tr>
+    <tr><td><code>--shot &lt;file.png&gt;</code></td><td>On frame <code>(dev.frames or 30)</code>, calls <code>love.graphics.captureScreenshot(file)</code>; two frames later the app quits. Useful for automated visual checks of a screen reached via <code>--script</code>.</td></tr>
+    <tr><td><code>--frames N</code></td><td>Overrides which frame the screenshot above is taken on (default 30, giving the UI time to settle).</td></tr>
+    <tr><td><code>--script &lt;file.lua&gt;</code></td><td>On frame 3, loads the file (its chunk must return a function taking one argument, <code>api</code>) and runs it as a coroutine resumed once per frame, after installing fake-key support (see below).</td></tr>
+    <tr><td><code>--dark</code> / <code>--light</code></td><td>Forces dark/light theme at startup, bypassing the persisted preference — handy for deterministic screenshots.</td></tr>
+  </table>
+  <p>
+    The <code>--script</code> API (built by <code>makeScriptApi()</code>) gives a
+    scripted test/demo coroutine a small vocabulary for driving the UI exactly like
+    a real user, entirely in <em>logical</em> coordinates (it multiplies by
+    <code>theme.scale</code> internally before calling <code>App.mouse*</code>):
+  </p>
+  <table>
+    <tr><th>Function</th><th>Behavior</th></tr>
+    <tr><td><code>api.wait(n)</code></td><td>Yields the coroutine for <code>n</code> frames (default 1).</td></tr>
+    <tr><td><code>api.move(x, y)</code></td><td>Moves the fake cursor, forwarding to <code>App.mousemoved</code>.</td></tr>
+    <tr><td><code>api.press(x, y, b)</code> / <code>api.release(x, y, b)</code></td><td>Moves (press only) then fires <code>App.mousepressed</code>/<code>App.mousereleased</code> for button <code>b</code> (default 1).</td></tr>
+    <tr><td><code>api.click(x, y, b)</code></td><td>press + release in sequence.</td></tr>
+    <tr><td><code>api.doubleClick(x, y)</code></td><td>Two press/release pairs with the second carrying <code>presses = 2</code>, matching real double-click semantics.</td></tr>
+    <tr><td><code>api.drag(x1, y1, x2, y2, steps)</code></td><td>Press at the start, interpolate <code>move</code> calls across <code>steps</code> (default 10), release at the end.</td></tr>
+    <tr><td><code>api.key(k)</code></td><td>A tap: <code>keypressed</code> then <code>keyreleased</code>.</td></tr>
+    <tr><td><code>api.keyDown(k)</code> / <code>api.keyUp(k)</code></td><td>Sets/clears an entry in a local <code>fakeDown</code> table that <code>love.keyboard.isDown</code> is monkey-patched (<code>installFakeKeys</code>) to consult first — lets a script simulate held modifier keys (e.g. holding Shift across several other calls), which fake press/release alone can't represent.</td></tr>
+    <tr><td><code>api.text(t)</code></td><td>Fires <code>App.textinput(t)</code> — for typing into fields.</td></tr>
+    <tr><td><code>api.shot(name)</code></td><td>Immediate screenshot, not tied to the <code>--shot</code>/<code>--frames</code> timer.</td></tr>
+    <tr><td><code>api.quit()</code></td><td>Calls <code>love.event.quit()</code> then yields (the coroutine won't be resumed again).</td></tr>
+    <tr><td><code>api.log(...)</code></td><td><code>print(...)</code> — visible in the console when one is attached.</td></tr>
+    <tr><td><code>api.app</code></td><td>The live <code>App</code> table itself, for scripts that need to reach further (e.g. directly inspecting a screen's state).</td></tr>
+  </table>
+  <p>
+    If the script coroutine errors, <code>devTick</code> prints the error and force-quits
+    with exit code 1 — so a broken scripted smoke test fails loudly rather than
+    hanging.
+  </p>
+
+  <h2 id="love-forwarders">LÖVE callback forwarders &amp; the global tick</h2>
+  <p>
+    <code>App.update(dt)</code> is the heart of the per-frame tick and runs
+    regardless of which screen is active:
+  </p>
+  <ol>
+    <li><code>devTick()</code> — process scripted/eval/screenshot developer hooks.</li>
+    <li><code>window.update()</code> — platform window bookkeeping.</li>
+    <li><code>applyScale()</code> — recompute/re-apply DPI+user scale if it changed.</li>
+    <li><code>imageCache.update()</code> — drain decoded images from the background worker (<a href="data.html#image-cache">data/image_cache.lua</a>).</li>
+    <li><code>protocol.updateAll(dt)</code> — ticks every live network connection object (<a href="net.html#protocol">net/protocol.lua</a>), so a socket kept open by a screen two levels down the stack still gets serviced.</li>
+    <li><code>netinfo.update()</code> and <code>upnp.update()</code> — background network/UPnP discovery state machines.</li>
+    <li><code>discord.update(dt)</code> — services the Discord Game SDK's callback loop.</li>
+    <li><code>updater.update()</code> — advances any in-progress self-update download.</li>
+    <li>Every screen still on the stack gets <code>:backgroundUpdate(dt)</code> if it defines one (so buried screens can keep state fresh).</li>
+    <li>Finally, only the top screen gets its own <code>:update(dt)</code>.</li>
+  </ol>
+  <p>
+    The reasoning for running steps 2–8 unconditionally (rather than only while
+    their "owning" screen is on top) is in the source comment: these are
+    process-wide systems — a host server or a client connection, once opened, must
+    keep accepting/sending data even while the user has a settings dialog or a
+    deck editor pushed on top of the table screen, or the connection would stall
+    and time out.
+  </p>
+  <p>
+    <code>App.draw()</code> computes the logical window size from the physical
+    framebuffer size divided by <code>theme.scale</code>, applies
+    <code>love.graphics.scale</code>, optionally forces the light theme for screens
+    with <code>forceLightTheme</code>, starts a UI frame (<code>ui.beginFrame</code>),
+    fills the background, clips to the content area below the title bar and calls
+    the top screen's <code>:draw(x, y, w, h)</code>, draws the title bar (if not using
+    a native frame), draws all queued overlays (<code>overlays.draw()</code>), ends
+    the UI frame (<code>ui.endFrame()</code>), and finally re-derives
+    <code>theme.c</code> from <code>theme.isDark</code> rather than restoring a saved
+    value — because the title bar's dark-mode button may itself have just flipped
+    <code>theme.isDark</code> this same frame.
+  </p>
+  <p>
+    <code>App.keypressed</code> special-cases <strong>F11</strong> (toggle title-bar
+    frame, then <code>applyScale(true)</code> since changing frame mode resets the
+    OS minimum-size constraint) and <strong>Escape while any overlay is open</strong>
+    (routed to <code>overlays.keypressed</code> even if a text field elsewhere has
+    focus, so Escape always closes dialogs first). Otherwise keys go to
+    <code>ui.onKeyPressed</code> first (consumed if a text field has focus), then to
+    <code>overlays.keypressed</code> if any overlay is open, and only then to the top
+    screen's own <code>:keypressed</code>. <code>textinput</code> follows the same
+    "UI focus first" precedence. The mouse/wheel forwarders simply divide physical
+    coordinates by <code>theme.scale</code> and pass straight through to the UI
+    framework's hooks (see <a href="ui-framework.html#input-model">UI Toolkit: input model</a>).
+  </p>
+
+  <h2 id="quit">Shutdown (App.quit)</h2>
+  <p>
+    <code>App.quit()</code> is wired to LÖVE's <code>love.quit</code> callback,
+    which — per the custom <code>love.run</code> — can veto the quit entirely by
+    returning <code>true</code>. <code>App.quit</code> walks the screen stack
+    <strong>top to bottom</strong> and calls each screen's own <code>:quit()</code> if
+    present, stopping (and returning <code>true</code> itself) at the first one that
+    returns <code>true</code> — e.g. a screen mid-game might pop up "Are you sure you
+    want to quit?" and veto the close until confirmed. If nothing vetoes, it tears
+    down process-wide systems before allowing the real exit:
+    <code>protocol.stopAll()</code> (closes every open network connection/socket
+    cleanly), <code>imageCache.shutdown()</code> (stops the background image-decode
+    worker thread), and <code>discord.dispose()</code> (releases the Discord SDK).
+  </p>
+
+  <div class="nextprev">
+    <a href="index.html">&larr; Home</a>
+    <a href="ui-framework.html">UI Toolkit (kit) &rarr;</a>
+  </div>
+</main>
+</body>
+</html>

@@ -1,0 +1,461 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Networking — Cardflux Docs</title>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+<nav class="sidenav">
+  <a class="brand" href="index.html">Cardflux<small>Codebase Documentation</small></a>
+  <div class="group-label">Application</div>
+  <a href="architecture.html">Architecture &amp; App Lifecycle</a>
+  <a href="ui-framework.html">UI Toolkit (kit)</a>
+  <div class="group-label">User Interface</div>
+  <a href="ui-screens.html">Screens</a>
+  <a href="ui-gamedef-editor.html">Game Definition Editor</a>
+  <a href="ui-server-screens.html">Multiplayer Lobby Screens</a>
+  <a href="ui-table.html">Game Table Rendering</a>
+  <div class="group-label">Engine &amp; Data</div>
+  <a href="core.html">Core Rules Engine</a>
+  <a href="game.html">Game Session &amp; Controller</a>
+  <a href="data.html">Data &amp; Persistence</a>
+  <div class="group-label">Platform &amp; Network</div>
+  <a href="net.html" class="current">Networking</a>
+  <a href="platform.html">Platform Integration</a>
+  <div class="group-label">Server</div>
+  <a href="server.html">Cardflux Server (Go)</a>
+  <div class="group-label">Quality</div>
+  <a href="tests-tools.html">Tests &amp; Tools</a>
+</nav>
+<main class="page">
+  <header class="page-head">
+    <div class="crumb"><a href="index.html">Home</a> / Platform &amp; Network</div>
+    <h1>Networking <span class="badge lua">Lua</span></h1>
+    <div class="subtitle">Direct peer-to-peer hosting, UPnP port-forwarding, and the lobby-server protocol client — everything under <code>src/net/</code>.</div>
+  </header>
+
+  <div class="toc">
+    <div class="toc-title">On this page</div>
+    <ul>
+      <li><a href="#two-hosting-modes">Two hosting modes</a></li>
+      <li><a href="#protocol">protocol.lua — wire format</a></li>
+      <li><a href="#netinfo">netinfo.lua — local/public IP discovery</a></li>
+      <li><a href="#upnp">upnp.lua &amp; upnp_worker.lua — automatic port forwarding</a></li>
+      <li><a href="#host-server">host_server.lua — direct-hosting the lobby</a></li>
+      <li><a href="#game-client">game_client.lua — joining a peer host or a server</a></li>
+      <li><a href="#server-client">server_client.lua — the lobby-server protocol client</a></li>
+      <li><a href="#admin-file-manager">admin_file_manager.lua — admin file browsing/upload</a></li>
+      <li><a href="#admin-game-manager">admin_game_manager.lua — install/remove games</a></li>
+      <li><a href="#admin-upload-worker">admin_upload_worker.lua — upload thread body</a></li>
+      <li><a href="#asset-sync">asset_sync.lua — game asset caching</a></li>
+      <li><a href="#asset-worker">asset_worker.lua — download thread body</a></li>
+    </ul>
+  </div>
+
+  <h2 id="two-hosting-modes">Two hosting modes</h2>
+  <p>Cardflux can get a group of players into the same game in two different ways, and almost everything in this
+  folder exists to serve one or the other:</p>
+  <ul>
+    <li><strong>Direct peer hosting.</strong> One player's client becomes the host: <code>host_server.lua</code> binds
+    a TCP port directly (optionally forwarded through the LAN gateway by <code>upnp.lua</code>) and the other players'
+    clients connect to it with <code>game_client.lua</code>. There is no account system and no central authority —
+    whoever is hosting <em>is</em> the server for that one game, using the same <a href="game.html">Session /
+    HostEngine</a> code a client would use if it were playing solo.</li>
+    <li><strong>Dedicated lobby server.</strong> Players instead point <code>game_client.lua</code> at a long-running
+    <a href="server.html">Cardflux Server (Go)</a> process. The server answers the initial handshake with
+    <code>serverInfo</code> instead of <code>welcome</code>, which makes <code>game_client.lua</code> hand the
+    connection off to <code>server_client.lua</code> — a richer client that understands accounts, chat, rooms, decks
+    and admin requests, documented end-to-end on <a href="ui-server-screens.html">Multiplayer Lobby Screens</a>.</li>
+  </ul>
+  <p>Both modes speak the exact same line-based JSON protocol defined in <code>protocol.lua</code>, and both ultimately
+  feed the same in-game message types (<code>gameData</code>, <code>fullState</code>, etc.) into
+  <a href="game.html">src/game/session.lua</a>. The lobby server additionally runs an embedded copy of the client's
+  own rules engine so it can referee a game authoritatively — see <a href="server.html#why-go-embeds-a-lua-engine">Why
+  Go embeds a Lua engine</a> on the server page.</p>
+
+  <h2 id="protocol">protocol.lua — wire format</h2>
+  <div class="filecard">
+    <div class="path">src/net/protocol.lua</div>
+    <div class="role">Defines the one-JSON-object-per-line wire format and the non-blocking <code>Connection</code>
+    wrapper around a LuaSocket TCP socket. A direct Lua port of the Flutter app's <code>lib/networking/net_message.dart</code>,
+    kept byte-compatible so a LÖVE client and the (now retired) Flutter client could interoperate.</div>
+  </div>
+  <p>Every message on the wire is a single line of JSON: <code>{"type": "&lt;name&gt;", "payload": {...}}</code>,
+  newline-terminated. <code>P.encodeLine(msgType, payload)</code> builds that line; <code>P.decodeLine(line)</code>
+  parses it back into <code>{ type, payload }</code> or <code>nil</code> for anything malformed or blank.</p>
+  <div class="fn">
+    <span class="sig">P.defaultGamePort = 51234</span>
+    <p>The TCP port a direct-hosted game listens on by default (overridable per-host).</p>
+  </div>
+  <div class="fn">
+    <span class="sig">P.serverProtocolVersion = 1</span>
+    <p>Sent as <code>payload.serverProtocol</code> in every <code>hello</code> message. A direct peer host ignores
+    this field entirely, but a Cardflux lobby server compares it against its own <code>ProtocolVersion</code>
+    constant (see <a href="server.html#server-go">internal/server/server.go</a>) and refuses the connection outright
+    if they don't match. This is the one hard compatibility contract between the Lua client and the Go server — the
+    comment right above this constant says to bump it and run <code>server/tools/sync-engine.ps1</code> whenever the
+    server protocol changes, which also re-syncs the mirrored rules engine (see
+    <a href="server.html#why-go-embeds-a-lua-engine">the engine mirror</a>).</p>
+  </div>
+  <div class="fn">
+    <span class="sig">P.heartbeatInterval = 4</span> &nbsp; <span class="sig">P.heartbeatTimeout = 12</span>
+    <p>Every connected party pings every 4 seconds; if no data at all (not just pongs) has arrived for 12 seconds the
+    connection is dropped as dead. The same two constants are reused identically by <code>host_server.lua</code>,
+    <code>game_client.lua</code> and <code>server_client.lua</code>.</p>
+  </div>
+  <h3 id="protocol-connection">Connection</h3>
+  <p>A thin stateful wrapper created by <code>P.wrap(sock)</code> (sets the socket non-blocking and enables
+  TCP_NODELAY). It owns an output queue and partial-read input buffer so callers never have to think about partial
+  sends/receives:</p>
+  <div class="fn"><span class="sig">Connection:send(msgType, payload)</span><p>Encodes one message, queues it, and calls <code>:flush()</code>.</p></div>
+  <div class="fn"><span class="sig">Connection:sendRaw(line)</span><p>Queues an already-encoded line — used by <code>host_server.lua:broadcast()</code> so a message is encoded once and reused for every client.</p></div>
+  <div class="fn"><span class="sig">Connection:flush()</span><p>Writes as much of the queue as the socket will currently accept; resumes mid-message next call if the socket was not ready for all of it.</p></div>
+  <div class="fn"><span class="sig">Connection:poll()</span><p>Returns every complete line received since the last call, as decoded <code>{type, payload}</code> messages, plus a second boolean saying whether <em>any</em> bytes arrived (used to reset heartbeat-timeout clocks even for malformed lines).</p></div>
+  <div class="fn"><span class="sig">Connection:close()</span> / <span class="sig">Connection:closeAfterFlush()</span><p>The latter blocks briefly (0.5s) to best-effort flush a final message — typically a <code>disconnect</code> with a reason — before tearing the socket down.</p></div>
+  <div class="fn"><span class="sig">Connection:pendingBytes()</span><p>Bytes still queued to send; used by upload/progress UIs to show backpressure.</p></div>
+
+  <h3 id="protocol-connect">Non-blocking connect</h3>
+  <div class="fn">
+    <span class="sig">P.connect(host, port, timeoutSeconds) -&gt; connector</span>
+    <p>Starts a non-blocking <code>connect()</code> and returns an object with <code>connector.poll()</code>, which
+    must be called every frame until it returns something other than <code>"pending"</code>: either
+    <code>"connected", conn</code> (a wrapped <code>Connection</code>) or <code>"failed", message</code>. Used by both
+    <code>game_client.lua</code> (joining) and indirectly by the asset workers' raw socket connects.</p>
+  </div>
+
+  <h3 id="protocol-loop">Background loop</h3>
+  <p>A tiny global registry so objects that need per-frame network servicing don't each need their own hook into
+  <code>love.update</code>. <a href="architecture.html">src/app.lua</a> calls <code>P.updateAll(dt)</code> every
+  frame regardless of which screen is active, which is what lets a game continue running in the background while the
+  player browses other screens, and <code>P.stopAll()</code> on quit.</p>
+  <div class="fn"><span class="sig">P.register(obj)</span> / <span class="sig">P.unregister(obj)</span><p><code>obj</code> just needs an <code>:update()</code> method; <code>HostServer</code>, <code>GameClient</code>, <code>ServerClient</code> and the asset-sync/upload <code>Job</code> objects all register themselves.</p></div>
+  <div class="fn"><span class="sig">P.updateAll(dt)</span> / <span class="sig">P.stopAll()</span><p>Drives every registered object's <code>:update()</code> each frame, or calls each one's optional <code>:stop()</code> and clears the registry on app shutdown.</p></div>
+
+  <h2 id="netinfo">netinfo.lua — local/public IP discovery</h2>
+  <div class="filecard">
+    <div class="path">src/net/netinfo.lua</div>
+    <div class="role">Port of <code>lib/networking/network_info.dart</code>. Figures out the addresses other players
+    would need to type in to reach a directly-hosted game.</div>
+  </div>
+  <div class="fn">
+    <span class="sig">N.localIPv4Addresses() -&gt; { ip, ... }</span>
+    <p>Best-effort enumeration of this machine's non-loopback IPv4 addresses without native interface enumeration:
+    it opens a UDP socket, "connects" it to <code>8.8.8.8:53</code> (which sends no packet, just makes the OS pick an
+    outbound route) and reads back the local address that route would use, then adds every address the local
+    hostname resolves to via <code>socket.dns</code>.</p>
+  </div>
+  <div class="fn">
+    <span class="sig">N.fetchPublicIPv4(onDone)</span>
+    <p>Fetches this machine's public IP from <code>api.ipify.org</code> <strong>on a LÖVE worker thread</strong> (plain
+    HTTP — LuaSocket has no TLS in this build, but the response contains nothing sensitive, just your own IP) and
+    delivers it back to the main thread through <code>N.update()</code>, which must be polled every frame. Used by
+    the <a href="ui-screens.html">Multiplayer</a> screen to show the address a friend over the internet should
+    connect to.</p>
+  </div>
+
+  <h2 id="upnp">upnp.lua &amp; upnp_worker.lua — automatic port forwarding</h2>
+  <div class="filecard">
+    <div class="path">src/net/upnp.lua</div>
+    <div class="role">Port of <code>lib/networking/upnp_port_mapper.dart</code>: best-effort automatic router port
+    forwarding via UPnP IGD, so hosting for internet players doesn't require manually configuring the router.</div>
+  </div>
+  <p>UPnP IGD port mapping is a two-phase dance — SSDP multicast discovery to find a gateway, then a SOAP HTTP call to
+  actually add or remove a mapping — and both phases involve several seconds of network waiting, so the whole thing
+  runs on a worker thread (<code>upnp_worker.lua</code>) spawned per request; <code>upnp.lua</code> itself only
+  exposes a tiny main-thread API and never blocks the UI. Every failure mode (no gateway found, gateway refused,
+  timeout) collapses to the same "not mapped" outcome rather than surfacing an error, because UPnP is always an
+  optional convenience — LAN play works with or without it.</p>
+  <div class="fn">
+    <span class="sig">U.requestMapping(port, onDone, description)</span>
+    <p>Spawns a worker to SSDP-discover a gateway, find its <code>WANIPConnection</code>/<code>WANPPPConnection</code>
+    service, and SOAP-call <code>AddPortMapping</code> for TCP <code>port</code>. <code>onDone(mapping)</code> is
+    called with a reusable mapping table on success or <code>nil</code> on any failure. Called by
+    <code>host_server.lua:start()</code> immediately after it binds its listening socket.</p>
+  </div>
+  <div class="fn">
+    <span class="sig">U.releaseMapping(mapping)</span>
+    <p>Fire-and-forget <code>DeletePortMapping</code> for a mapping <code>requestMapping</code> created. Called by
+    <code>host_server.lua:stop()</code>.</p>
+  </div>
+  <div class="fn">
+    <span class="sig">U.update()</span>
+    <p>Must be polled every frame (from <a href="architecture.html">src/app.lua</a>'s <code>App.update</code>) to
+    collect worker results and invoke the matching <code>onDone</code> callback.</p>
+  </div>
+  <p><code>upnp.lua</code> also exposes its lower-level parsing/building helpers as module functions —
+  <code>parseLocation</code>, <code>splitUrl</code>, <code>resolveUrl</code>, <code>findControlUrl</code>,
+  <code>soapEnvelope</code>, <code>addFields</code>, <code>deleteFields</code> — purely so
+  <code>upnp_worker.lua</code> (running in a separate Lua state on its own thread) can <code>require</code> the same
+  module and reuse them; none of this parsing logic is duplicated between the main-thread module and the worker.</p>
+  <div class="filecard">
+    <div class="path">src/net/upnp_worker.lua</div>
+    <div class="role">The actual thread body passed to <code>love.thread.newThread</code>. Receives
+    <code>(job, out)</code> where <code>job</code> is <code>{op="add"|"delete", port, description?, controlUrl?, serviceType?}</code>
+    and <code>out</code> is a <code>love.thread.Channel</code> it pushes exactly one result table onto.</div>
+  </div>
+  <p>For an <code>"add"</code> job it SSDP-searches for 3 seconds, collecting every distinct <code>LOCATION</code>
+  it sees (because printers and smart TVs answer SSDP too, not just routers), fetches each device's description XML,
+  and scans it with <code>U.findControlUrl</code> for a WAN connection service, scoped to the matching
+  <code>&lt;service&gt;</code> block so an unrelated service's <code>controlURL</code> can never be picked up by
+  mistake. It also has to work out <em>which local address</em> the gateway should forward to
+  (<code>localAddressFor</code>), again using the "connect a UDP socket, read back the route" trick from
+  <code>netinfo.lua</code>. A SOAP fault (HTTP 500) is treated purely by status code — the body isn't parsed. A
+  <code>"delete"</code> job just re-issues the SOAP call with <code>DeletePortMapping</code>.</p>
+
+  <h2 id="host-server">host_server.lua — direct-hosting the lobby</h2>
+  <div class="filecard">
+    <div class="path">src/net/host_server.lua</div>
+    <div class="role">Port of <code>lib/networking/host_server.dart</code>. Accepts incoming TCP connections, runs
+    the hello/welcome handshake, keeps the roster of connected players, heartbeats and times out dead connections,
+    and can kick someone.</div>
+  </div>
+  <p>This is the "server" side of direct peer hosting — it has no concept of accounts, only of the single game it is
+  hosting for this run. <code>H.new()</code> creates an instance; the owning screen (the practice/host flow under
+  <a href="ui-screens.html">Multiplayer</a>) sets two optional callbacks before/while running:</p>
+  <ul>
+    <li><code>onIncoming(senderId, msg)</code> — every message that isn't part of the handshake or a ping, handed to
+    <a href="game.html">HostEngine</a> to apply to the authoritative game state.</li>
+    <li><code>onRoster(roster)</code> — fires whenever a player joins or leaves.</li>
+    <li><code>reclaimableIdCheck(id)</code> — set once a game is actually in progress; when present, a
+    <code>hello</code> must present a <code>rejoinPlayerId</code> that this predicate accepts (i.e. a previously
+    disconnected seat) or the connection is refused with <code>seatUnavailable</code>. This is what lets a player
+    reconnect into <em>their own</em> seat after a dropped connection but blocks a stranger from taking an empty seat
+    mid-game.</li>
+  </ul>
+  <div class="fn">
+    <span class="sig">H:start(hostPlayer, maxPlayers, hostAvatarBytes, port) -&gt; port | nil, err</span>
+    <p>Binds <code>socket.bind("*", port or P.defaultGamePort)</code> in non-blocking mode, registers itself on the
+    protocol loop, and kicks off a best-effort <code>upnp.requestMapping</code> for the bound port (set
+    <code>self.noUpnp</code> to skip it — used by tests). Hosting itself never waits on the UPnP result.</p>
+  </div>
+  <div class="fn">
+    <span class="sig">H:update()</span>
+    <p>Called every frame via the protocol loop. Accepts new sockets (refusing them outright once
+    <code>maxPlayers - 1</code> clients are already connected, since one seat is the host itself), reads pending
+    (not-yet-said-hello) connections and times them out after <code>heartbeatTimeout</code>, then for every
+    established client: polls for messages, answers <code>ping</code> with <code>pong</code>, routes everything else
+    to <code>onIncoming</code>, and enforces the heartbeat timeout / sends its own pings.</p>
+  </div>
+  <div class="fn">
+    <span class="sig">H:handleHello(conn, msg)</span>
+    <p>Validates capacity and (if set) <code>reclaimableIdCheck</code>, resolves a free player color via
+    <code>H:resolveColor</code> (preferring the client's requested color, falling back to
+    <code>color.boardWidgetColorPalette</code>), decodes a base64 avatar if one was sent, assigns a UUID (or reuses
+    the reclaimed one), replies with <code>welcome</code>, and broadcasts the updated roster.</p>
+  </div>
+  <div class="fn"><span class="sig">H:roster()</span><p>The host plus every connected client as <code>models.PlayerInfo</code>, reordered to match <code>H:setSeatOrder(ids)</code> when one has been set (used once a game has started and seats are fixed).</p></div>
+  <div class="fn"><span class="sig">H:kick(id)</span><p>Sends a <code>disconnect</code> with reason <code>"kicked"</code>, flush-closes, and removes the client.</p></div>
+  <div class="fn"><span class="sig">H:broadcast(msgType, payload, exceptId)</span><p>Encodes once via <code>P.encodeLine</code> and fans the same raw line out to every client (optionally skipping one) — the efficient path for frequent state broadcasts.</p></div>
+  <div class="fn"><span class="sig">H:stop(reason)</span><p>Optionally broadcasts a final <code>disconnect</code>, flush-closes every connection, closes the listening socket, releases the UPnP mapping, unregisters from the protocol loop, and calls <code>onStopped</code>.</p></div>
+  <p>This module sits directly underneath <a href="game.html">src/game/host_engine.lua</a>: <code>HostEngine</code>
+  owns a <code>HostServer</code> instance and is where <code>onIncoming</code> actually gets wired up to mutate and
+  rebroadcast game state.</p>
+
+  <h2 id="game-client">game_client.lua — joining a peer host or a server</h2>
+  <div class="filecard">
+    <div class="path">src/net/game_client.lua</div>
+    <div class="role">Port of <code>lib/networking/game_client.dart</code>. The single entry point used to join
+    <em>either</em> kind of remote: a direct peer host or a Cardflux lobby server — the caller doesn't need to know
+    which until the handshake resolves.</div>
+  </div>
+  <p>Status machine: <code>"idle" → "connecting" → "connected" | "failed" | "server"</code>, then eventually
+  <code>"disconnected"</code>. The key branch is in <code>C:update()</code> once the handshake's reply arrives: if the
+  remote answers with <code>serverInfo</code> (meaning it's a Cardflux server, not a peer), the client stops treating
+  itself as a <code>GameClient</code> — it sets status <code>"server"</code> and the caller is expected to hand the
+  now-adopted connection to <code>server_client.lua</code> (<code>S.adopt</code>) instead. If it answers with
+  <code>welcome</code>, this <em>is</em> the in-game connection and stays one for the rest of the session.</p>
+  <div class="fn">
+    <span class="sig">C:connect(host, port, name, color, avatarBytes, rejoinPlayerId)</span>
+    <p>Starts a non-blocking <code>P.connect</code> and remembers the hello payload to send once the socket is up.</p>
+  </div>
+  <div class="fn">
+    <span class="sig">C:update()</span>
+    <p>Drives the connector to completion, then sends <code>hello</code> (including
+    <code>serverProtocol = P.serverProtocolVersion</code> so a real server can validate it immediately), then polls
+    for messages each frame: answers pings, branches on <code>serverInfo</code>/<code>welcome</code>/<code>disconnect</code>,
+    and for everything else caches the latest <code>lobbyRosterUpdate</code> / <code>gameData</code> / <code>fullState</code>
+    (so a screen that starts observing mid-game can immediately replay the last known state) before invoking
+    <code>onMessage</code>.</p>
+  </div>
+  <p>Once connected to a peer host, this is the client-side counterpart to <code>host_server.lua</code> and feeds
+  <a href="game.html">src/game/session.lua</a> (the <code>ClientGame</code> side of the shared session code).</p>
+
+  <h2 id="server-client">server_client.lua — the lobby-server protocol client</h2>
+  <div class="filecard">
+    <div class="path">src/net/server_client.lua</div>
+    <div class="role">The full-featured client for a Cardflux lobby server connection: accounts, the lobby roster,
+    chat, rooms, decks/collections, trading and admin requests, all multiplexed over one TCP connection that
+    <code>game_client.lua</code> handed off after the handshake.</div>
+  </div>
+  <p>Every lobby screen under <a href="ui-server-screens.html">src/ui/screens/server/</a> reads this object's fields
+  directly each frame — <code>info</code>, <code>self</code>, <code>users</code>, <code>rooms</code>,
+  <code>games</code>, <code>chat</code>, <code>room</code>/<code>roomId</code>, <code>roomChat</code>,
+  <code>trade</code> — in keeping with the app's immediate-mode UI style (see <a href="ui-framework.html">UI
+  Toolkit</a>): there's no separate event-driven view-model, the fields <em>are</em> the state, mutated as server
+  push messages arrive in <code>S:handle(m)</code>.</p>
+  <h3 id="server-client-request-response">Request/response multiplexing</h3>
+  <div class="fn">
+    <span class="sig">S:request(msgType, payload, onResponse) -&gt; rid</span>
+    <p>Stamps the payload with an auto-incrementing <code>rid</code>, remembers <code>onResponse</code> keyed by that
+    id, and sends it. Every request-style call in the codebase (sign-in, create room, admin actions, trade offers...)
+    goes through this. The server always answers with a <code>type = "response"</code> message carrying the same
+    <code>rid</code>, matched back up in <code>S:handle</code>. If the connection drops, every still-pending callback
+    is immediately invoked with <code>{ok = false, error = "disconnected", ...}</code> so UI code never hangs waiting
+    forever for a reply that will never come.</p>
+  </div>
+  <h3 id="server-client-auth">Password hashing &amp; remembered sessions</h3>
+  <div class="fn">
+    <span class="sig">S.passwordHash(email, password) -&gt; hex string</span>
+    <p>SHA-256 of <code>"cardflux:" .. normalizedEmail .. ":" .. password</code>, computed client-side because the
+    connection itself is unencrypted plain TCP (see <a href="server.html#security">Security</a> on the server page);
+    the server then bcrypts <em>this hash</em> for storage, so the real password is never transmitted and the stored
+    hash is never useful on its own for logging in elsewhere.</p>
+  </div>
+  <div class="fn">
+    <span class="sig">S.savedSession / S.saveSession / S.forgetSession / S.clearSession(key)</span>
+    <p>Per-server ("host:port") "Remember me" persistence via <a href="data.html">src/data/settings.lua</a>, under
+    the key <code>server_sessions</code>. <code>forgetSession</code> drops the token but keeps the remembered email
+    (for sign-out-but-prefill); <code>clearSession</code> drops everything.</p>
+  </div>
+  <h3 id="server-client-gamechannel">The game channel</h3>
+  <div class="fn">
+    <span class="sig">S:gameChannel() -&gt; channel</span>
+    <p>Returns a small shim object presenting the same shape <a href="game.html">ClientGame</a> expects from a direct
+    <code>game_client.lua</code> (<code>:send</code>, <code>.status</code>, <code>.onMessage</code>/<code>.onStatus</code>,
+    cached <code>lastGameData</code>/<code>lastFullState</code>) — but backed by this shared server connection instead
+    of its own socket. <code>GAME_TYPES</code> is the set of message types (<code>gameData</code>,
+    <code>fullState</code>, drag-preview messages) that get routed to this channel rather than treated as lobby
+    traffic in <code>S:handle</code>. This is the mechanism that lets the in-game screen reuse exactly the same client
+    game code whether you're playing via a peer host or inside a server-hosted room.</p>
+  </div>
+  <h3 id="server-client-handle">Message handling</h3>
+  <p><code>S:handle(m)</code> is a large dispatch over message type, each branch updating the relevant field(s) and
+  calling <code>S:emit(event, ...)</code> for any screen that registered a listener with <code>S:on(event, fn)</code>.
+  Notable branches: <code>lobbyState</code> (the initial full snapshot after sign-in), <code>tokens</code>/<code>newToken</code>
+  (collection-mode currency and session-token rotation), <code>tradeInvite</code>/<code>trade</code>/<code>tradeClosed</code>
+  (see <a href="ui-server-screens.html">the Trade screen</a>), <code>serverShutdown</code> (pops a live countdown
+  alert via <a href="ui-framework.html">overlays</a>), and <code>roomClosed</code>.</p>
+  <div class="fn">
+    <span class="sig">S:avatarKey(hash) / S:avatarKeysByUserId()</span>
+    <p>Lazily fetches a user's avatar image the first time it's referenced (one <code>avatarGet</code> request per
+    distinct hash, cached forever in <code>self.avatarKeys</code>) and hands back an
+    <a href="data.html">image_cache</a> key once loaded — used directly by the table screen to draw opponents'
+    avatars in a server-hosted game.</p>
+  </div>
+
+  <h2 id="admin-file-manager">admin_file_manager.lua — admin file browsing/upload</h2>
+  <div class="filecard">
+    <div class="path">src/net/admin_file_manager.lua</div>
+    <div class="role">Backs the admin "Files" tab: list and delete a game's files on the server over the normal
+    request/response channel; upload streams over a <em>second</em>, dedicated connection on a worker thread so a
+    large file never blocks the UI thread's networking.</div>
+  </div>
+  <div class="fn"><span class="sig">M.list(sc, gameId, path, onDone)</span> / <span class="sig">M.delete(sc, gameId, path, onDone)</span><p>Plain <code>adminFileList</code>/<code>adminFileDelete</code> requests via <code>server_client.lua</code>.</p></div>
+  <div class="fn">
+    <span class="sig">M.upload(sc, gameId, destPath, localPath, onProgress, onDone)</span>
+    <p>Looks up the local file's size (via a directory listing rather than reading it — see
+    <code>localFileSize</code>), then spawns <code>admin_upload_worker.lua</code> on a thread, passing it the host,
+    port, auth token, target game id and destination path. The returned <code>Job</code> object registers itself on
+    the <a href="#protocol-loop">protocol loop</a> and polls a <code>love.thread.Channel</code> for
+    <code>progress</code>/<code>done</code>/<code>error</code> messages pushed by the worker, translating them into
+    the <code>onProgress(bytesSent, totalBytes)</code> / <code>onDone(err)</code> callbacks the admin screen uses.</p>
+  </div>
+  <p>The same <code>Job</code> shape (update/finish, polling a channel, registering on the protocol loop) is reused
+  almost verbatim by <a href="#asset-sync">asset_sync.lua</a>'s download jobs — both are "a worker thread streams a
+  file over its own connection, the main thread just watches a channel."</p>
+
+  <h2 id="admin-game-manager">admin_game_manager.lua — install/remove games</h2>
+  <div class="filecard">
+    <div class="path">src/net/admin_game_manager.lua</div>
+    <div class="role">Backs the admin "Games" tab's Remove Game and Upload New Game actions.</div>
+  </div>
+  <div class="fn"><span class="sig">M.remove(sc, gameId, onDone)</span><p>Plain <code>adminGameDelete</code> request.</p></div>
+  <div class="fn">
+    <span class="sig">M.installFromZip(sc, zipPath, onProgress, onDone)</span>
+    <p>First validates the zip <em>entirely locally</em> via <code>validateZip</code> — extracts it to a throwaway
+    temp folder using the Windows-provided <code>tar.exe</code> (via <a href="platform.html">src/platform/winproc.lua</a>),
+    checks it contains exactly one top-level folder containing a <code>gamedef.json</code> whose <code>id</code>
+    matches that folder's name — so a malformed upload never wastes time going over the wire. It then reuses
+    <code>admin_file_manager.lua</code>'s upload machinery to push the zip into the server's flat staging area
+    (passing <code>gameId = ""</code>, a special case the server's asset channel recognizes — see
+    <a href="server.html#assets-go">assets.go</a>), and finally sends an <code>adminGameInstall</code> request naming
+    the uploaded file so the server unpacks and registers it as a real game.</p>
+  </div>
+  <div class="warn">Zip validation via <code>tar.exe</code> is Windows-only; <code>validateZip</code> returns an
+  explicit "not supported on this platform yet" error elsewhere.</div>
+
+  <h2 id="admin-upload-worker">admin_upload_worker.lua — upload thread body</h2>
+  <div class="filecard">
+    <div class="path">src/net/admin_upload_worker.lua</div>
+    <div class="role">The LÖVE thread body <code>admin_file_manager.lua</code> starts for one upload. Opens its own
+    TCP connection, authenticates with <code>assetHello</code>, then streams the file in 192&nbsp;KB
+    (<code>CHUNK</code>) base64-encoded <code>assetPut</code> messages, each acknowledged with <code>assetPutAck</code>
+    before the next chunk is sent — simple flow control without needing TCP-level backpressure introspection.</div>
+  </div>
+  <p>192&nbsp;KB is called out in the source as matching the server's own <code>assetChunk</code> constant (see
+  <a href="server.html#assets-go">assets.go</a>) — the two sides agree on a chunk size even though nothing in the
+  protocol strictly requires it. Progress is reported after every acknowledged chunk via
+  <code>out:push({kind="progress", bytes=offset})</code>; a thrown Lua error anywhere in the pcall'd body becomes an
+  <code>{kind="error", message=...}</code> push instead of crashing the thread silently.</p>
+
+  <h2 id="asset-sync">asset_sync.lua — game asset caching</h2>
+  <div class="filecard">
+    <div class="path">src/net/asset_sync.lua</div>
+    <div class="role">Keeps a local, on-disk mirror of one server-hosted game's files (<code>gamedef.json</code>, set
+    images, built-in decks) under <code>&lt;save dir&gt;/servers/&lt;host_port&gt;/games/&lt;gameId&gt;/</code>, laid
+    out identically to a local game-library folder so <a href="data.html">game_loader.lua</a> and
+    <a href="data.html">image_resolver.lua</a> can consume it completely unchanged.</div>
+  </div>
+  <p>Sync is manifest-driven and content-addressed: the server reports every file's path and SHA-256
+  (<code>gameManifest</code> request); a local <code>.cardflux_manifest.json</code> index (read/written by
+  <code>readIndex</code>/<code>writeIndex</code>) records the hash of each file already downloaded, and only files
+  whose hash differs (or that are simply missing) get queued for download. Files the server no longer lists are
+  deleted locally too, so the cache can't drift from the server's current content.</p>
+  <div class="fn">
+    <span class="sig">A.ensureGame(sc, gameId, onDone, onProgress) </span>
+    <p>The main entry point. Memoizes a fully-loaded <code>game</code> object per <code>gameId</code> keyed by
+    manifest hash (<code>sc.loadedGames</code>) so re-entering an already-current game is instant and network-free.
+    Otherwise it diffs the manifest against the local index and, if anything is missing or stale, spawns
+    <code>asset_worker.lua</code> on a thread to fetch just the delta, reporting
+    <code>onProgress(done, total, bytes, reused)</code> as files land. Once complete it calls
+    <code>resolver.clearCache()</code> and reloads the folder with <code>game_loader.loadFromFolder</code>.</p>
+  </div>
+  <div class="fn">
+    <span class="sig">A.cachedGame(sc, gameId)</span>
+    <p>Returns an already-memoized game with no network activity at all, or <code>nil</code>.</p>
+  </div>
+  <p>One subtlety worth calling out: <code>serverRoots()</code> enumerates not just this save directory's own
+  <code>servers/</code> folder but sibling identity folders too (the <code>--identity</code> dev flag documented on
+  <a href="architecture.html">the architecture page</a>, used to run a second instance as a different player on the
+  same machine) — so running two instances for testing doesn't require downloading the same game assets twice.</p>
+
+  <h2 id="asset-worker">asset_worker.lua — download thread body</h2>
+  <div class="filecard">
+    <div class="path">src/net/asset_worker.lua</div>
+    <div class="role">The thread body <code>asset_sync.lua</code> starts to actually fetch a game's missing/changed
+    files. Its most interesting job is avoiding redundant downloads entirely by reusing bytes already present
+    somewhere on disk.</div>
+  </div>
+  <p>Before downloading anything, <code>sourceFolders()</code> builds a list of every place on this machine a
+  byte-identical copy of a wanted file might already live: the destination cache folder itself, any local game
+  library folder whose <code>gamedef.json</code> reports the same game id (<code>localGameFolders()</code> — so if
+  you already have the game installed locally, joining the same game on a server reuses those files instead of
+  re-downloading them), and the equivalent cache folder under every other server this machine has connected to
+  (<code>job.serverRoots</code>, passed in from <code>asset_sync.lua</code>). <code>reuseLocal(f, dest, sources)</code>
+  checks size as a cheap pre-filter then verifies a true SHA-256 match before copying — never trusting a filename or
+  size alone.</p>
+  <p>Only files that can't be found anywhere locally actually open a second TCP connection to the server's asset
+  channel (<code>connect()</code>/<code>download()</code>, same <code>assetHello</code> → <code>assetGet</code> →
+  streamed <code>assetData</code> chunks protocol as the upload worker's chunked <code>assetPut</code>, just in the
+  opposite direction) and get written to disk. Every file, reused or downloaded, is reported back to the main thread
+  as <code>{kind="file", path, sha256, bytes, reused}</code> so <code>asset_sync.lua</code> can update its manifest
+  index and progress UI incrementally rather than only at the very end.</p>
+
+  <div class="nextprev">
+    <a href="platform.html">&larr; Platform Integration</a>
+    <a href="server.html">Cardflux Server (Go) &rarr;</a>
+  </div>
+</main>
+</body>
+</html>

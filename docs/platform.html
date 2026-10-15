@@ -1,0 +1,198 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Platform Integration — Cardflux Docs</title>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+<nav class="sidenav">
+  <a class="brand" href="index.html">Cardflux<small>Codebase Documentation</small></a>
+  <div class="group-label">Application</div>
+  <a href="architecture.html">Architecture &amp; App Lifecycle</a>
+  <a href="ui-framework.html">UI Toolkit (kit)</a>
+  <div class="group-label">User Interface</div>
+  <a href="ui-screens.html">Screens</a>
+  <a href="ui-gamedef-editor.html">Game Definition Editor</a>
+  <a href="ui-server-screens.html">Multiplayer Lobby Screens</a>
+  <a href="ui-table.html">Game Table Rendering</a>
+  <div class="group-label">Engine &amp; Data</div>
+  <a href="core.html">Core Rules Engine</a>
+  <a href="game.html">Game Session &amp; Controller</a>
+  <a href="data.html">Data &amp; Persistence</a>
+  <div class="group-label">Platform &amp; Network</div>
+  <a href="net.html">Networking</a>
+  <a href="platform.html" class="current">Platform Integration</a>
+  <div class="group-label">Server</div>
+  <a href="server.html">Cardflux Server (Go)</a>
+  <div class="group-label">Quality</div>
+  <a href="tests-tools.html">Tests &amp; Tools</a>
+</nav>
+<main class="page">
+  <header class="page-head">
+    <div class="crumb"><a href="index.html">Home</a> / Platform &amp; Network</div>
+    <h1>Platform Integration <span class="badge lua">src/platform</span></h1>
+    <div class="subtitle">Windows-native integration: the borderless window, raw HTTPS, hidden process launches, native file dialogs, self-updates and Discord Rich Presence.</div>
+  </header>
+
+  <div class="toc">
+    <div class="toc-title">On this page</div>
+    <ul>
+      <li><a href="#overview">Why a platform layer</a></li>
+      <li><a href="#window">window.lua — borderless window chrome</a></li>
+      <li><a href="#winproc">winproc.lua — hidden process launches</a></li>
+      <li><a href="#winhttp">winhttp.lua — HTTPS without LuaSocket</a></li>
+      <li><a href="#file-dialog">file_dialog.lua — file/folder pickers</a></li>
+      <li><a href="#updater">updater.lua &amp; update_worker.lua — self-updates</a></li>
+      <li><a href="#discord">discord.lua — Rich Presence &amp; invites</a></li>
+    </ul>
+  </div>
+
+  <h2 id="overview">Why a platform layer</h2>
+  <p>
+    LÖVE's own API deliberately knows nothing about HTTPS, native dialogs, process launching, or vendor SDKs like
+    Discord's. Everything under <code>src/platform/</code> exists to bridge that gap using LuaJIT's <code>ffi</code>
+    module to call straight into Win32, WinHTTP, the MSVC runtime, and (for Discord) a vendored native DLL. All of it
+    is Windows-specific and all of it is best-effort: a missing DLL, an unsupported OS, or an FFI failure should
+    degrade a feature gracefully rather than crash the app, so most functions here are wrapped in <code>pcall</code>
+    with a quiet fallback. See <a href="architecture.html">architecture.html</a> for how <code>src/app.lua</code>
+    wires these modules into the LÖVE callback lifecycle.
+  </p>
+
+  <h2 id="window">window.lua — borderless window chrome</h2>
+  <div class="filecard">
+    <div class="path">src/platform/window.lua</div>
+    <div class="role">Frameless window chrome: a custom title bar that still drags/snaps/double-click-maximizes like a native one, resizing from the edges, and DPI scale detection — all via SDL's window hit-test callback.</div>
+  </div>
+  <p>
+    Cardflux draws its own title bar (see <code>App.draw</code>'s <code>drawTitleBar</code> in
+    <a href="architecture.html">architecture.html</a>) instead of using the OS frame, so Windows has no native
+    hit-testing to tell it "this pixel is the title bar, drag the window" or "this pixel is the edge, resize it."
+    SDL exposes exactly that as a hit-test callback (<code>SDL_SetWindowHitTest</code>), and this module installs
+    one.
+  </p>
+  <div class="fn"><span class="sig">W.install()</span><p>Loads <code>SDL2</code> via FFI, sets <code>SDL_MOUSE_FOCUS_CLICKTHROUGH</code> (so the click that refocuses the window from outside also registers as a real click — by default SDL swallows it, requiring an annoying second click), force-enables window resizing (LÖVE creates borderless windows non-resizable even when <code>conf.lua</code> asks for resizable, which also silently blocks maximizing on Windows), and installs the hit-test callback.</p></div>
+  <div class="fn"><span class="sig">hitTest(window, point) (local, the installed callback)</span><p>Given a point in physical pixels, returns one of SDL's <code>HT.*</code> constants: a resize edge/corner when not maximized and not using the native frame, <code>HT.DRAGGABLE</code> when inside the title bar height and the registered <code>dragArea</code> function says so, else <code>HT.NORMAL</code>. Runs inside SDL's event pump — see the note on JIT in <a href="architecture.html">main.lua's custom <code>love.run</code></a>, which keeps its polling loop out of the JIT specifically because this FFI callback can't be entered from a JIT-compiled trace.</p></div>
+  <div class="fn"><span class="sig">W.setDragArea(fn)</span><p>Registers <code>fn(x, y) -&gt; bool</code>, called by <code>hitTest</code> to ask whether a given logical-pixel point in the title bar is empty (draggable) space rather than one of the title bar's own buttons. <code>src/app.lua</code> calls this once with a closure over the back/close/maximize/theme button rects it just drew.</p></div>
+  <div class="fn"><span class="sig">W.dpiScale()</span><p>Reads the display DPI of the monitor the window is currently on via <code>SDL_GetDisplayDPI</code>, cached for half a second at a time. Relies on <code>conf.lua</code> having made the process per-monitor DPI-aware on Windows (<code>SetProcessDpiAwarenessContext</code>); without that the window gets 96-DPI logical pixels that Windows then stretches, and this would just report 1.</p></div>
+  <div class="fn"><span class="sig">W.desktopSize() / W.setMinimumSize(w, h) / W.setScale(s)</span><p>Used by <code>src/app.lua</code>'s <code>applyScale</code> to compute and enforce a window size that stays usable (at least the logical 960×600 minimum) on the current monitor at the current DPI × UI-scale-setting product.</p></div>
+  <div class="fn"><span class="sig">W.toggleMaximize() / W.toggleFrame()</span><p><code>toggleFrame</code> is bound to F11: swaps between the borderless custom chrome and the native OS frame by flipping <code>love.window.setMode</code>'s <code>borderless</code> flag, then re-installs the hit-test (a non-resizable window — which <code>setMode</code> can reset to — ignores maximize).</p></div>
+
+  <h2 id="winproc">winproc.lua — hidden process launches</h2>
+  <div class="filecard">
+    <div class="path">src/platform/winproc.lua</div>
+    <div class="role">Runs a command line with no visible console window, via <code>CreateProcessW</code> + <code>CREATE_NO_WINDOW</code>.</div>
+  </div>
+  <p>
+    Lua's <code>io.popen</code>/<code>os.execute</code> would flash a terminal window open and shut in a fused GUI
+    build — jarring for something like a background update check. <code>winproc.lua</code> exists purely to avoid
+    that, and is the primitive <a href="#updater">update_worker.lua</a> uses to run <code>tar.exe</code> (extracting
+    the update zip) and <code>powershell.exe</code> (launching the update helper and, elsewhere, rotating imported
+    JPEG card art — see <a href="data.html#image-utils">image_utils.lua</a>).
+  </p>
+  <div class="fn"><span class="sig">W.quoteArg(s)</span><p>Quotes one argument for the MSVCRT command-line parser (the same escaping rules every Windows C program's <code>argv</code> splitting expects) — handles embedded quotes and trailing backslashes correctly, which naive <code>'"' .. s .. '"'</code> quoting does not.</p></div>
+  <div class="fn"><span class="sig">W.run(cmdLine, opts)</span><p>Starts <code>cmdLine</code> via <code>CreateProcessW</code> with the <code>CREATE_NO_WINDOW</code> flag. With <code>opts.wait</code>, blocks (up to <code>opts.timeoutMs</code>, default forever) via <code>WaitForSingleObject</code> and returns the process's exit code; otherwise returns <code>true</code> once the process has started. Returns <code>nil, message</code> on failure to launch.</p></div>
+  <div class="fn"><span class="sig">W.currentPid()</span><p>Wraps <code>GetCurrentProcessId</code> — used to pass this process's PID to the detached update-helper script so it can wait for this process to exit before overwriting its files.</p></div>
+
+  <h2 id="winhttp">winhttp.lua — HTTPS without LuaSocket</h2>
+  <div class="filecard">
+    <div class="path">src/platform/winhttp.lua</div>
+    <div class="role">A minimal blocking HTTPS GET built on the WinHTTP API via FFI.</div>
+  </div>
+  <p>
+    LÖVE bundles LuaSocket, which has no TLS support, and both the GitHub API and GitHub's release-asset CDN are
+    HTTPS-only — so the self-updater needs its own HTTP client. WinHTTP is a good fit: it's a Windows system
+    component (no extra DLL to ship), handles the TLS handshake itself, and transparently follows the
+    HTTPS→HTTPS redirect GitHub's release assets use to hand off to their CDN. Being blocking, every call into this
+    module happens on a background thread (see <a href="#updater">update_worker.lua</a>), never the main thread.
+  </p>
+  <div class="fn"><span class="sig">H.parseUrl(url)</span><p>A small regex split of an <code>https://host[:port]/path</code> URL into its parts; refuses anything not scheme <code>https</code> (this module intentionally doesn't support plaintext HTTP).</p></div>
+  <div class="fn"><span class="sig">H.get(url, opts)</span><p>Opens a WinHTTP session/connection/request (<code>WinHttpOpen</code> → <code>WinHttpConnect</code> → <code>WinHttpOpenRequest</code> with the <code>FLAG_SECURE</code> TLS flag), sends it with optional extra headers, and reads the response in 64&nbsp;KB chunks. Returns <code>status, body</code>, or streams via <code>opts.onChunk(data, received, total)</code> instead of buffering the whole body in memory — the mechanism the update downloader uses to report download progress and to avoid holding a full release zip twice over. Returns <code>nil, message</code> on any failure, with the specific WinHTTP call that failed and <code>GetLastError()</code>'s code named in the message.</p></div>
+  <p class="note">The automatic-proxy access type (<code>ACCESS_AUTOMATIC_PROXY</code>, Windows 8.1+) is tried first with a fallback to the unconditional default-proxy type, so the module still works on a system too old to support the newer flag.</p>
+
+  <h2 id="file-dialog">file_dialog.lua — file/folder pickers</h2>
+  <div class="filecard">
+    <div class="path">src/platform/file_dialog.lua</div>
+    <div class="role">Thin, now-mostly-historical façade over <a href="ui-screens.html">the in-app file picker screen</a> (<code>src/ui/screens/file_picker_dialog.lua</code>).</div>
+  </div>
+  <p>
+    This module used to show a real native dialog — a Vista-style <code>IFileOpenDialog</code> via COM/FFI on
+    Windows, <code>zenity</code>/<code>kdialog</code> on Unix — but the native Windows dialog had an unfixable
+    z-order bug when the app's borderless window was maximized, and there was never a native implementation for Mac
+    at all. The native dialog code was replaced by an in-app picker UI (commit <em>"Replace the native file/folder
+    dialog with an in-app picker"</em>), and this module now just forwards to it, keeping every caller's
+    <code>require("src.platform.file_dialog")</code> path and call shape stable. It is still the module every
+    screen requires — <code>home.lua</code>, <code>game_picker.lua</code>, <code>deck_library_dialog.lua</code>,
+    <code>gamedef_editor.lua</code>, the gamedef editor's <code>common.lua</code>/<code>sets_tab.lua</code>, and the
+    server screens' <code>admin.lua</code>/<code>login.lua</code>/<code>lobby.lua</code> — so the picker UI itself
+    is a drop-in replacement rather than a separate code path callers had to adopt.
+  </p>
+  <div class="fn"><span class="sig">D.isAbsolute(path)</span><p>Still implemented natively here (not delegated) since it's a pure string check: Windows drive-letter or UNC prefix, or a leading <code>/</code> elsewhere.</p></div>
+  <div class="fn"><span class="sig">D.openFile(opts, onResult) / D.pickFolder(opts, onResult)</span><p>Both now simply call through to <code>src.ui.screens.file_picker_dialog</code>'s <code>openFile</code>/<code>pickFolder</code>. Async in both the old and new implementation: <code>onResult(path)</code> fires once with an absolute path, or <code>nil</code> if the user cancelled. <code>opts</code> carries <code>title</code>, <code>filters</code> (<code>{ {name=, extensions={"png",...}} }</code> — see <code>D.imageFilters</code>/<code>D.jsonFilters</code> for the two filter presets every caller reuses) and <code>initialDir</code>.</p></div>
+
+  <h2 id="updater">updater.lua &amp; update_worker.lua — self-updates</h2>
+  <div class="filecard">
+    <div class="path">src/platform/updater.lua</div>
+    <div class="role">Ports <code>lib/services/update/{update_checker,app_updater}.dart</code>. Checks GitHub Releases once per launch and, on request, downloads, extracts and installs the latest release, then relaunches.</div>
+  </div>
+  <p>
+    Only a fused (packaged) Windows build checks or installs updates (<code>U.supported()</code>) — a dev run's
+    "install folder" is the source tree, which isn't something the updater should ever overwrite. The repo, release
+    asset name and executable name it targets come straight from <a href="architecture.html"><code>src/version.lua</code></a>:
+    <code>releaseRepo = "jvthompson/cardflux-love"</code>, <code>releaseAssetName = "cardflux-windows.zip"</code>,
+    <code>exeName = "Cardflux.exe"</code> — note this is a <em>separate</em> GitHub repo/release stream from the
+    original Flutter app, specifically so the LÖVE port's own build numbers (compared via the <code>+N</code> suffix
+    on a tag like <code>v0.2.0+10</code>) never collide with or get shadowed by Flutter's.
+  </p>
+  <div class="fn"><span class="sig">U.check(force)</span><p>Spawns a worker thread running <code>update_worker.lua</code> with <code>{op = "check", ...}</code>; on finding a newer release with the expected asset, sets <code>U.state = {available = true, tag, url, size}</code>, which the Home screen's update banner reads. <code>force</code> (from the <code>--update-check</code> CLI flag) bypasses the fused-build-only gate for testing.</p></div>
+  <div class="fn"><span class="sig">U.apply(onProgress, onDone)</span><p>Spawns a worker with <code>{op = "apply", url, size, installDir, excludeDirs, exeName}</code>, where <code>installDir</code> is <a href="data.html#paths"><code>paths.appDir()</code></a> and <code>excludeDirs</code> is whichever of the game/deck library folders turn out to live inside it (<code>U.pathsInside</code>) — so an update never wipes a user's installed games or decks even if their library folders happen to sit under the install directory. <code>onProgress(phase, fraction)</code> reports <code>"downloading"</code>, <code>"extracting"</code>, <code>"verifying"</code> or <code>"launchingInstaller"</code>; on success the caller must quit immediately afterward so the detached helper can take over the file replacement.</p></div>
+  <div class="fn"><span class="sig">U.pickRelease(release, localBuild, assetName) / U.buildFromTag(tag)</span><p>Pure logic, directly unit-testable (see <a href="tests-tools.html">tests-tools.html</a>): parses the <code>+N</code> build suffix off a tag like <code>v0.1.0+49</code> and picks a release only if its build number is strictly newer and it carries an asset exactly named <code>assetName</code>.</p></div>
+  <div class="fn"><span class="sig">U.helperScript(o)</span><p>Generates the PowerShell source for the detached install helper: waits (up to 30s) for this process to exit via <code>Wait-Process</code>, then <code>robocopy /MIR</code>s the staged, extracted build over the install directory — excluding the library folders — relaunches the executable, and deletes its own staging files and itself. Robocopy's 0-7 exit codes are all "success" bit flags; only ≥8 is treated as failure.</p></div>
+  <div class="fn"><span class="sig">U.update()</span><p>Polled every frame from <code>src/app.lua</code>'s <code>App.update</code>: drains each spawned job's message channel, forwards messages to the caller's <code>onMessage</code>, and detects a worker thread that died without sending a final <code>done</code> message (reporting <code>thread:getError()</code> as the failure).</p></div>
+
+  <div class="filecard">
+    <div class="path">src/platform/update_worker.lua</div>
+    <div class="role">The actual network/disk work for both the check and apply operations, run entirely on a background thread so GitHub round-trips and a multi-megabyte download never stall the UI.</div>
+  </div>
+  <div class="fn"><span class="sig">check() (local)</span><p>GETs <code>https://api.github.com/repos/&lt;repo&gt;/releases/latest</code> via <a href="#winhttp">winhttp.lua</a>, decodes the JSON body, and delegates to <code>U.pickRelease</code>. Reports failure as a plain string so the result stays flat (no nested tables) when pushed over the LÖVE thread channel.</p></div>
+  <div class="fn"><span class="sig">apply() (local)</span><p>The full install sequence: download the release zip into a fresh temp folder while streaming progress updates (throttled to once per 100ms); extract it with Windows' bundled <code>tar.exe</code> (via <a href="#winproc">winproc.lua</a> — <code>bsdtar</code> reads zip archives despite the name) rather than any Lua zip library; verify the staged folder actually contains <code>exeName</code>; write out the PowerShell helper script from <code>U.helperScript</code> (with an added UTF-8 BOM so PowerShell reads non-ASCII paths correctly); and finally launch it.</p></div>
+  <div class="fn"><span class="sig">encodePs(script) (local)</span><p>Encodes the launcher command as base64 UTF-16LE for <code>powershell.exe -EncodedCommand</code>, sidestepping every layer of command-line quoting that would otherwise apply to a script containing arbitrary paths.</p></div>
+  <p>
+    The helper itself is launched through <code>Invoke-CimMethod -ClassName Win32_Process -MethodName Create</code>
+    (WMI) rather than as a direct child process — a comment in the source notes this mirrors a finding from the
+    original Flutter port: a plain child process does not reliably survive this process's exit, but a process
+    created via WMI becomes a child of the WMI host instead and does. The outer <code>powershell.exe</code> call's
+    own exit code is WMI's <code>ReturnValue</code> (0 = success), checked before declaring the update launched.
+  </p>
+
+  <h2 id="discord">discord.lua — Rich Presence &amp; invites</h2>
+  <div class="filecard">
+    <div class="path">src/platform/discord.lua</div>
+    <div class="role">Ports <code>lib/services/discord/*</code>: Rich Presence plus the friend-invite flow (OAuth, friends list, activity invites, join callback) over Discord's Social SDK (<code>discord_partner_sdk.dll</code>), via a large hand-written FFI binding.</div>
+  </div>
+  <p>
+    Everything here is decorative — showing what you're playing to friends, letting them one-click join — and must
+    never crash or block a game, so the whole module is designed to degrade to a silent no-op: on any
+    platform/DLL/SDK failure, <code>enabled</code> stays <code>false</code> and every public function either does
+    nothing or calls its callback with a failure result. It only attempts to load at all on 64-bit Windows.
+  </p>
+  <div class="fn"><span class="sig">D.init()</span><p>Declares the SDK's C ABI (<code>CDEF</code>, a large hand-maintained subset of <code>cdiscord.h</code>), loads <code>discord_partner_sdk.dll</code> from next to the executable, creates and initializes a client with the app's hard-coded Discord application id, registers the launch command and the activity-join callback (live from startup, since this process might be the one being invited into a game), and publishes an initial "In the menus" presence.</p></div>
+  <div class="fn"><span class="sig">D.update(dt)</span><p>Called every frame from <code>src/app.lua</code>. Pumps the SDK's callback queue (<code>Discord_RunCallbacks</code>) at a fixed 0.1s interval rather than every frame, dispatches queued events (status changes, join secrets, request completions) to their handlers, and times out any pending request/status-wait past its deadline.</p></div>
+  <div class="fn"><span class="sig">D.publish(details, state, party) / D.setPlaying(gameName, playerCount, maxPlayers, party) / D.setIdle()</span><p>Builds and pushes an <code>Activity</code> to the SDK. De-duplicates identical presence updates via a cached key so an unchanged state doesn't re-call the SDK every frame. The hosting-only <code>party</code> table (<code>partyId, currentSize, maxSize, joinSecret</code>) is what makes Discord show a clickable "Join" button to friends — its <code>joinSecret</code> is simply <code>"host:port"</code>, parsed back out by <code>D.parseJoinSecret</code> on the receiving end and handed to <code>App.showDiscordJoinPrompt</code> (see <a href="architecture.html">architecture.html</a>) via <code>D.onJoinSecret</code>.</p></div>
+  <div class="fn"><span class="sig">D.ensureAuthorizedAndConnected(onDone) / D.fetchInvitableFriends() / D.sendGameInvite(friendUserId, onDone)</span><p>The invite flow: tries a saved OAuth refresh token first (<a href="data.html#settings"><code>settings.keys.discordRefreshToken</code></a>) to skip the consent screen, falling back to a full PKCE-style <code>Authorize</code> → <code>GetToken</code> round-trip when there's no saved token or it's been revoked. Once connected and ready, <code>fetchInvitableFriends</code> lists real Discord friends (an Invisible friend still reports as Offline, so the list isn't filtered by status) and <code>sendGameInvite</code> pushes an activity invite carrying the host's current presence/party to one of them.</p></div>
+  <p class="note">
+    ABI note worth flagging for anyone extending the binding: several SDK callbacks take a <code>Discord_String
+    {ptr,size}</code> struct <em>by value</em>. LuaJIT FFI callbacks cannot receive a struct by value directly, but
+    on the Win64 calling convention any struct whose size isn't 1/2/4/8 bytes is actually passed as a hidden pointer
+    to a caller-allocated copy — so declaring the parameter as <code>Discord_String*</code> in the callback's cdef
+    is ABI-identical and works. Every SDK-calling function is also explicitly marked <code>jit.off</code>, since a
+    native callback that re-enters Lua must not be invoked from a JIT-compiled trace.
+  </p>
+
+  <div class="nextprev">
+    <a href="data.html">&larr; Data &amp; Persistence</a>
+    <a href="net.html">Networking &rarr;</a>
+  </div>
+</main>
+</body>
+</html>

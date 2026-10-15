@@ -1,0 +1,300 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Data &amp; Persistence — Cardflux Docs</title>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+<nav class="sidenav">
+  <a class="brand" href="index.html">Cardflux<small>Codebase Documentation</small></a>
+  <div class="group-label">Application</div>
+  <a href="architecture.html">Architecture &amp; App Lifecycle</a>
+  <a href="ui-framework.html">UI Toolkit (kit)</a>
+  <div class="group-label">User Interface</div>
+  <a href="ui-screens.html">Screens</a>
+  <a href="ui-gamedef-editor.html">Game Definition Editor</a>
+  <a href="ui-server-screens.html">Multiplayer Lobby Screens</a>
+  <a href="ui-table.html">Game Table Rendering</a>
+  <div class="group-label">Engine &amp; Data</div>
+  <a href="core.html">Core Rules Engine</a>
+  <a href="game.html">Game Session &amp; Controller</a>
+  <a href="data.html" class="current">Data &amp; Persistence</a>
+  <div class="group-label">Platform &amp; Network</div>
+  <a href="net.html">Networking</a>
+  <a href="platform.html">Platform Integration</a>
+  <div class="group-label">Server</div>
+  <a href="server.html">Cardflux Server (Go)</a>
+  <div class="group-label">Quality</div>
+  <a href="tests-tools.html">Tests &amp; Tools</a>
+</nav>
+<main class="page">
+  <header class="page-head">
+    <div class="crumb"><a href="index.html">Home</a> / Engine &amp; Data</div>
+    <h1>Data &amp; Persistence <span class="badge lua">src/data</span></h1>
+    <div class="subtitle">Settings, saves, decks, game libraries and the threaded image cache — everything the client reads and writes on disk.</div>
+  </header>
+
+  <div class="toc">
+    <div class="toc-title">On this page</div>
+    <ul>
+      <li><a href="#layout">Save-directory layout</a></li>
+      <li><a href="#paths">paths.lua — well-known locations</a></li>
+      <li><a href="#fs">fs.lua — absolute-path filesystem</a></li>
+      <li><a href="#settings">settings.lua — key/value store</a></li>
+      <li><a href="#profile">profile.lua — player profile</a></li>
+      <li><a href="#hand-table-settings">hand_settings.lua / table_settings.lua</a></li>
+      <li><a href="#save-files">save_files.lua — save games &amp; logs</a></li>
+      <li><a href="#game-loader">game_loader.lua — loading a game library</a></li>
+      <li><a href="#gamedef-ops">gamedef_ops.lua — editor file helpers</a></li>
+      <li><a href="#deck-library">deck_library.lua — scanning deck files</a></li>
+      <li><a href="#deck-store">deck_store.lua — local vs. server decks</a></li>
+      <li><a href="#image-pipeline">The image pipeline</a></li>
+      <li><a href="#image-resolver">image_resolver.lua</a></li>
+      <li><a href="#image-utils">image_utils.lua</a></li>
+      <li><a href="#image-cache">image_cache.lua &amp; image_worker.lua</a></li>
+    </ul>
+  </div>
+
+  <h2 id="layout">Save-directory layout</h2>
+  <p>
+    Cardflux keeps two different kinds of state on disk, and <a href="#paths"><code>src/data/paths.lua</code></a> is the
+    single place that knows where each one lives:
+  </p>
+  <ul>
+    <li><strong>LÖVE's sandboxed save directory</strong> (<code>love.filesystem.getSaveDirectory()</code>, identity
+      <code>"cardflux"</code> from <code>conf.lua</code>) — this is where <code>settings.json</code>, the player's
+      avatar and (when running with <code>--identity</code>) a second, isolated profile live. It is created lazily by
+      LÖVE, so <code>paths.supportDir()</code> calls <code>fs.mkdirs</code> on it before anyone writes into it by
+      absolute path.</li>
+    <li><strong>User-chosen library folders</strong> — the game library (<code>game_library/</code> next to the
+      executable by default) and the deck library (<code>deck_library/</code>) are plain folders on the real
+      filesystem, outside LÖVE's sandbox, because the user needs to drop in game definitions and share decks with a
+      file browser. Their locations are overridable and remembered in <code>settings.json</code> via
+      <code>paths.setGamesDir</code> / <code>paths.setDecksDir</code>.</li>
+  </ul>
+  <p>
+    Everything under <code>src/data/</code> builds on these two roots, reading and writing through
+    <a href="#fs"><code>fs.lua</code></a> rather than Lua's stock <code>io</code>/<code>os</code> libraries, because
+    library folders need real absolute-path access (non-ASCII paths included) that <code>love.filesystem</code> — sandboxed to
+    the save directory and the fused executable — cannot provide.
+  </p>
+
+  <h2 id="paths">paths.lua — well-known locations</h2>
+  <div class="filecard">
+    <div class="path">src/data/paths.lua</div>
+    <div class="role">Port of <code>lib/data/app_directory.dart</code>. Computes every directory the app cares about.</div>
+  </div>
+  <div class="fn"><span class="sig">P.appDir()</span><p>Folder holding the executable in a fused (packaged) build, or the project source folder when running <code>love .</code> in development. Used as the base for the default library folders and as the <code>installDir</code> the self-updater mirrors files into.</p></div>
+  <div class="fn"><span class="sig">P.supportDir()</span><p>LÖVE's per-user save directory, created on first call if it doesn't exist yet. The Flutter-app analog of an application-support directory.</p></div>
+  <div class="fn"><span class="sig">P.defaultGamesDir() / P.defaultDecksDir()</span><p><code>appDir()/game_library</code> and <code>appDir()/deck_library</code>.</p></div>
+  <div class="fn"><span class="sig">P.gamesDir() / P.setGamesDir(path) / P.decksDir() / P.setDecksDir(path)</span><p>The effective library folders: a user override from <code>settings.json</code> (<code>settings.keys.gamesDirectoryPath</code> / <code>decksDirectoryPath</code>) when it is an absolute path, otherwise the default. <code>setGamesDir</code>/<code>setDecksDir</code> assert the path is absolute — a defensive check against a historical file-dialog bug that could save a bare folder name.</p></div>
+  <div class="fn"><span class="sig">P.avatarDir()</span><p><code>supportDir()/avatar</code> — where <a href="#profile">profile.lua</a> stores the resized player avatar PNG.</p></div>
+  <p>See also <a href="platform.html#updater">platform.html — the self-updater</a>, which calls <code>paths.appDir()</code> as its install directory and excludes <code>paths.gamesDir()</code>/<code>paths.decksDir()</code> from being overwritten when they live inside it.</p>
+
+  <h2 id="fs">fs.lua — absolute-path filesystem access</h2>
+  <div class="filecard">
+    <div class="path">src/data/fs.lua</div>
+    <div class="role">Cross-platform file/directory operations outside LÖVE's sandbox, built on LuaJIT FFI.</div>
+  </div>
+  <p>
+    LÖVE's own <code>love.filesystem</code> API can only see inside its sandboxed save directory and the fused
+    executable's bundled assets, so any access to the game/deck library folders (which can be anywhere the user
+    points them) has to go around it. <code>fs.lua</code> provides that access, with two back ends selected once at
+    load time by <code>ffi.os</code>:
+  </p>
+  <ul>
+    <li><strong>Windows</strong> — directory listing, creation, deletion, moves and attribute checks go straight to
+      the wide-char (UTF-16) Win32 API (<code>FindFirstFileW</code>/<code>FindNextFileW</code>,
+      <code>CreateDirectoryW</code>, <code>MoveFileExW</code>, …) via <code>ffi.cdef</code>, because Lua's own
+      <code>io</code> library uses the process's ANSI codepage and mangles non-ASCII paths. File <em>contents</em>
+      similarly go through <code>_wfopen</code>/<code>fread</code>/<code>fwrite</code> from <code>msvcrt</code> (the
+      <code>wideIO</code> table) instead of <code>io.open</code>, for the same reason.</li>
+    <li><strong>Non-Windows</strong> (secondary targets) — falls back to POSIX <code>opendir</code>/<code>mkdir</code>/
+      <code>rename</code> via FFI, and shells out to <code>ls -1Ap</code> for directory listing because
+      <code>struct dirent</code>'s layout isn't portable across libc implementations.</li>
+  </ul>
+  <div class="fn"><span class="sig">fs.join(...), fs.basename(p), fs.dirname(p), fs.extension(p), fs.stripExtension(name)</span><p>Pure string path helpers; accept both <code>/</code> and <code>\</code> on Windows and normalize to the platform separator (<code>fs.sep</code>).</p></div>
+  <div class="fn"><span class="sig">fs.readFile(path) / fs.writeFile(path, data)</span><p>Whole-file binary I/O, routed through the wide-char CRT on Windows once it's installed.</p></div>
+  <div class="fn"><span class="sig">fs.exists(p) / fs.isDir(p) / fs.isFile(p)</span><p>Existence/type checks built on the platform's raw <code>attrs</code> lookup.</p></div>
+  <div class="fn"><span class="sig">fs.list(dir)</span><p>Returns <code>{ {name, isDir, size, mtime}, ... }</code> sorted case-insensitively by name, or <code>nil</code> if <code>dir</code> isn't a readable directory. <code>mtime</code> on Windows is converted from a Win32 <code>FILETIME</code> (100ns ticks since 1601) to Unix seconds.</p></div>
+  <div class="fn"><span class="sig">fs.mkdirs(p) / fs.remove(p) / fs.removeTree(p) / fs.move(a, b) / fs.copy(a, b) / fs.copyTree(from, to)</span><p>Recursive directory creation/deletion/copy built from the primitives above — these are the workhorses almost every other <code>src/data</code> module calls.</p></div>
+  <div class="fn"><span class="sig">fs.exePath() / fs.tempDir()</span><p>The running executable's path and the OS temp folder; used by the updater (staging a download) and the JPEG-rotation helper (a scratch PowerShell script).</p></div>
+
+  <h2 id="settings">settings.lua — key/value store</h2>
+  <div class="filecard">
+    <div class="path">src/data/settings.lua</div>
+    <div class="role">Persistent settings, replacing Flutter's <code>shared_preferences</code>. Backing file: <code>settings.json</code> in LÖVE's save directory.</div>
+  </div>
+  <p>
+    <code>S.keys</code> is the single table of setting names every other module references (never a raw string),
+    deliberately kept identical to the original Flutter app's preference keys (<code>games_directory_path</code>,
+    <code>player_profile_name</code>, <code>dark_mode_enabled</code>, …) plus a few LÖVE-port-only additions
+    (<code>ui_scale</code>, <code>recent_servers</code>, <code>selection_color</code>).
+  </p>
+  <div class="fn"><span class="sig">S.get(key, default) / S.set(key, value) / S.remove(key)</span><p>The whole file is lazily loaded into an in-memory table on first access (<code>load()</code>) and rewritten in full, key-sorted, on every <code>set</code>/<code>remove</code> (<code>save()</code>) — there's no incremental-write path, which is fine at this file's size. Encoding/decoding goes through <a href="core.html#json-lua"><code>lib/json.lua</code></a>.</p></div>
+  <p>Consumers: <a href="#paths">paths.lua</a> (library folders), <a href="#profile">profile.lua</a> (player identity, Discord token, dark mode), <a href="#hand-table-settings">hand_settings.lua / table_settings.lua</a>, and <code>src/app.lua</code> for the UI-scale setting.</p>
+
+  <h2 id="profile">profile.lua — player profile, reconnect &amp; avatar</h2>
+  <div class="filecard">
+    <div class="path">src/data/profile.lua</div>
+    <div class="role">Ports <code>player_profile_settings.dart</code>, <code>player_avatar_file_ops.dart</code>, <code>avatar_image_utils.dart</code>, <code>reconnect_settings.dart</code>, <code>discord_auth_settings.dart</code> and <code>theme_mode_settings.dart</code> into one module.</div>
+  </div>
+  <div class="fn"><span class="sig">P.getName/setName, P.getColor/setColor, P.getAvatarPath/setAvatarPath</span><p>The identity shown to other players — read by <code>src/app.lua</code>'s <code>App.loadProfile()</code> into <code>App.profile</code> at startup.</p></div>
+  <div class="fn"><span class="sig">P.getReconnectPlayerIdFor(hostKey) / P.saveReconnect(hostKey, playerId)</span><p>Remembers only the <em>most recent</em> host and the player id it assigned, so a dropped connection to that same host can silently rejoin as the same seat (see <a href="net.html">net.html</a> for the reconnect handshake).</p></div>
+  <div class="fn"><span class="sig">P.getRecentServers() / P.addRecentServer(host, port) / P.removeRecentServer(host, port)</span><p>A capped (5-entry), most-recent-first list shown by the multiplayer Join screen.</p></div>
+  <div class="fn"><span class="sig">P.getDiscordRefreshToken / saveDiscordRefreshToken / clearDiscordRefreshToken</span><p>Persists the OAuth refresh token so <a href="platform.html">discord.lua</a>'s invite flow doesn't need the consent screen on every launch.</p></div>
+  <div class="fn"><span class="sig">P.getDarkMode() / P.setDarkMode(v)</span><p>Read once at startup by <code>src/app.lua</code> and written whenever the title bar's theme toggle is clicked.</p></div>
+  <div class="fn"><span class="sig">P.saveAvatar(sourcePath, dir) / P.deleteAvatar(dir) / P.readAvatarBytes() / P.resizeAvatarBytes(bytes)</span><p>Avatar handling: a picked image is decoded, downscaled so its longer side is at most <code>P.avatarMaxDimension</code> (256px) via <a href="#image-utils">image_utils.lua</a>, re-encoded as PNG and written to <code>&lt;supportDir&gt;/avatar/avatar.png</code> (any existing <code>avatar.*</code> file is cleared first, in case the stored extension ever changes).</p></div>
+
+  <h2 id="hand-table-settings">hand_settings.lua &amp; table_settings.lua — display preferences</h2>
+  <div class="filecard">
+    <div class="path">src/data/hand_settings.lua</div>
+    <div class="role">LÖVE-port-only. Layout of the player's fanned hand (see <a href="https://github.com" onclick="return false">CONTROLS.md</a>'s "Settings &gt; Hand"): card size, spacing, tilt, max fan spread, resting height above the hand area, and how much of a hovered card is revealed.</div>
+  </div>
+  <p>
+    <code>H.defs</code> is an ordered list of slider definitions (<code>id, label, min, max, step, default, format</code>)
+    that the Settings dialog iterates directly to build its UI — adding a new hand slider means adding one entry here.
+    Each value is stored under <code>settings.json</code> key <code>"hand_&lt;id&gt;"</code>, but only when it differs
+    from the default (<code>H.set</code> calls <code>settings.remove</code> when a value is reset to default, keeping
+    the file minimal). <code>H.set(id, v, live)</code>'s <code>live</code> flag updates only the in-memory cache
+    while a slider is being dragged, deferring the disk write (and the associated full-file JSON re-encode) until the
+    drag ends.
+  </p>
+  <div class="filecard">
+    <div class="path">src/data/table_settings.lua</div>
+    <div class="role">LÖVE-port-only. The single "Settings &gt; Table" preference: the box-selection tint color, stored as an ARGB integer under <code>selection_color</code>.</div>
+  </div>
+  <p>Both modules follow the same cache-plus-default-omission pattern as each other and are read every frame by <a href="ui-table.html">src/ui/table/*</a> while drawing hands and selection highlights, so the in-memory cache (rather than re-parsing <code>settings.json</code>) matters for performance.</p>
+
+  <h2 id="save-files">save_files.lua — save games &amp; game logs</h2>
+  <div class="filecard">
+    <div class="path">src/data/save_files.lua</div>
+    <div class="role">Ports <code>save_game_file_ops.dart</code> and <code>game_log_file_ops.dart</code>. Saves live in <code>&lt;gameFolder&gt;/savegames/&lt;name&gt;.json</code>, logs in <code>&lt;gameFolder&gt;/gamelogs/&lt;fileName&gt;</code> — inside the game's own library folder, not the LÖVE save directory, so saves travel with the game and are easy for a player to find.</div>
+  </div>
+  <div class="fn"><span class="sig">S.writeSaveGame(gameFolderPath, name, save) / S.readSaveGame(filePath)</span><p>Serializes/deserializes a <code>SavedGame</code> (see <a href="core.html#models-lua">core.html — models.lua</a>) to/from JSON.</p></div>
+  <div class="fn"><span class="sig">S.listSaveGames(gameFolderPath)</span><p>Newest-first listing for the Load Saved Game screen; unreadable or foreign JSON files are silently skipped. Sort order is computed from each save's ISO-8601 <code>savedAt</code> timestamp via a zero-padded, lexicographically-sortable key (<code>sortKey</code>).</p></div>
+  <div class="fn"><span class="sig">S.logFileName(nowSeconds) / S.formatLog(entries) / S.writeLog(gameFolderPath, fileName, contents)</span><p>Backs the in-game "Save Log" button: a timestamped file name, "[mm:ss] message" formatted lines, and the write itself.</p></div>
+
+  <h2 id="game-loader">game_loader.lua — loading a game library</h2>
+  <div class="filecard">
+    <div class="path">src/data/game_loader.lua</div>
+    <div class="role">Port of <code>game_loader.dart</code>. Turns a folder full of <code>gamedef.json</code> files into ready-to-play <code>GameDefinition</code>s with resolved image paths.</div>
+  </div>
+  <div class="fn"><span class="sig">L.loadFromFolder(folderPath)</span><p>Loads every <code>gamedef.json</code> (case-insensitive) directly inside one folder, resolving each card/back's bare image file name to an absolute path via <a href="#image-resolver">image_resolver.lua</a> and appending the generated 52-card deck when any zone requests <code>standardDeck</code>. Returns <code>games, errors</code> — a bad file is skipped and recorded rather than aborting the whole load.</p></div>
+  <div class="fn"><span class="sig">L.loadGamesFromDirectory(rootPath) / L.loadLibrary(rootPath)</span><p>Walks every direct subfolder of the library root (one game per subfolder) and appends the bundled "Standard 52-Card Deck" (<code>L.loadStandardDeck()</code>, read from the fused app's own <code>assets/games/standard_52/standard_52.json</code>) last — this is what the game picker actually calls.</p></div>
+  <div class="fn"><span class="sig">L.withStandardDeckCards(game)</span><p>Appends the 52 generated playing-card definitions (from <a href="core.html#models-lua"><code>models.buildStandardDeckCards()</code></a>) to any game that has a zone flagged <code>standardDeck</code>, without duplicating ids already present.</p></div>
+  <p class="note">Note the split in responsibility from <a href="#gamedef-ops">gamedef_ops.lua</a> below: <code>game_loader.lua</code> resolves image paths for <em>playing</em> a game, while <code>gamedef_ops.lua</code> deliberately loads the same files <em>unresolved</em> (bare file names) for <em>editing</em> one, so a save round-trips without rewriting paths.</p>
+
+  <h2 id="gamedef-ops">gamedef_ops.lua — game-definition editor file helpers</h2>
+  <div class="filecard">
+    <div class="path">src/data/gamedef_ops.lua</div>
+    <div class="role">Ports <code>game_definition_file_ops.dart</code> and <code>library_folder_migration.dart</code>. All the file-level operations behind <a href="ui-gamedef-editor.html">the Game Definition Editor</a>.</div>
+  </div>
+  <div class="fn"><span class="sig">O.writeGameDefinition(folderPath, game) / O.loadGameDefFile(jsonPath, folderPath) / O.scanGameLibrary(root)</span><p>Write/read a single <code>gamedef.json</code> (2-space indent) and enumerate every editable game under a root folder, sorted by name. <code>loadGameDefFile</code> intentionally skips image-path resolution — the editor keeps and re-saves bare file names.</p></div>
+  <div class="fn"><span class="sig">O.createGameDefinition(root, id) / O.validateGameId(id)</span><p>Creates a new game's stub folder + <code>gamedef.json</code>; <code>validateGameId</code> rejects anything that can't be a filesystem folder name (<code>/\\:*?"&lt;&gt;|</code>, <code>.</code>, <code>..</code>, empty).</p></div>
+  <div class="fn"><span class="sig">O.copyIntoFolder / O.copyPickedImage / O.copySetImages</span><p>Copies art the user picks (single file or a whole folder) into the game's folder, optionally rotating landscape images to portrait via <a href="#image-utils">image_utils.lua</a>'s <code>rotateLandscapeImages</code> (batched so a folder of JPEGs needs only one PowerShell helper invocation, not one per file).</p></div>
+  <div class="fn"><span class="sig">O.buildCardsFromImageFolder(sourceFolderPath, setId, existingCardIds)</span><p>Bulk-imports a folder of card art as one <code>CardDefinition</code> per image (sorted by file name), skipping any file that is itself a card-back image (suffix <code>models.cardBackFileSuffix</code>), and de-duplicating ids against what's already in the game via <code>O.uniqueCardId</code> (appends <code>_001</code>, <code>_002</code>, …).</p></div>
+  <div class="fn"><span class="sig">O.duplicateIdGroups(cards) / O.duplicateImageGroups(cards) / O.mergeDuplicateImageCards(cards)</span><p>Powers the editor's duplicate-id and duplicate-image warning dialogs. Two cards are an "image duplicate" when they share both <code>setId</code> and exact <code>imagePath</code> (keyed as <code>setId .. "\0" .. imagePath</code> — a NUL byte can't appear in either half, so the two can't collide across the boundary); merging unions their <code>types</code> and keeps only the first card.</p></div>
+  <div class="fn"><span class="sig">O.cardsOutsideSets(game) / O.rarityTags(tagGroups)</span><p><code>cardsOutsideSets</code> flags cards that a save would silently drop (once a game declares sets, <code>gamedef.json</code> stores cards only nested inside their set). <code>rarityTags</code> finds the tag group named "Rarity" (case-insensitive) — the tag vocabulary the Pack Generator's rarity weighting UI offers.</p></div>
+  <div class="fn"><span class="sig">O.directoryHasEntries(path) / O.moveDirectoryContents(fromPath, toPath)</span><p>Supports the one-time migration prompt when a user's previously-configured library folder needs moving.</p></div>
+
+  <h2 id="deck-library">deck_library.lua — scanning deck files</h2>
+  <div class="filecard">
+    <div class="path">src/data/deck_library.lua</div>
+    <div class="role">Port of <code>deck_library_loader.dart</code>. Finds and validates <code>.json</code> deck files on disk; a deck's display name is simply its file name minus the extension.</div>
+  </div>
+  <div class="fn"><span class="sig">D.loadDecksForGame(rootPath, game) / D.loadBuiltInDecksForGame(game) / D.loadAllDecksForGame(rootPath, game)</span><p>Scans the player's own deck-library subfolder for a game (<code>&lt;rootPath&gt;/&lt;gameId&gt;</code>) and/or the game's bundled <code>decks/</code> folder, returning <code>{ entries = {...}, incompatible = {...} }</code>. <code>incompatible</code> catches decks saved in a legacy format (detected via a <code>legacyDeckFormat</code> flag raised by <code>DeckConfig.fromJson</code>) that parse as JSON but not as a valid deck — surfaced to the user rather than silently dropped. <code>loadAllDecksForGame</code> lists the player's own decks before the game's built-ins.</p></div>
+  <div class="fn"><span class="sig">D.readDeckFile(path)</span><p>Reads one arbitrary deck file (the "Browse for file..." picker option), returning <code>deck</code> or <code>nil, reason</code> where <code>reason</code> is <code>"legacy"</code>, <code>"invalid"</code> or <code>"unreadable"</code>.</p></div>
+  <div class="fn"><span class="sig">D.validateName(name, emptyMessage) / D.writeDeck(rootPath, gameId, name, deck)</span><p>Name validation mirrors <code>O.validateGameId</code>'s forbidden-character rule; <code>writeDeck</code> writes compact (no indent) JSON, matching the original Flutter app's deck file format byte-for-byte where it matters for compatibility.</p></div>
+
+  <h2 id="deck-store">deck_store.lua — local vs. server deck storage</h2>
+  <div class="filecard">
+    <div class="path">src/data/deck_store.lua</div>
+    <div class="role">A small abstraction so the deck-management UI doesn't need to know whether it's talking to the local deck-library folder or a Cardflux server account.</div>
+  </div>
+  <p>
+    Where <a href="#deck-library">deck_library.lua</a> is the low-level file scanner, <code>deck_store.lua</code> wraps it (plus
+    <a href="net.html">server_client.lua</a>) behind one shared interface — <code>store.kind</code>
+    (<code>"local"</code> or <code>"server"</code>), <code>store.label</code>, and three async methods:
+  </p>
+  <div class="fn"><span class="sig">store:list(game, cb) -&gt; cb({ entries, incompatible }, err)</span></div>
+  <div class="fn"><span class="sig">store:write(game, name, deck, cb) -&gt; cb(ok, errMessage, where)</span></div>
+  <div class="fn"><span class="sig">store:remove(game, name, cb) -&gt; cb(ok, errMessage)</span></div>
+  <p>
+    <code>M.localStore()</code> implements these synchronously (wrapped in a callback for interface symmetry) against
+    <code>paths.decksDir()</code>. <code>M.serverStore(sc)</code> implements them as requests over a
+    <code>server_client</code> connection (<code>deckList</code>, <code>deckSave</code>, <code>deckDelete</code> — see
+    <a href="net.html">net.html</a>) and merges in the game's built-in decks (which ship inside the locally cached
+    game folder, not on the server) alongside the server's results. Its optional <code>alsoLocal</code> flag makes
+    every server save also write a local copy, surfacing a distinct warning if only the local copy fails.
+  </p>
+
+  <h2 id="image-pipeline">The image pipeline</h2>
+  <p>
+    Card art can run into the hundreds of multi-megabyte files per game, so Cardflux never decodes or loads images
+    synchronously on the main thread. Four modules split the job:
+  </p>
+  <table>
+    <tr><th>Module</th><th>Role</th></tr>
+    <tr><td><a href="#image-resolver">image_resolver.lua</a></td><td>Turns a card/zone's logical reference (a bare file name, a card-back id, "the game's logo") into a concrete, existence-checked absolute path.</td></tr>
+    <tr><td><a href="#image-utils">image_utils.lua</a></td><td>Pure decode/encode/pixel operations (PNG/JPEG/BMP/TGA/GIF via LÖVE, WebP via an optional <code>libwebp</code> FFI binding) that work with no window — usable from worker threads and tests.</td></tr>
+    <tr><td><a href="#image-cache">image_cache.lua</a></td><td>Main-thread-facing cache: <code>get(path)</code> returns a usable <code>Image</code> or <code>nil</code> while it loads; owns a small pool of worker threads and a VRAM eviction budget.</td></tr>
+    <tr><td><a href="#image-cache">image_worker.lua</a></td><td>The worker thread body: pulls decode requests off a channel, decodes+downscales off the main thread, and pushes results back.</td></tr>
+  </table>
+  <p>
+    The cache's lifecycle, driven once per frame from <code>src/app.lua</code>'s <code>App.update</code>
+    (<code>imageCache.update()</code>):
+  </p>
+  <ol>
+    <li>A screen calls <code>imageCache.get(path)</code>. On a cache miss this lazily starts the worker pool
+      (<code>ensureWorkers</code>, sized to <code>processorCount - 1</code>, capped at 4) and pushes a
+      <code>{key, path, maxDim}</code> request onto the shared <code>requests</code> channel, immediately
+      returning <code>nil</code> (the entry is marked <code>"loading"</code>).</li>
+    <li>A worker thread (running <code>image_worker.lua</code>) pulls the request, decodes the file via
+      <code>image_utils.decodeFile</code>, downscales it to fit <code>maxDim</code> (1024px by default), and pushes
+      the key followed by the decoded <code>ImageData</code> (or an error string) back atomically on the
+      <code>results</code> channel — <code>performAtomic</code> keeps the key/payload pair from interleaving with
+      another worker's push.</li>
+    <li>On the main thread, <code>C.update()</code> pops up to <code>maxUploadsPerFrame</code> (8) results per
+      frame, uploads each to the GPU as a mip-mapped <code>Image</code> (<code>makeImage</code>), and flips the
+      entry to <code>"ready"</code> (or <code>"error"</code>).</li>
+    <li><code>evict()</code> then checks the running VRAM estimate (<code>usedBytes</code>, computed from each
+      image's dimensions assuming RGBA8 plus mip chain) against <code>budgetBytes</code> (768&nbsp;MB); if over
+      budget, the least-recently-used <em>ready</em> entries (by the frame they were last fetched with
+      <code>get</code>) are released first, down to 80% of budget.</li>
+  </ol>
+  <div class="fn"><span class="sig">C.get(path) / C.status(path) / C.errorFor(path)</span><p>The public read path: a screen's draw code calls <code>get</code> every frame and checks <code>status</code> (<code>"ready" | "loading" | "error" | nil</code>) to decide whether to draw the image, a placeholder, or an error glyph.</p></div>
+  <div class="fn"><span class="sig">C.putBytes(key, bytes)</span><p>Synchronous path for in-memory image bytes that didn't come from disk (e.g. an avatar downloaded from a server) — decodes and uploads immediately rather than round-tripping through a worker.</p></div>
+  <div class="fn"><span class="sig">C.invalidate(key) / C.clear() / C.shutdown()</span><p><code>invalidate</code> forces a reload on the next <code>get</code> (used after the gamedef editor changes a file on disk). <code>shutdown</code> pushes a <code>"quit"</code> message to each worker and joins them — called from <code>App.quit()</code>.</p></div>
+
+  <h3 id="image-resolver">image_resolver.lua</h3>
+  <div class="filecard">
+    <div class="path">src/data/image_resolver.lua</div>
+    <div class="role">Port of <code>image_path_resolver.dart</code>. Resolves logical image references to absolute, existence-checked paths, memoizing the filesystem checks.</div>
+  </div>
+  <div class="fn"><span class="sig">R.resolveBareImagePath(folderPath, bareImagePath, setId)</span><p>A card's bare file name lives under <code>folderPath</code> directly, or <code>folderPath/setId</code> when the card belongs to a set — this is the one join every other resolver function builds on.</p></div>
+  <div class="fn"><span class="sig">R.resolveCardBackImagePath(cardBacks, card)</span><p>Returns <code>path, missing, orientation</code> for the back a card should show: a per-card "unique back" (derived from the card's own art via <code>uniqueCardBackPathFor</code>, which inserts the back-file suffix before the extension) when flagged, otherwise the card's chosen (or the first) game-wide card back.</p></div>
+  <div class="fn"><span class="sig">R.resolvePackGeneratorImagePath / R.resolveGameLogoImagePath / R.resolveImageAnyExt</span><p>Probes a folder for a specific base name across every known extension in turn (<code>resolveImageAnyExt</code>) — used for the Pack Generator widget's icon and a game's optional logo.</p></div>
+  <div class="fn"><span class="sig">R.mergeLocalImagePaths(remote, localGame)</span><p>When joining a multiplayer game, the host's <code>GameDefinition</code> arrives over the network with no meaningful image paths for this machine; this rebuilds it using <em>this client's</em> local copy's image paths (falling back to no image for any card the local copy lacks) and local card backs/folder. See <a href="net.html">net.html</a> and <a href="game.html">game.html</a> for how the synced definition is used.</p></div>
+  <p>Existence checks (<code>fs.isFile</code>) are memoized in <code>existsCache</code> since they run during drawing; call <code>R.clearCache()</code> after any on-disk change (an editor save, a manual refresh).</p>
+
+  <h3 id="image-utils">image_utils.lua</h3>
+  <div class="filecard">
+    <div class="path">src/data/image_utils.lua</div>
+    <div class="role">Headless decode/encode/pixel-manipulation helpers, usable from worker threads (and tests) because they touch no window state.</div>
+  </div>
+  <div class="fn"><span class="sig">I.decodeBytes(bytes, name) / I.decodeFile(path)</span><p>LÖVE's <code>love.image.newImageData</code> handles PNG/JPEG/BMP/TGA/GIF natively. WebP (detected by its <code>RIFF....WEBP</code> magic bytes) is decoded through <code>libwebp.dll</code>/<code>.so</code> if present next to the executable or on the library path — loaded lazily and best-effort via FFI (<code>loadWebp</code>), including a search for a co-located <code>libsharpyuv</code> dependency so Windows can resolve the import even though the app folder isn't normally on the DLL search path. Without the DLL, WebP images simply fail to decode with a clear error.</p></div>
+  <div class="fn"><span class="sig">I.rotateClockwise(src) / I.downscaleToFit(src, maxDim)</span><p>Pixel-level operations on RGBA8 <code>ImageData</code> accessed directly via <code>getFFIPointer()</code> for speed: a 90° clockwise transpose, and an area-average downscale (not a cheap nearest-neighbor resize) so shrinking card art doesn't look aliased.</p></div>
+  <div class="fn"><span class="sig">I.rotateLandscapeImages(paths)</span><p>Used by the gamedef editor when importing art: PNGs are rotated in-process (decode, rotate, re-encode); JPEGs — which LÖVE can't encode — are batched into one PowerShell/<code>System.Drawing</code> helper script (<code>I.rotateJpegsWindows</code>) so a folder import needs a single external process rather than one per file. Best-effort: a failure just leaves that file as originally copied.</p></div>
+
+  <h3 id="image-cache">image_cache.lua &amp; image_worker.lua</h3>
+  <p>Covered in detail above under <a href="#image-pipeline">The image pipeline</a>. In short: <code>image_cache.lua</code> is the main-thread cache/scheduler; <code>image_worker.lua</code> is the small, stateless loop run inside each worker thread it spawns (<code>requests:demand()</code> → decode+downscale → push the result pair → repeat until a <code>"quit"</code> message arrives).</p>
+
+  <div class="nextprev">
+    <a href="game.html">&larr; Game Session &amp; Controller</a>
+    <a href="platform.html">Platform Integration &rarr;</a>
+  </div>
+</main>
+</body>
+</html>

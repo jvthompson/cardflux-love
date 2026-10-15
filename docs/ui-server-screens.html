@@ -1,0 +1,421 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Multiplayer Lobby Screens — Cardflux Docs</title>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+<nav class="sidenav">
+  <a class="brand" href="index.html">Cardflux<small>Codebase Documentation</small></a>
+  <div class="group-label">Application</div>
+  <a href="architecture.html">Architecture &amp; App Lifecycle</a>
+  <a href="ui-framework.html">UI Toolkit (kit)</a>
+  <div class="group-label">User Interface</div>
+  <a href="ui-screens.html">Screens</a>
+  <a href="ui-gamedef-editor.html">Game Definition Editor</a>
+  <a href="ui-server-screens.html" class="current">Multiplayer Lobby Screens</a>
+  <a href="ui-table.html">Game Table Rendering</a>
+  <div class="group-label">Engine &amp; Data</div>
+  <a href="core.html">Core Rules Engine</a>
+  <a href="game.html">Game Session &amp; Controller</a>
+  <a href="data.html">Data &amp; Persistence</a>
+  <div class="group-label">Platform &amp; Network</div>
+  <a href="net.html">Networking</a>
+  <a href="platform.html">Platform Integration</a>
+  <div class="group-label">Server</div>
+  <a href="server.html">Cardflux Server (Go)</a>
+  <div class="group-label">Quality</div>
+  <a href="tests-tools.html">Tests &amp; Tools</a>
+</nav>
+<main class="page">
+  <header class="page-head">
+    <div class="crumb"><a href="index.html">Home</a> / User Interface</div>
+    <h1>Multiplayer Lobby Screens</h1>
+    <div class="subtitle">Screens for connecting to and playing on a Cardflux lobby server.</div>
+  </header>
+
+  <div class="toc">
+    <div class="toc-title">On this page</div>
+    <ul>
+      <li><a href="#overview">Overview &amp; screen flow</a></li>
+      <li><a href="#common">common.lua — shared helpers</a></li>
+      <li><a href="#login">login.lua — sign in / create account</a></li>
+      <li><a href="#lobby">lobby.lua — the server lobby</a></li>
+      <li><a href="#room">room.lua — pre-game seating</a></li>
+      <li><a href="#decks">decks.lua — server deck editor entry</a></li>
+      <li><a href="#collection">collection.lua — browse owned cards</a></li>
+      <li><a href="#shop">shop.lua — card shop (packs &amp; starters)</a></li>
+      <li><a href="#trade">trade.lua — player-to-player trading</a></li>
+      <li><a href="#admin">admin.lua — server administration</a></li>
+      <li><a href="#cross-cutting">Cross-cutting patterns</a></li>
+    </ul>
+  </div>
+
+  <h2 id="overview">Overview &amp; screen flow</h2>
+  <p>
+    This directory (<code>src/ui/screens/server/</code>) holds every screen that only exists while the client is
+    connected to a <strong>Cardflux Server</strong> — the companion Go lobby server documented on
+    <a href="server.html">Cardflux Server (Go)</a>. A player reaches this stack from
+    <a href="ui-screens.html">multiplayer.lua</a>'s "Join Game" flow, which opens a TCP connection and hands it to
+    these screens as a <code>src/net/server_client.lua</code> instance (<code>sc</code> in nearly every file here —
+    see <a href="net.html">Networking</a> for the wire protocol and connection lifecycle).
+  </p>
+  <p>The screen stack flows roughly like this:</p>
+  <pre>login.lua  --(sign in / register)-->  lobby.lua
+lobby.lua  --(Create Game / Join / Watch)-->  room.lua  --(host starts)-->  table (ui-table.html)
+lobby.lua  --(header buttons)-->  decks.lua | collection.lua | shop.lua | admin.lua
+lobby.lua  --(Ask to Trade)-->  trade.lua</pre>
+  <p>
+    Every one of these screens is a plain Lua table built with <code>setmetatable</code> following the
+    <code>App</code> screen-object contract described in <a href="architecture.html">Architecture &amp; App
+    Lifecycle</a> (<code>title</code>, <code>draw(x,y,w,h)</code>, optional <code>onBack()</code>, <code>update(dt)</code>,
+    etc.), and they are all built from the immediate-mode widgets in
+    <a href="ui-framework.html">the UI toolkit</a> (<code>ui</code>, <code>theme</code>, <code>overlays</code>,
+    <code>widgets</code>).
+  </p>
+
+  <h2 id="common">common.lua — shared helpers</h2>
+  <div class="filecard">
+    <div class="path">src/ui/screens/server/common.lua</div>
+    <div class="role">Helpers shared by every server screen: downloading a game before use, entering/leaving rooms, a user avatar+name row, and time formatting.</div>
+  </div>
+  <p>
+    Rather than a base class, Cardflux shares behavior between these screens through a small module of free
+    functions. Every other file in this directory <code>require</code>s it as <code>common</code>.
+  </p>
+  <div class="fn">
+    <span class="sig">M.withGame(sc, gameId, onReady)</span>
+    <p>
+      Makes sure the local copy of a server game is present and current before using it. It calls
+      <code>assetSync.ensureGame</code> (see <a href="net.html">asset_sync.lua</a>) which diffs the server's game
+      folder against the client's cache and downloads anything missing or changed. While that's in flight it shows
+      a non-dismissible progress dialog ("Downloading &lt;game&gt;...") built with <code>overlays.dialog</code>,
+      reporting files-done/total and bytes downloaded, and a note that already-cached files are reused. Once ready,
+      <code>onReady(game)</code> runs with the fully loaded <code>GameDefinition</code> (see
+      <a href="core.html#models-lua">src/core/models.lua</a>).
+    </p>
+  </div>
+  <div class="fn">
+    <span class="sig">M.returnToLobby(message)</span>
+    <p>Pops every screen above the server lobby (identified by <code>screen.isServerLobby == true</code>, a flag only <code>lobby.lua</code> sets), then shows <code>message</code> as a toast if given. Used whenever a room/game/trade ends and the player needs to land back at the lobby regardless of how many screens are currently stacked above it.</p>
+  </div>
+  <div class="fn">
+    <span class="sig">M.gameScreen(sc, game, spectating)</span>
+    <p>
+      Builds the actual gameplay screen for a running room: a <code>MP.ClientGame</code> instance from
+      <a href="ui-screens.html">src/ui/screens/multiplayer.lua</a>, which wires the room's live game channel to the
+      shared <a href="ui-table.html">table screen</a>. Spectators are given the id <code>"spectator:" .. sc.self.id</code>
+      (matching a filtering convention the server applies for watch-only viewers). Passes through
+      <code>collectionMode</code> (from the room), a <code>deckStore</code> bound to this server
+      (<code>deckStore.serverStore(sc)</code>, see <a href="data.html">data.html</a>), and an <code>onExit</code>
+      callback that sends <code>roomLeave</code>, closes the game channel, and either pops all the way home (if the
+      connection itself dropped) or returns to the lobby.
+    </p>
+  </div>
+  <div class="fn">
+    <span class="sig">M.enterRoom(sc, room, mode)</span> &nbsp;·&nbsp; <span class="sig">M.openRoomScreen(sc, game, room)</span>
+    <p>
+      <code>enterRoom</code> is the single entry point lobby.lua uses for both "Join" and "Watch" (<code>mode</code>
+      is <code>"join"</code> or <code>"spectate"</code>). It first ensures the game is downloaded
+      (<code>withGame</code>), then re-opens the client's game channel <em>before</em> sending the
+      <code>roomJoin</code>/<code>roomSpectate</code> request — the comment in the code explains why: a room that's
+      already <code>playing</code> pushes <code>gameData</code> + <code>fullState</code> immediately after the
+      reply, so the channel must already exist to catch them. On success it records <code>sc.roomId</code> /
+      <code>sc.spectating</code> and calls <code>openRoomScreen</code>, which pushes either the table (if
+      <code>room.state == "playing"</code>) or <code>room.lua</code> (if still waiting for players).
+    </p>
+  </div>
+  <div class="fn">
+    <span class="sig">M.userRow(sc, user, x, y, w, opts)</span>
+    <p>Draws the small avatar + name row reused by the lobby's user list, the room's seat list, and admin dialogs. Resolves the user's cached avatar image via <code>sc:avatarKey(user.avatarHash)</code> and defers to <code>widgets.avatar</code> for the actual drawing.</p>
+  </div>
+  <div class="fn"><span class="sig">M.timeLabel(at)</span><p>Formats a Unix timestamp as <code>HH:MM</code> for chat timestamps.</p></div>
+
+  <h2 id="login">login.lua — sign in / create account</h2>
+  <div class="filecard">
+    <div class="path">src/ui/screens/server/login.lua</div>
+    <div class="role">First screen after connecting: resumes a remembered session, or collects email/password (or a new account's details).</div>
+  </div>
+  <p>
+    <code>L.new(sc)</code> looks up a saved session for this server via <code>SC.savedSession(sc.key)</code>
+    (<code>SC</code> = <code>src/net/server_client.lua</code>, keyed per-server so multiple servers each keep their
+    own remembered login). If a session exists <em>and</em> was saved with "Remember me" checked, it immediately
+    fires a <code>resume</code> request with the stored token so the player skips straight to the lobby; a session
+    saved before "Remember me" existed is discarded rather than silently auto-signing-in. If resume fails, the
+    stored session is forgotten and the normal sign-in form shows (with the saved email pre-filled unless it's a
+    "disconnected" error).
+  </p>
+  <p>The screen has two modes, toggled by a <code>ui.segmented</code> control when the server allows registration (<code>sc.info.registrationOpen</code>):</p>
+  <ul>
+    <li><strong>Sign In</strong> (<code>L:submitSignIn</code>) — email + password, "Remember me" checkbox. Sends <code>login</code> with <code>passwordHash = SC.passwordHash(email, password)</code> — the password is hashed client-side before it ever goes on the wire (see the Security notes on <a href="server.html">Cardflux Server (Go)</a>).</li>
+    <li><strong>Create Account</strong> (<code>L:submitCreate</code>) — validates email format, password length (≥6) and confirmation match, lets the player pick a name, color (<code>colorpicker.field</code>) and an optional avatar image (via <a href="platform.html">file_dialog.lua</a>, resized by <code>profile.resizeAvatarBytes</code> and base64-encoded for the <code>register</code> request).</li>
+  </ul>
+  <p>
+    Both paths funnel into <code>L:signedIn(r, email, remember)</code>, which stores <code>sc.token</code> and
+    <code>sc.self</code>, persists or clears the remembered session (<code>SC.saveSession</code> /
+    <code>SC.clearSession</code>), and replaces this screen with <code>lobby.lua</code>.
+    <code>L:onBack()</code> disconnects the socket entirely rather than just popping the screen.
+  </p>
+
+  <h2 id="lobby">lobby.lua — the server lobby</h2>
+  <div class="filecard">
+    <div class="path">src/ui/screens/server/lobby.lua</div>
+    <div class="role">The server's hub: a list of games (rooms) to join/watch, server-wide chat, who's online, and the entry points into Deck Editor, Card Shop, Collection and Admin.</div>
+  </div>
+  <p>This is the largest and most central of the server screens. <code>Lobby.new(sc)</code> sets <code>isServerLobby = true</code> (the flag <code>common.returnToLobby</code> looks for) and subscribes to several server-pushed events via <code>sc:on(event, handler)</code>:</p>
+  <table>
+    <tr><th>Event</th><th>Handler behavior</th></tr>
+    <tr><td><code>disconnected</code></td><td>Pops all the way to Home with the disconnect reason.</td></tr>
+    <tr><td><code>roomClosed</code></td><td>If this client was in that room (<code>mine</code>), closes the game channel and returns to the lobby with a human-readable reason from <code>CLOSE_REASONS</code> (closed by owner, idle timeout, start error).</td></tr>
+    <tr><td><code>tradeInvite</code></td><td><code>Lobby:onTradeInvite</code> — another player wants to trade; shows an accept/decline dialog that sends <code>tradeRespond</code>.</td></tr>
+    <tr><td><code>tradeClosed</code></td><td><code>Lobby:onTradeClosed</code> — the trade we sent/received closed (declined, expired, left, completed); closes whichever waiting dialog is open and, if the Trade screen is currently showing, returns to the lobby with a message.</td></tr>
+    <tr><td><code>trade</code></td><td><code>Lobby:onTradeUpdate</code> — a trade we're part of just started or changed; pushes <a href="#trade">trade.lua</a> if it isn't already showing.</td></tr>
+  </table>
+  <p>
+    Note the comment in <code>onTradeClosed</code> explaining a deliberate design choice: whether the Trade screen is
+    currently open is read directly off <code>app().top()</code> rather than tracked in a separate boolean, because a
+    flag set only when <em>this</em> code pushes Trade and cleared only when <em>this</em> code pops it would get
+    stuck in states reached some other way (e.g. the server pushing <code>tradeClosed</code> only to the
+    <em>other</em> player).
+  </p>
+  <h3>Creating a game</h3>
+  <p>
+    <code>Lobby:openCreateGame()</code> pushes a small inline screen (<code>GameChoice</code>, defined in this file)
+    that reuses <code>decks.drawGameList</code> to show the server's games as tiles. Picking one pops back to the
+    lobby and opens <code>Lobby:openCreateGameDialog(game)</code> — a dialog for a name and player count (1–8) — whose
+    "Create" action calls <code>Lobby:createGame(st)</code>: downloads the game (<code>common.withGame</code>), opens
+    the game channel, then sends <code>roomCreate</code> and on success stores <code>sc.roomId</code> and calls
+    <code>common.openRoomScreen</code>.
+  </p>
+  <h3>Trading</h3>
+  <p>
+    <code>Lobby:askToTrade(u)</code> reuses the same <code>GameChoice</code> tile picker to choose which game to
+    trade cards from, then <code>Lobby:sendTradeRequest(u, g)</code> sends <code>tradeRequest</code> and shows a
+    "Waiting for &lt;name&gt; to respond..." dialog with a spinner until the <code>trade</code> or
+    <code>tradeClosed</code> event resolves it. The entry point for this is a right-click context menu on another
+    online user's row in <code>drawUsers</code> — only offered when collection mode is on and that user isn't
+    currently in a room.
+  </p>
+  <h3>Profile editing</h3>
+  <p>
+    <code>Lobby:openProfile()</code> is a large dialog for editing the player's name, avatar, color and (optionally)
+    password on this specific server — distinct from the local <code>App.profile</code> edited in
+    <a href="ui-screens.html">settings_dialog.lua</a>, since a server account can have its own name/avatar/color per
+    server. "Save" builds a minimal diff payload (only changed fields) for <code>profileUpdate</code>; "Log Out"
+    calls <code>Lobby:logOut()</code>, which clears the remembered session and sends <code>logout</code>.
+  </p>
+  <h3>Drawing: three-pane layout</h3>
+  <p>
+    <code>Lobby:draw(x, y, w, h)</code> lays out a header (<code>drawHeader</code> — server name/MOTD on the left,
+    profile button, Admin/Collection/Deck Editor/Card Shop buttons and the token balance chip on the right, each only
+    shown when relevant — e.g. Admin only for <code>sc:isAdmin()</code>, Collection/Shop only in collection mode)
+    above three columns: a scrollable room list (<code>drawRooms</code> → <code>drawRoom</code> per room, with
+    Join/Watch/Rejoin/End buttons depending on state and ownership), a chat pane (<code>drawChat</code>, auto-scrolls
+    to the newest message), and — only when the window is wide enough (<code>w >= 1180</code>) — an online-users
+    column (<code>drawUsers</code>, right-click menu for trade invites, admin shield icon).
+  </p>
+
+  <h2 id="room">room.lua — pre-game seating</h2>
+  <div class="filecard">
+    <div class="path">src/ui/screens/server/room.lua</div>
+    <div class="role">A created-but-not-started game: seat list (reorderable by the creator) and room chat. Hands off to the table once the host starts it.</div>
+  </div>
+  <p>
+    <code>R:update()</code> is the key mechanism here: it polls <code>sc.channel.lastGameData</code> every frame,
+    and the instant it becomes set (the server just started the game and pushed <code>gameData</code>) it replaces
+    this screen with <code>common.gameScreen(...)</code> — the comment notes <code>fullState</code> arrives right
+    after <code>gameData</code>, so the table screen picks it up once mounted.
+  </p>
+  <p>
+    The room owner (<code>room.ownerId == sc.self.id</code>, and not spectating) sees up/down arrows next to each
+    occupied seat (<code>R:moveSeat</code>, sends <code>roomSeats</code> with the new order — seat order becomes turn
+    order) and a "Start Game" button (<code>R:start</code>, sends <code>roomStart</code>). Everyone else sees a
+    spinner and "Waiting for &lt;creator&gt; to start the game...". <code>R:onBack()</code> sends
+    <code>roomLeave</code> and closes the channel. <code>drawChat</code> mirrors the lobby's chat widget but scoped to
+    <code>sc.roomChat</code> and tagged with <code>roomId</code> on send.
+  </p>
+
+  <h2 id="decks">decks.lua — server deck editor entry</h2>
+  <div class="filecard">
+    <div class="path">src/ui/screens/server/decks.lua</div>
+    <div class="role">Pick one of the server's games, then open the shared Deck Editor against server-stored decks (and, in collection mode, a card pool limited to owned copies).</div>
+  </div>
+  <p>
+    This file's most reused export is <code>D.drawGameList(sc, id, x, y, w, h, subtitle, onPick, opts)</code> — a
+    generic "choose one of this server's games" tile grid built on
+    <a href="ui-screens.html">game_picker.lua</a>'s <code>GamePicker.drawGrid</code>. It's called not just from this
+    screen's own <code>draw</code>, but also from <code>lobby.lua</code>'s <code>GameChoice</code>,
+    <code>collection.lua</code>, <code>shop.lua</code>, and anywhere else a "pick a game on this server" step is
+    needed — <code>opts.excludeStandardDeck</code> hides the built-in 52-card deck where it wouldn't make sense
+    (e.g. decks, collection, shop).
+  </p>
+  <p>
+    <code>D:open(info)</code> downloads the game, builds a <code>deckStore.serverStore(sc)</code>, and — in
+    collection mode — first fetches <code>collectionGet</code> so the editor can be told which cards (and how many
+    copies) the player actually owns (<code>ownedQty</code>), restricting what can be added to a deck. It then pushes
+    <code>src/ui/screens/deck_editor.lua</code>'s <code>Editor</code> (documented on <a href="ui-screens.html">Screens</a>) configured with that store.
+  </p>
+
+  <h2 id="collection">collection.lua — browse owned cards</h2>
+  <div class="filecard">
+    <div class="path">src/ui/screens/server/collection.lua</div>
+    <div class="role">Collection mode only: browse every card you own for a game, with filters, an "Owned only" toggle, and ownership-count badges. Packs are bought elsewhere (shop.lua).</div>
+  </div>
+  <p>
+    <code>C:open(info)</code> downloads the game and fetches <code>collectionGet</code> to get <code>r.cards</code>
+    — a map of <code>definitionId → ownedCount</code>. <code>C:drawCollection</code> renders the same card-pool tile
+    grid used by the Deck Editor's pool (<code>POOL_SCALE = 4/3</code> larger than table size, 3 lines of name,
+    reusing <a href="ui-table.html#card-render">card_render.lua</a>'s <code>CR.draw</code>), filtered by the shared
+    <a href="ui-framework.html">card_filter_bar</a> widget plus a local "Owned only" checkbox.
+  </p>
+  <p>
+    Cards marked <code>isFreeCard</code> are always shown as owned (∞ badge) and excluded from the
+    distinct/total counts; everything else shows a <code>×N</code> badge for owned copies and is drawn at 25% alpha
+    when the count is zero (so the full card list is still browsable, just visibly "not yours yet"). Hovering while
+    holding Space shows the same large card preview used throughout the app
+    (<code>CR.drawPreview</code>). <code>unownable</code> cards (the collection-mode equivalent of "always
+    available") are filtered out entirely since they're never part of a collection.
+  </p>
+
+  <h2 id="shop">shop.lua — card shop (packs &amp; starters)</h2>
+  <div class="filecard">
+    <div class="path">src/ui/screens/server/shop.lua</div>
+    <div class="role">Collection mode only: spend tokens on booster packs per set, and on starter decks. Reuses the Pack Generator's own algorithm, executed on the server.</div>
+  </div>
+  <p>
+    <code>S:drawShop</code> shows the player's token balance and per-pack/per-starter cost (server-configured, see
+    <a href="#admin">admin.lua</a>'s Server settings tab), then a tile grid of the game's sets (as packs) using
+    set art resolved via <a href="data.html">image_resolver.lua</a>'s <code>resolveImageAnyExt</code>, falling back
+    to the game's default card back image. A second row of tiles covers starter decks, read from
+    <code>self.info.starterDecks</code> (metadata sent alongside the game list).
+  </p>
+  <div class="fn">
+    <span class="sig">S:buyPack(set)</span>
+    <p>Sends <code>packBuy</code> with the game and set id. The server runs the same pack-opening algorithm as the <a href="core.html#pack-generator-lua">Pack Generator widget</a> (<code>src/core/pack_generator.lua</code>) — see the note on <a href="server.html">server.html</a> about the server executing a mirrored copy of the client's Lua rules via gopher-lua. On success it updates the local owned-card tally and <code>sc.self.tokens</code>, then reveals the pack.</p>
+  </div>
+  <div class="fn">
+    <span class="sig">S:buyStarter(starter)</span>
+    <p>Sends <code>starterBuy</code>; on success the granted cards are both added to the collection <em>and</em> saved as a new deck on the server (toast shows <code>r.savedName</code>), then the pack reveal plays with the starter's name as the title.</p>
+  </div>
+  <div class="fn">
+    <span class="sig">S:revealPack(cards, title)</span> &nbsp;·&nbsp; <span class="sig">S:showPackSummary(cards, title)</span>
+    <p>
+      The opened pack is revealed one card at a time in a dialog ("Next Card" / "Show All" once on the
+      last card, or "Skip" to jump straight to the summary) — each new-to-the-collection card gets a green "NEW"
+      badge (<code>newBadge</code>). <code>showPackSummary</code> then lays out every card from the pack in the same
+      tile-grid style as the pool, with the Space-preview overlay available while hovering.
+    </p>
+  </div>
+
+  <h2 id="trade">trade.lua — player-to-player trading</h2>
+  <div class="filecard">
+    <div class="path">src/ui/screens/server/trade.lua</div>
+    <div class="role">Collection mode only: two players build "want" offers by dragging cards from each other's collections; the server swaps everything once both sides confirm.</div>
+  </div>
+  <p>
+    <code>T.new(sc, game)</code> sets <code>isTradeScreen = true</code> (the flag <code>lobby.lua</code>'s
+    <code>onTradeClosed</code>/<code>onTradeUpdate</code> check for) and immediately requests both parties'
+    collections (<code>T:refreshMine</code> via <code>collectionGet</code>, <code>T:refreshTheirs</code> via
+    <code>tradeCollectionGet</code> — a trade-scoped variant so a player can see what their counterpart owns without
+    a general "view anyone's collection" permission).
+  </p>
+  <h3>Drag-to-offer</h3>
+  <p>
+    This is the one screen in the server UI that implements its own custom drag gesture rather than reusing the
+    table's drag system. <code>T:updateDrag()</code> runs a simplified press→threshold→drag state machine
+    (<code>DRAG_THRESHOLD = 4</code> px, same idea as <a href="ui-table.html">table_screen.lua</a>'s drag pipeline
+    but trimmed to a single fixed drop target): pressing a card in the <em>partner's</em> collection grid
+    (<code>T:drawGrid</code> with <code>draggable = true</code>) arms <code>self.pressing</code>; moving past the
+    threshold promotes it to <code>self.dragging</code>; releasing over <code>self.myWantBoxRect</code> sends
+    <code>tradeOffer</code> with <code>delta = 1</code>. <code>T:drawDragFeedback</code> draws the floating card and
+    highlights the want-box while hovering it.
+  </p>
+  <p>
+    Removing a card from your own want box is just a click (not a drag) — each tile in
+    <code>T:drawWantBox</code> is a clickable region when <code>mine == true</code>, sending <code>tradeOffer</code>
+    with <code>delta = -1</code>.
+  </p>
+  <h3>Layout</h3>
+  <p>
+    Two "Wants" boxes side-by-side at the top (yours and theirs — <code>T:drawWantBox</code>, populated from
+    <code>trade.offers[partyId].cards</code>), a tab bar below switching between "Your Collection" and
+    "&lt;name&gt;'s Collection" grids (only the partner's is draggable), a Confirm/Confirmed button
+    (<code>T:drawConfirm</code>, sends <code>tradeConfirm</code>), and a chat pane on the right scoped to
+    <code>sc.tradeChat</code>. <code>T:onBack()</code> confirms, then sends <code>tradeLeave</code>.
+  </p>
+
+  <h2 id="admin">admin.lua — server administration</h2>
+  <div class="filecard">
+    <div class="path">src/ui/screens/server/admin.lua</div>
+    <div class="role">Admin-only screen (<code>sc:isAdmin()</code> gate in lobby.lua): four tabs — Users, Server, Games, and Files. 655 lines, the largest server screen.</div>
+  </div>
+  <p>
+    <code>A.new(sc)</code> immediately refreshes two independent datasets: <code>A:refreshUsers()</code>
+    (<code>adminUsers</code>) and <code>A:refreshSettings()</code> (<code>adminSettingsGet</code>, which also
+    returns <code>gameErrors</code> — problems found while loading game folders — and populates
+    <code>self.form</code>, a text-editable mirror of the settings used so number fields can be typed freely before
+    being parsed back on save). The four tabs are a <code>widgets.tabBar</code>.
+  </p>
+  <h3>Users tab — <code>A:drawUsers</code></h3>
+  <p>
+    A searchable (<code>self.search</code> filters by name or email), scrollable table of every account: name,
+    email, token balance, and status tags (Admin / Disabled / Online). Clicking a row opens
+    <code>A:editUser(u)</code>, a dialog covering:
+  </p>
+  <ul>
+    <li>Name, email, "Server admin" and "Account disabled" switches (disabled toggle is itself disabled for your own account to prevent self-lockout).</li>
+    <li>Token balance (direct <code>tokensSet</code>) and a separate "Grant (adds)" field (<code>tokensAdd</code>, can be negative) — sent as a diff so only touched fields are included in the <code>adminUserUpdate</code> request.</li>
+    <li>Password reset (hashed with the <em>new</em> email if that's also changing, before sending).</li>
+    <li>"Clear collection" for a chosen game — a destructive, confirmed action (<code>adminClearCollection</code>) that leaves existing decks intact but missing those cards.</li>
+    <li>"Disconnect" (<code>adminKick</code>) and "Delete Account" (<code>adminUserDelete</code>, confirmed, destructive) — both hidden for your own account.</li>
+  </ul>
+  <h3>Server tab — <code>A:drawServer</code></h3>
+  <p>A single scrollable form, organized under <code>sectionLabel</code> headers:</p>
+  <ul>
+    <li><strong>General</strong> — server name, MOTD, "Allow new accounts" switch.</li>
+    <li><strong>Cards</strong> — Free Play vs. Collection mode segmented control (with inline help text explaining the consequence of switching), starting tokens, pack cost, starter-deck cost, allowance amount and period (Never/Daily/Weekly).</li>
+    <li><strong>Limits</strong> — idle game timeout, max concurrent rooms (0 = unlimited), chat history length.</li>
+    <li><strong>Shutdown</strong> — <code>A:drawShutdown</code>: either a "Shut Down Server" button (confirmed, sends <code>adminShutdown</code> — a graceful shutdown that blocks new connections and waits up to 5 minutes or until everyone leaves) or, while one is pending, a live countdown read from <code>sc.shutdownAt</code>.</li>
+  </ul>
+  <p><code>A:saveSettings()</code> parses every text field back to a number (falling back to the previous value if unparseable) and sends <code>adminSettingsSet</code>.</p>
+  <h3>Games tab — <code>A:drawGames</code></h3>
+  <p>
+    This tab was added recently (see the git history entry "Add a server admin Files tab and Games tab game
+    management"). It lists every game folder the server has scanned, with card/set counts and the folder id, plus:
+  </p>
+  <ul>
+    <li><strong>Upload New Game</strong> (<code>A:uploadGame</code>) — opens a native/in-app zip file picker (<a href="platform.html">file_dialog.lua</a>) and streams it to the server via <code>AGM.installFromZip</code> (<a href="net.html">admin_game_manager.lua</a>), showing upload progress as a percentage.</li>
+    <li><strong>Rescan Games Folder</strong> — sends <code>adminRescanGames</code>, refreshing <code>sc.games</code> and any <code>gameErrors</code> (shown inline in red below the list).</li>
+    <li>A delete icon on any <code>g.removable</code> game (<code>A:removeGame</code>, confirmed, destructive — calls <code>AGM.remove</code>).</li>
+    <li>Below that, a live list of running rooms with an "End" button per room (confirmed, sends <code>adminCloseRoom</code>) — this duplicates the lobby's own per-room "End" for owners/admins but gives admins one place to end <em>any</em> room.</li>
+  </ul>
+  <h3>Files tab — <code>A:drawFiles</code></h3>
+  <p>
+    Also new per the same commit. A per-game file browser over the server's actual game folder, built around
+    <a href="net.html">admin_file_manager.lua</a> (<code>AFM</code>):
+  </p>
+  <ul>
+    <li>A game dropdown switches which game's folder is browsed (resets to the folder root and re-lists on change).</li>
+    <li><strong>Upload</strong> (<code>A:uploadFile</code>) — picks a local file and streams it to the current folder path via <code>AFM.upload</code>, with a progress percentage.</li>
+    <li>Breadcrumb navigation (<code>A:drawFileCrumbs</code>) — clickable "GameName / sub / folder" trail built by splitting <code>self.filesPath</code> on <code>/</code>; an "up one level" icon button strips the last segment.</li>
+    <li>A directory listing (<code>AFM.list</code>) showing folders and files with sizes (<code>formatBytes</code>); clicking a folder row navigates into it (<code>A:navigateFiles</code>).</li>
+    <li>A delete icon per entry (<code>A:deleteFile</code>, confirmed, destructive) with an extra warning specifically when deleting the game's own <code>gamedef.json</code> at the folder root, since that breaks the game until replaced.</li>
+    <li>A footnote that only image/JSON files are actually served to game clients — other uploaded file types just sit unused, which is a hint this tab is really meant for asset management (card art, set logos), not arbitrary file hosting.</li>
+  </ul>
+
+  <h2 id="cross-cutting">Cross-cutting patterns</h2>
+  <ul>
+    <li><strong>Diff-based update payloads.</strong> Both <code>Lobby:openProfile</code>'s Save and <code>A:editUser</code>'s Save build a <code>json.object()</code> containing only the fields that actually changed, rather than resending the whole record — a convention followed throughout this directory wherever a server mutation is partial.</li>
+    <li><strong>Confirm-then-request for destructive actions.</strong> Every irreversible server call (end game, remove game, delete account, disconnect a user, clear a collection, delete a file, shut down the server) is gated behind <code>overlays.confirm(..., { danger = true })</code> before the request is sent.</li>
+    <li><strong>The request/callback convention.</strong> Every <code>sc:request(name, payload, function(r) ... end)</code> callback checks <code>r.ok</code> first and shows <code>overlays.alert</code> or a toast with <code>r.message</code> on failure — this is <code>src/net/server_client.lua</code>'s request/response pattern, detailed on <a href="net.html">Networking</a>.</li>
+    <li><strong>Reused tile grids.</strong> The card-pool tile layout (<code>POOL_SCALE = 4/3</code>, 3 lines of name) appears near-identically in <code>collection.lua</code>, <code>shop.lua</code>'s pack reveal, and <code>trade.lua</code>'s grids, always built on <a href="ui-table.html#card-render">card_render.lua</a>.</li>
+  </ul>
+
+  <div class="nextprev">
+    <a href="ui-gamedef-editor.html">&larr; Game Definition Editor</a>
+    <a href="ui-table.html">Game Table Rendering &rarr;</a>
+  </div>
+</main>
+</body>
+</html>

@@ -1,0 +1,368 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Cardflux Codebase Documentation</title>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+<nav class="sidenav">
+  <a class="brand" href="index.html">Cardflux<small>Codebase Documentation</small></a>
+  <div class="group-label">Application</div>
+  <a href="architecture.html">Architecture &amp; App Lifecycle</a>
+  <a href="ui-framework.html">UI Toolkit (kit)</a>
+  <div class="group-label">User Interface</div>
+  <a href="ui-screens.html">Screens</a>
+  <a href="ui-gamedef-editor.html">Game Definition Editor</a>
+  <a href="ui-server-screens.html">Multiplayer Lobby Screens</a>
+  <a href="ui-table.html">Game Table Rendering</a>
+  <div class="group-label">Engine &amp; Data</div>
+  <a href="core.html">Core Rules Engine</a>
+  <a href="game.html">Game Session &amp; Controller</a>
+  <a href="data.html">Data &amp; Persistence</a>
+  <div class="group-label">Platform &amp; Network</div>
+  <a href="net.html">Networking</a>
+  <a href="platform.html">Platform Integration</a>
+  <div class="group-label">Server</div>
+  <a href="server.html">Cardflux Server (Go)</a>
+  <div class="group-label">Quality</div>
+  <a href="tests-tools.html">Tests &amp; Tools</a>
+</nav>
+<main class="page">
+  <header class="page-head">
+    <div class="crumb">Home</div>
+    <h1>Cardflux Codebase Documentation</h1>
+    <div class="subtitle">A complete, file-by-file map of the Cardflux client and its companion lobby server — what everything is, what it does, and how it's wired together.</div>
+  </header>
+
+  <div class="toc">
+    <div class="toc-title">On this page</div>
+    <ul>
+      <li><a href="#what-is-cardflux">What is Cardflux?</a></li>
+      <li><a href="#big-picture">The big picture</a></li>
+      <li><a href="#how-to-read">How to read this documentation</a></li>
+      <li><a href="#section-application">Application</a></li>
+      <li><a href="#section-ui">User Interface</a></li>
+      <li><a href="#section-engine">Engine &amp; Data</a></li>
+      <li><a href="#section-platform">Platform &amp; Network</a></li>
+      <li><a href="#section-server">Server</a></li>
+      <li><a href="#section-quality">Quality</a></li>
+    </ul>
+  </div>
+
+  <h2 id="what-is-cardflux">What is Cardflux?</h2>
+  <p>
+    Cardflux is a desktop <strong>virtual tabletop for card games</strong>, built with
+    <a href="https://love2d.org/" target="_blank" rel="noopener">LÖVE2D</a> and written entirely in Lua. It
+    presents a game table where cards, piles, hands, zones and board widgets (counters, tokens, pack generators,
+    deck-building widgets) can be dragged, flipped, stacked and shared between players — either on one machine
+    for practice/hot-seat play, directly peer-to-peer over LAN/internet with one player hosting, or through a
+    dedicated lobby server that adds accounts, chat, server-kept decks and an optional collection/pack-opening
+    economy. The project is itself a <strong>port</strong>: much of the code carries comments noting the original
+    <code>.dart</code> file it replaces from an earlier Flutter version of the app, which explains some of its
+    structure (a screen-stack navigator, a profile object, dialog-style overlays) even though none of that
+    Flutter code remains.
+  </p>
+  <p>
+    What a specific game looks like — its cards, board zones, card sets and rules metadata — is not hard-coded.
+    It's data: a <strong>game definition</strong> (<code>gamedef.json</code> plus a folder of set images) that
+    ships with the app, is authored/edited in-app, or is downloaded from a lobby server the first time it's
+    needed. One standard 52-card deck ships built in; everything else is just another game definition.
+  </p>
+
+  <h2 id="big-picture">The big picture</h2>
+  <p>The single most important architectural fact about this codebase, mentioned on nearly every page below, is this:</p>
+  <div class="note">
+    <strong>The card-game rules engine is written once, in Lua, and runs in two different places.</strong>
+    <code>lib/json.lua</code>, every file in <code>src/core/</code>, and <code>src/game/session.lua</code> +
+    <code>src/game/host_engine.lua</code> have <em>no dependency on LÖVE or the UI</em>. That exact set of files
+    is mirrored byte-for-byte into <code>server/engine/</code> (kept in sync by
+    <code>server/tools/sync-engine.ps1</code>) and executed inside the companion <strong>Go</strong> lobby server
+    by <strong>gopher-lua</strong>, a pure-Go Lua virtual machine. The result: a locally-hosted practice game and a
+    game hosted on the dedicated server run the <em>identical</em> rules code, so the server can referee a game
+    authoritatively without Go ever re-implementing a single game rule. See
+    <a href="core.html">Core Rules Engine</a>, <a href="game.html">Game Session &amp; Controller</a> and
+    <a href="server.html">Cardflux Server (Go)</a> for the full detail.
+  </div>
+  <p>Three ways a game can be played, and what runs where:</p>
+  <table>
+    <tr><th>Mode</th><th>Where the rules engine runs</th><th>Transport</th><th>Docs</th></tr>
+    <tr>
+      <td>Practice / hot-seat</td>
+      <td>Inside the one LÖVE client process</td>
+      <td>None (local only)</td>
+      <td><a href="game.html">game.html</a>, <a href="ui-screens.html">ui-screens.html</a></td>
+    </tr>
+    <tr>
+      <td>Direct host &amp; join</td>
+      <td>Inside the hosting player's LÖVE client</td>
+      <td>Raw TCP, optional UPnP port-forward</td>
+      <td><a href="net.html">net.html</a></td>
+    </tr>
+    <tr>
+      <td>Dedicated lobby server</td>
+      <td>Inside the Go server, via the embedded Lua engine</td>
+      <td>Raw TCP to <code>cardflux-server</code></td>
+      <td><a href="server.html">server.html</a>, <a href="ui-server-screens.html">ui-server-screens.html</a></td>
+    </tr>
+  </table>
+  <p>Everything the player actually sees is drawn by a small, hand-rolled <strong>immediate-mode UI toolkit</strong>
+  (<a href="ui-framework.html">ui-framework.html</a>) — there's no retained widget tree; every button, dialog and
+  panel is drawn and hit-tested fresh each frame from inside <code>love.draw</code>. Screens are plain Lua tables
+  pushed onto a stack managed by the application shell (<a href="architecture.html">architecture.html</a>).</p>
+
+  <h2 id="how-to-read">How to read this documentation</h2>
+  <p>Each page below is self-contained and deeply linked to the others, so you can jump straight to whatever
+  you're curious about. If you want a linear path through the whole codebase instead, the sidebar is ordered
+  top-to-bottom as a sensible reading order, and every page ends with a prev/next link that follows the same
+  order. The suggested starting point:</p>
+  <ol>
+    <li><a href="architecture.html">Architecture &amp; App Lifecycle</a> — how the app boots and how screens work.</li>
+    <li><a href="ui-framework.html">UI Toolkit (kit)</a> — the primitives every screen is built from.</li>
+    <li><a href="core.html">Core Rules Engine</a> — the data model and rules every game runs on; arguably the most important page in this set.</li>
+    <li><a href="game.html">Game Session &amp; Controller</a> — how a live session is driven, locally or networked.</li>
+    <li>Then the rest, in whichever order matches what you're investigating.</li>
+  </ol>
+
+  <h2 id="section-application">Application</h2>
+  <div class="filecard">
+    <div class="path"><a href="architecture.html">architecture.html — Architecture &amp; App Lifecycle</a></div>
+    <div class="role">The LÖVE2D entry points and the application shell that every screen runs inside of.</div>
+    <ul>
+      <li><a href="architecture.html#love-callback-model">The LÖVE2D callback model</a></li>
+      <li><a href="architecture.html#conf-lua">conf.lua: window &amp; test-mode setup</a></li>
+      <li><a href="architecture.html#main-lua">main.lua: entry point &amp; the custom love.run</a></li>
+      <li><a href="architecture.html#test-mode">Test mode</a></li>
+      <li><a href="architecture.html#version-lua">version.lua</a></li>
+      <li><a href="architecture.html#app-shell">src/app.lua: the application shell</a></li>
+      <li><a href="architecture.html#screen-stack">The screen stack</a></li>
+      <li><a href="architecture.html#screen-contract">The screen contract</a></li>
+      <li><a href="architecture.html#player-profile">Player profile</a></li>
+      <li><a href="architecture.html#discord-invites">Discord join invites</a></li>
+      <li><a href="architecture.html#ui-scale">UI scale &amp; DPI</a></li>
+      <li><a href="architecture.html#title-bar">The custom title bar</a></li>
+      <li><a href="architecture.html#dev-hooks">Developer hooks</a></li>
+      <li><a href="architecture.html#love-forwarders">LÖVE callback forwarders &amp; the global tick</a></li>
+      <li><a href="architecture.html#quit">Shutdown (App.quit)</a></li>
+    </ul>
+  </div>
+  <div class="filecard">
+    <div class="path"><a href="ui-framework.html">ui-framework.html — UI Toolkit (kit)</a></div>
+    <div class="role">The hand-rolled immediate-mode UI framework every screen, dialog and widget in Cardflux is built on.</div>
+    <ul>
+      <li><a href="ui-framework.html#ui-lua">ui.lua: the immediate-mode core</a></li>
+      <li><a href="ui-framework.html#theme-lua">theme.lua: colors, fonts, icons</a></li>
+      <li><a href="ui-framework.html#widgets-lua">widgets.lua: composite widgets</a></li>
+      <li><a href="ui-framework.html#overlays-lua">overlays.lua: dialogs, menus, toasts</a></li>
+      <li><a href="ui-framework.html#colorpicker-lua">colorpicker.lua</a></li>
+      <li><a href="ui-framework.html#filter-menu-lua">filter_menu.lua</a></li>
+      <li><a href="ui-framework.html#card-filter-bar-lua">card_filter_bar.lua</a></li>
+      <li><a href="ui-framework.html#save-name-dialog-lua">save_name_dialog.lua</a></li>
+    </ul>
+  </div>
+
+  <h2 id="section-ui">User Interface</h2>
+  <div class="filecard">
+    <div class="path"><a href="ui-screens.html">ui-screens.html — Screens</a></div>
+    <div class="role">General-purpose screens that make up the app's primary navigation flow.</div>
+    <ul>
+      <li><a href="ui-screens.html#home">home.lua — Home</a></li>
+      <li><a href="ui-screens.html#game-picker">game_picker.lua — Game Picker</a></li>
+      <li><a href="ui-screens.html#player-count">player_count.lua — Player Count</a></li>
+      <li><a href="ui-screens.html#practice-select">practice_select.lua — Practice Game Select</a></li>
+      <li><a href="ui-screens.html#practice-game">practice_game.lua — Practice Game</a></li>
+      <li><a href="ui-screens.html#multiplayer">multiplayer.lua — Host / Join / Play Online</a></li>
+      <li><a href="ui-screens.html#load-saved-game">load_saved_game.lua — Load a Saved Game</a></li>
+      <li><a href="ui-screens.html#deck-editor">deck_editor.lua — Deck Editor</a></li>
+      <li><a href="ui-screens.html#deck-library-dialog">deck_library_dialog.lua — Load/Save Deck dialog</a></li>
+      <li><a href="ui-screens.html#file-picker-dialog">file_picker_dialog.lua — In-app file picker</a></li>
+      <li><a href="ui-screens.html#controls-dialog">controls_dialog.lua — Controls (Markdown renderer)</a></li>
+      <li><a href="ui-screens.html#settings-dialog">settings_dialog.lua — Settings</a></li>
+      <li><a href="ui-screens.html#support-dialog">support_dialog.lua — Support the Author</a></li>
+    </ul>
+  </div>
+  <div class="filecard">
+    <div class="path"><a href="ui-gamedef-editor.html">ui-gamedef-editor.html — Game Definition Editor</a></div>
+    <div class="role">The in-app editor for authoring a game's cards, zones, sets and rules.</div>
+    <ul>
+      <li><a href="ui-gamedef-editor.html#overview">What a "game definition" is</a></li>
+      <li><a href="ui-gamedef-editor.html#gamedef-editor">gamedef_editor.lua — Entry &amp; Editor</a></li>
+      <li><a href="ui-gamedef-editor.html#common">gamedef/common.lua — shared helpers</a></li>
+      <li><a href="ui-gamedef-editor.html#settings-tab">gamedef/settings_tab.lua — General tab</a></li>
+      <li><a href="ui-gamedef-editor.html#zones-tab">gamedef/zones_tab.lua — Zones tab</a></li>
+      <li><a href="ui-gamedef-editor.html#sets-tab">gamedef/sets_tab.lua — Sets tab</a></li>
+      <li><a href="ui-gamedef-editor.html#card-view-tab">gamedef/card_view_tab.lua — Cards tab</a></li>
+      <li><a href="ui-gamedef-editor.html#dialogs">gamedef/dialogs.lua — Tools-menu dialogs</a></li>
+    </ul>
+  </div>
+  <div class="filecard">
+    <div class="path"><a href="ui-server-screens.html">ui-server-screens.html — Multiplayer Lobby Screens</a></div>
+    <div class="role">Screens for connecting to and playing on a Cardflux lobby server.</div>
+    <ul>
+      <li><a href="ui-server-screens.html#common">common.lua — shared helpers</a></li>
+      <li><a href="ui-server-screens.html#login">login.lua — sign in / create account</a></li>
+      <li><a href="ui-server-screens.html#lobby">lobby.lua — the server lobby</a></li>
+      <li><a href="ui-server-screens.html#room">room.lua — pre-game seating</a></li>
+      <li><a href="ui-server-screens.html#decks">decks.lua — server deck editor entry</a></li>
+      <li><a href="ui-server-screens.html#collection">collection.lua — browse owned cards</a></li>
+      <li><a href="ui-server-screens.html#shop">shop.lua — card shop (packs &amp; starters)</a></li>
+      <li><a href="ui-server-screens.html#trade">trade.lua — player-to-player trading</a></li>
+      <li><a href="ui-server-screens.html#admin">admin.lua — server administration</a></li>
+      <li><a href="ui-server-screens.html#cross-cutting">Cross-cutting patterns</a></li>
+    </ul>
+  </div>
+  <div class="filecard">
+    <div class="path"><a href="ui-table.html">ui-table.html — Game Table Rendering</a></div>
+    <div class="role">The virtual tabletop — rendering, camera, drag-and-drop and selection for live play.</div>
+    <ul>
+      <li><a href="ui-table.html#table-screen">table_screen.lua — state &amp; behavior</a></li>
+      <li><a href="ui-table.html#table-view">table_view.lua — camera, layout &amp; drawing</a></li>
+      <li><a href="ui-table.html#card-render">card_render.lua — drawing a single card</a></li>
+      <li><a href="ui-table.html#selection">selection.lua — box-select geometry</a></li>
+      <li><a href="ui-table.html#controls-mapping">How this maps to CONTROLS.md</a></li>
+    </ul>
+  </div>
+
+  <h2 id="section-engine">Engine &amp; Data</h2>
+  <div class="filecard">
+    <div class="path"><a href="core.html">core.html — Core Rules Engine <span class="badge lua">Lua</span></a></div>
+    <div class="role">The platform-agnostic card-game rules engine shared, byte-for-byte, by the client and the server.</div>
+    <ul>
+      <li><a href="core.html#shared-engine">Why this folder is special: one ruleset, two runtimes</a></li>
+      <li><a href="core.html#json-lua">lib/json.lua — JSON codec</a></li>
+      <li><a href="core.html#models-lua">models.lua — the data model</a></li>
+      <li><a href="core.html#geometry-lua">geometry.lua — table coordinates</a></li>
+      <li><a href="core.html#color-lua">color.lua — ARGB colors</a></li>
+      <li><a href="core.html#util-lua">util.lua — shared helpers</a></li>
+      <li><a href="core.html#uuid-lua">uuid.lua — id generation</a></li>
+      <li><a href="core.html#seat-utils-lua">seat_utils.lua — hand layout / mirroring</a></li>
+      <li><a href="core.html#stack-utils-lua">stack_utils.lua — pile math</a></li>
+      <li><a href="core.html#state-filter-lua">state_filter.lua — hiding private info</a></li>
+      <li><a href="core.html#card-filters-lua">card_filters.lua — sorting &amp; filtering</a></li>
+      <li><a href="core.html#table-actions-lua">table_actions.lua — the state-transition engine</a></li>
+      <li><a href="core.html#deck-widget-zones-lua">deck_widget_zones.lua — synthetic zone ids</a></li>
+      <li><a href="core.html#pack-generator-lua">pack_generator.lua — pack-opening algorithm</a></li>
+      <li><a href="core.html#save-remap-lua">save_remap.lua — reloading saved games</a></li>
+    </ul>
+  </div>
+  <div class="filecard">
+    <div class="path"><a href="game.html">game.html — Game Session &amp; Controller <span class="badge lua">Lua</span></a></div>
+    <div class="role">Wiring a live game session to the table screen, locally or over the network.</div>
+    <ul>
+      <li><a href="game.html#overview">How a game actually runs, end to end</a></li>
+      <li><a href="game.html#session-lua">session.lua — the authoritative game state</a></li>
+      <li><a href="game.html#host-engine-lua">host_engine.lua — the host's authoritative loop</a></li>
+      <li><a href="game.html#controller-lua">controller.lua — what the table UI talks to</a></li>
+      <li><a href="game.html#sound-lua">sound.lua — fire-and-forget sound effects</a></li>
+    </ul>
+  </div>
+  <div class="filecard">
+    <div class="path"><a href="data.html">data.html — Data &amp; Persistence</a></div>
+    <div class="role">Settings, saves, decks, game libraries and the threaded image cache — everything the client reads and writes on disk.</div>
+    <ul>
+      <li><a href="data.html#layout">Save-directory layout</a></li>
+      <li><a href="data.html#paths">paths.lua — well-known locations</a></li>
+      <li><a href="data.html#fs">fs.lua — absolute-path filesystem access</a></li>
+      <li><a href="data.html#settings">settings.lua — key/value store</a></li>
+      <li><a href="data.html#profile">profile.lua — player profile, reconnect &amp; avatar</a></li>
+      <li><a href="data.html#hand-table-settings">hand_settings.lua &amp; table_settings.lua</a></li>
+      <li><a href="data.html#save-files">save_files.lua — save games &amp; game logs</a></li>
+      <li><a href="data.html#game-loader">game_loader.lua — loading a game library</a></li>
+      <li><a href="data.html#gamedef-ops">gamedef_ops.lua — editor file helpers</a></li>
+      <li><a href="data.html#deck-library">deck_library.lua — scanning deck files</a></li>
+      <li><a href="data.html#deck-store">deck_store.lua — local vs. server deck storage</a></li>
+      <li><a href="data.html#image-pipeline">The image pipeline (cache, resolver, worker)</a></li>
+    </ul>
+  </div>
+
+  <h2 id="section-platform">Platform &amp; Network</h2>
+  <div class="filecard">
+    <div class="path"><a href="net.html">net.html — Networking <span class="badge lua">Lua</span></a></div>
+    <div class="role">Direct peer-to-peer hosting, UPnP port-forwarding, and the lobby-server protocol client.</div>
+    <ul>
+      <li><a href="net.html#two-hosting-modes">Two hosting modes</a></li>
+      <li><a href="net.html#protocol">protocol.lua — wire format</a></li>
+      <li><a href="net.html#netinfo">netinfo.lua — local/public IP discovery</a></li>
+      <li><a href="net.html#upnp">upnp.lua &amp; upnp_worker.lua — automatic port forwarding</a></li>
+      <li><a href="net.html#host-server">host_server.lua — direct-hosting the lobby</a></li>
+      <li><a href="net.html#game-client">game_client.lua — joining a peer host or a server</a></li>
+      <li><a href="net.html#server-client">server_client.lua — the lobby-server protocol client</a></li>
+      <li><a href="net.html#admin-file-manager">admin_file_manager.lua — admin file browsing/upload</a></li>
+      <li><a href="net.html#admin-game-manager">admin_game_manager.lua — install/remove games</a></li>
+      <li><a href="net.html#admin-upload-worker">admin_upload_worker.lua — upload thread body</a></li>
+      <li><a href="net.html#asset-sync">asset_sync.lua — game asset caching</a></li>
+      <li><a href="net.html#asset-worker">asset_worker.lua — download thread body</a></li>
+    </ul>
+  </div>
+  <div class="filecard">
+    <div class="path"><a href="platform.html">platform.html — Platform Integration</a></div>
+    <div class="role">Windows-native integration: borderless window, raw HTTPS, hidden process launches, file dialogs, self-updates and Discord presence.</div>
+    <ul>
+      <li><a href="platform.html#window">window.lua — borderless window chrome</a></li>
+      <li><a href="platform.html#winproc">winproc.lua — hidden process launches</a></li>
+      <li><a href="platform.html#winhttp">winhttp.lua — HTTPS without LuaSocket</a></li>
+      <li><a href="platform.html#file-dialog">file_dialog.lua — file/folder pickers</a></li>
+      <li><a href="platform.html#updater">updater.lua &amp; update_worker.lua — self-updates</a></li>
+      <li><a href="platform.html#discord">discord.lua — Rich Presence &amp; invites</a></li>
+    </ul>
+  </div>
+
+  <h2 id="section-server">Server</h2>
+  <div class="filecard">
+    <div class="path"><a href="server.html">server.html — Cardflux Server <span class="badge go">Go</span></a></div>
+    <div class="role">The dedicated lobby server: accounts, rooms, chat, decks, trading and admin tools, backed by SQLite and an embedded copy of the client's own Lua rules engine.</div>
+    <ul>
+      <li><a href="server.html#why-go-embeds-a-lua-engine">Why Go embeds a Lua engine</a></li>
+      <li><a href="server.html#cmd-main">cmd/cardflux-server/main.go — entrypoint</a></li>
+      <li><a href="server.html#embed-go">embed.go — embedding the engine files</a></li>
+      <li><a href="server.html#engine-go">internal/engine/engine.go — the gopher-lua bridge</a></li>
+      <li><a href="server.html#room-lua">The engine mirror &amp; room.lua</a></li>
+      <li><a href="server.html#server-go">internal/server/server.go — connection lifecycle</a></li>
+      <li><a href="server.html#auth-go">auth.go — accounts &amp; sessions</a></li>
+      <li><a href="server.html#lobby-go">lobby.go — roster, chat, game list</a></li>
+      <li><a href="server.html#rooms-go">rooms.go — rooms &amp; the per-room goroutine</a></li>
+      <li><a href="server.html#decks-go">decks.go — decks, collections &amp; packs</a></li>
+      <li><a href="server.html#trade-go">trade.go — player-to-player trading</a></li>
+      <li><a href="server.html#admin-go">admin*.go — administration</a></li>
+      <li><a href="server.html#assets-go">assets.go — the asset channel</a></li>
+      <li><a href="server.html#shutdown-go">shutdown.go — graceful shutdown</a></li>
+      <li><a href="server.html#store-go">internal/store/store.go — SQLite persistence</a></li>
+      <li><a href="server.html#games-go">internal/games/games.go — the game library</a></li>
+      <li><a href="server.html#proto-go">internal/proto/proto.go — wire protocol types</a></li>
+      <li><a href="server.html#security">Security notes</a></li>
+      <li><a href="server.html#dev-tooling">Development &amp; tooling</a></li>
+    </ul>
+  </div>
+
+  <h2 id="section-quality">Quality</h2>
+  <div class="filecard">
+    <div class="path"><a href="tests-tools.html">tests-tools.html — Tests &amp; Tools</a></div>
+    <div class="role">The Lua unit test suite, its hand-rolled harness, and the standalone compatibility-check tool.</div>
+    <ul>
+      <li><a href="tests-tools.html#running">Running the test suite</a></li>
+      <li><a href="tests-tools.html#runner">tests/runner.lua — the harness</a></li>
+      <li><a href="tests-tools.html#helpers">tests/helpers.lua — shared fixtures</a></li>
+      <li><a href="tests-tools.html#models-test">models_test.lua</a></li>
+      <li><a href="tests-tools.html#utils-test">utils_test.lua</a></li>
+      <li><a href="tests-tools.html#table-actions-test">table_actions_test.lua</a></li>
+      <li><a href="tests-tools.html#selection-test">selection_test.lua</a></li>
+      <li><a href="tests-tools.html#session-test">session_test.lua</a></li>
+      <li><a href="tests-tools.html#data-test">data_test.lua</a></li>
+      <li><a href="tests-tools.html#net-test">net_test.lua</a></li>
+      <li><a href="tests-tools.html#server-client-test">server_client_test.lua</a></li>
+      <li><a href="tests-tools.html#platform-test">platform_test.lua</a></li>
+      <li><a href="tests-tools.html#updater-test">updater_test.lua</a></li>
+      <li><a href="tests-tools.html#asset-worker-test">asset_worker_test.lua</a></li>
+      <li><a href="tests-tools.html#deck-editor-test">deck_editor_test.lua</a></li>
+      <li><a href="tests-tools.html#compat-check">tools/compat_check — compatibility tool</a></li>
+      <li><a href="tests-tools.html#go-tests">Go-side tests (server)</a></li>
+    </ul>
+  </div>
+
+  <div class="nextprev">
+    <span></span>
+    <a href="architecture.html">Start reading: Architecture &amp; App Lifecycle &rarr;</a>
+  </div>
+</main>
+</body>
+</html>

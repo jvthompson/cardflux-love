@@ -1,0 +1,457 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Core Rules Engine — Cardflux Docs</title>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+<nav class="sidenav">
+  <a class="brand" href="index.html">Cardflux<small>Codebase Documentation</small></a>
+  <div class="group-label">Application</div>
+  <a href="architecture.html">Architecture &amp; App Lifecycle</a>
+  <a href="ui-framework.html">UI Toolkit (kit)</a>
+  <div class="group-label">User Interface</div>
+  <a href="ui-screens.html">Screens</a>
+  <a href="ui-gamedef-editor.html">Game Definition Editor</a>
+  <a href="ui-server-screens.html">Multiplayer Lobby Screens</a>
+  <a href="ui-table.html">Game Table Rendering</a>
+  <div class="group-label">Engine &amp; Data</div>
+  <a href="core.html" class="current">Core Rules Engine</a>
+  <a href="game.html">Game Session &amp; Controller</a>
+  <a href="data.html">Data &amp; Persistence</a>
+  <div class="group-label">Platform &amp; Network</div>
+  <a href="net.html">Networking</a>
+  <a href="platform.html">Platform Integration</a>
+  <div class="group-label">Server</div>
+  <a href="server.html">Cardflux Server (Go)</a>
+  <div class="group-label">Quality</div>
+  <a href="tests-tools.html">Tests &amp; Tools</a>
+</nav>
+<main class="page">
+  <header class="page-head">
+    <div class="crumb"><a href="index.html">Home</a> / Engine &amp; Data</div>
+    <h1>Core Rules Engine <span class="badge lua">Lua</span></h1>
+    <div class="subtitle">The platform-agnostic card-game rules engine shared, byte-for-byte, by the client and the server.</div>
+  </header>
+
+  <div class="toc">
+    <div class="toc-title">On this page</div>
+    <ul>
+      <li><a href="#shared-engine">Why this folder is special: one ruleset, two runtimes</a></li>
+      <li><a href="#json-lua">lib/json.lua — JSON codec</a></li>
+      <li><a href="#models-lua">models.lua — the data model</a></li>
+      <li><a href="#geometry-lua">geometry.lua — table coordinates</a></li>
+      <li><a href="#color-lua">color.lua — ARGB colors</a></li>
+      <li><a href="#util-lua">util.lua — shared helpers</a></li>
+      <li><a href="#uuid-lua">uuid.lua — id generation</a></li>
+      <li><a href="#seat-utils-lua">seat_utils.lua — hand layout / mirroring</a></li>
+      <li><a href="#stack-utils-lua">stack_utils.lua — pile math</a></li>
+      <li><a href="#state-filter-lua">state_filter.lua — hiding private info</a></li>
+      <li><a href="#card-filters-lua">card_filters.lua — sorting &amp; filtering</a></li>
+      <li><a href="#table-actions-lua">table_actions.lua — the state-transition engine</a></li>
+      <li><a href="#deck-widget-zones-lua">deck_widget_zones.lua — synthetic zone ids</a></li>
+      <li><a href="#pack-generator-lua">pack_generator.lua — pack-opening algorithm</a></li>
+      <li><a href="#save-remap-lua">save_remap.lua — reloading saved games</a></li>
+    </ul>
+  </div>
+
+  <h2 id="shared-engine">Why this folder is special: one ruleset, two runtimes</h2>
+  <p>
+    Every file documented on this page — plus <code>lib/json.lua</code> and <code>src/game/session.lua</code> /
+    <code>src/game/host_engine.lua</code> (documented on <a href="game.html">Game Session &amp; Controller</a>) —
+    has <strong>no dependency on LÖVE or any UI code</strong>. They only use the Lua standard library (plus,
+    for <code>uuid.lua</code>, an optional <code>love.math</code> RNG with a plain <code>math.random</code>
+    fallback). That isolation is deliberate: this exact set of files is <em>copied verbatim</em> into the
+    companion Go server at <code>server/engine/lib/json.lua</code>, <code>server/engine/src/core/*.lua</code> and
+    <code>server/engine/src/game/{session,host_engine}.lua</code>, and executed there inside
+    <a href="server.html#why-go-embeds-a-lua-engine">the Go server process</a> by <strong>gopher-lua</strong>, a pure-Go Lua VM — see
+    <a href="server.html#why-go-embeds-a-lua-engine">server.html</a> for how that embedding works. A PowerShell
+    script, <code>server/tools/sync-engine.ps1</code>, copies the client's copies over the server's copies; the
+    server/README.md's development section is explicit that <strong>after changing any of these files in the
+    client, you must re-run that script and rebuild the server</strong> or the two sides of a networked game will
+    silently disagree about the rules.
+  </p>
+  <div class="note">
+    The upshot: the client (running LuaJIT inside LÖVE) and the dedicated lobby server (running gopher-lua inside
+    a Go binary) enforce <em>exactly the same Lua source code</em> for what a move is legal and what a table
+    looks like after it. The server doesn't reimplement card-game logic in Go — it runs the client's own logic.
+    This is the single most load-bearing architectural fact in the whole codebase.
+  </div>
+  <p>
+    Conceptually the files split into three layers: <strong>models</strong> (<code>models.lua</code> defines every
+    on-disk/over-the-wire shape), <strong>pure state transitions</strong> (<code>table_actions.lua</code>, the only
+    place a <code>TableState</code> is actually mutated — copy-on-write, never in place), and <strong>small
+    focused helpers</strong> (geometry, color, seats, stacks, filters, pack-opening, save-remapping) that the
+    models and transitions layer, and the UI layer documented elsewhere, build on.
+  </p>
+
+  <h2 id="json-lua">lib/json.lua — JSON codec</h2>
+  <div class="filecard">
+    <div class="path">lib/json.lua</div>
+    <div class="role">Minimal JSON encoder/decoder tuned for exact compatibility with the original Flutter app's
+      JSON files (saved games, decks, gamedefs, settings) and reused as the wire format for
+      <a href="net.html">the network protocol</a>.</div>
+  </div>
+  <p>
+    Three properties make this more than a toy codec, called out in its own header comment:
+  </p>
+  <ul>
+    <li>Decoded arrays/objects carry a metatable that marks their JSON type (<code>__jsontype</code>), so an
+      empty <code>[]</code> round-trips as an array and an empty <code>{}</code> round-trips as an object even
+      though both decode to an empty Lua table.</li>
+    <li>Objects built with <code>json.object()</code> (or any table whose metatable carries an <code>__order</code>
+      list) keep key <em>insertion order</em> when re-encoded; anything else gets alphabetically sorted keys,
+      for deterministic output.</li>
+    <li>Integral numbers are written without a fraction or exponent — important because ARGB color ints
+      (<code>0xFFRRGGBB</code>) can exceed 2<sup>31</sup> and must stay exact integers, not switch to scientific
+      notation.</li>
+  </ul>
+  <div class="fn"><div class="sig">json.null</div>A sentinel table (not Lua <code>nil</code>) representing JSON
+    <code>null</code>, since a Lua table can't store a real <code>nil</code> value under a key.</div>
+  <div class="fn"><div class="sig">json.object(pairsList) -&gt; table</div>Builds an ordered object from a flat
+    list of alternating keys/values (e.g. <code>json.object({"id", 1, "name", "x"})</code>); a value of
+    <code>nil</code> is skipped. Every model's <code>toJson</code> in <a href="#models-lua">models.lua</a> goes
+    through this (via a local <code>obj(...)</code> wrapper).</div>
+  <div class="fn"><div class="sig">json.array(t) -&gt; table</div>Tags a plain Lua list table as a JSON array
+    (forces <code>[]</code> encoding even if empty).</div>
+  <div class="fn"><div class="sig">json.isArray(t) -&gt; boolean</div>True if <code>t</code> carries the array
+    metatable, or — for a plain table with no metatable — if its keys are exactly the contiguous integers
+    <code>1..#t</code>.</div>
+  <div class="fn"><div class="sig">json.encode(v, opts) -&gt; string</div><code>opts.indent</code> (e.g.
+    <code>"  "</code>) pretty-prints to match Dart's <code>JsonEncoder.withIndent('  ')</code> byte-for-byte, which
+    matters because save files and gamedefs were originally written by the Flutter predecessor app and need to
+    stay diffable/compatible.</div>
+  <div class="fn"><div class="sig">json.decode(str) -&gt; value</div>Strips a UTF-8 BOM if present, then parses.
+    Throws a Lua error with a line/column-annotated message (<code>decodeError</code>) on malformed input. Inside
+    an object, a JSON <code>null</code> value is dropped (the key is simply absent) rather than stored — only a
+    top-level or array-element <code>null</code> decodes to the <code>json.null</code> sentinel.</div>
+  <div class="fn"><div class="sig">json.tryDecode(str) -&gt; value|nil, err</div>Protected wrapper around
+    <code>decode</code> using <code>pcall</code>; returns <code>nil, errorMessage</code> instead of throwing.</div>
+
+  <h2 id="models-lua">models.lua — the data model</h2>
+  <div class="filecard">
+    <div class="path">src/core/models.lua</div>
+    <div class="role">The single source of truth for every shape that gets saved to disk, sent over the
+      network, or edited by the <a href="ui-gamedef-editor.html">Game Definition Editor</a>. Header comment calls
+      it a "port of lib/models/*.dart" — the original Flutter app's model classes, reimplemented as plain Lua
+      tables.</div>
+  </div>
+  <p>
+    Every model follows the same three-function pattern: <code>Kind.new(fields)</code> (fills in defaults for
+    missing fields), <code>Kind.fromJson(t)</code> (validates required fields via a local
+    <code>requireField</code> and decodes), and <code>Kind.toJson(obj)</code> (re-encodes, <strong>omitting any
+    field that equals its own default</strong> via <code>unlessDefault</code> — this reproduces the original
+    Dart app's sparse JSON output exactly, field order included). To update an existing model instance immutably,
+    callers use <code>util.copyWith(obj, {...})</code> from <a href="#util-lua">util.lua</a>; passing
+    <code>util.NIL</code> as a change value explicitly clears that field (Lua can't store a literal
+    <code>nil</code> inside a changes table the way Dart can pass an explicit <code>null</code>).
+  </p>
+
+  <h3 id="models-constants">Enums &amp; constants</h3>
+  <table>
+    <tr><th>Name</th><th>Values / value</th></tr>
+    <tr><td><code>M.CardOrientation</code></td><td><code>portrait</code>, <code>left</code>, <code>right</code></td></tr>
+    <tr><td><code>M.CardZone</code></td><td><code>table</code>, <code>hand</code>, <code>zone</code></td></tr>
+    <tr><td><code>M.BoardWidgetKind</code></td><td><code>simpleCounter</code>, <code>token</code>, <code>arrow</code>, <code>packGenerator</code>, <code>deckBuilder</code></td></tr>
+    <tr><td><code>M.SharedZoneSide</code></td><td><code>left</code>, <code>right</code></td></tr>
+    <tr><td><code>M.ZoneKind</code></td><td><code>card</code>, <code>widget</code></td></tr>
+    <tr><td><code>M.ZoneWidgetKind</code></td><td><code>counter</code></td></tr>
+    <tr><td><code>M.PlayerRole</code></td><td><code>host</code>, <code>client</code></td></tr>
+    <tr><td><code>M.SearchTargetType</code></td><td><code>zone</code>, <code>pile</code></td></tr>
+    <tr><td><code>M.hiddenDefinitionId</code></td><td><code>"__hidden__"</code> — the definition id a hidden opponent card is swapped to by <a href="#state-filter-lua">state_filter.lua</a></td></tr>
+    <tr><td><code>M.uniqueCardBackId</code>, <code>M.cardBackFileSuffix</code>, <code>M.standardDeckIdPrefix</code></td><td><code>"__unique__"</code>, <code>"_BACK"</code>, <code>"__standard52_"</code></td></tr>
+    <tr><td><code>M.boardWidgetCounterMin</code> / <code>Max</code></td><td><code>0</code> / <code>99999</code> — the clamp range enforced by <code>table_actions.setWidgetValue</code></td></tr>
+    <tr><td><code>M.defaultBoardWidgetBackgroundColor</code> / <code>TextColor</code></td><td><code>0xFF455A64</code> (blue-grey) / <code>0xFFFFFFFF</code> (white)</td></tr>
+  </table>
+
+  <h3 id="models-carddefinition">CardDefinition</h3>
+  <p>The static definition of a card type within a game's library (as opposed to a live instance on the table — see <a href="#models-cardinstance">CardInstance</a> below).</p>
+  <table>
+    <tr><th>Field</th><th>Default</th><th>Notes</th></tr>
+    <tr><td><code>id</code>, <code>cardTitle</code></td><td>required</td><td>-</td></tr>
+    <tr><td><code>colorHex</code>, <code>suit</code>, <code>rank</code>, <code>imagePath</code>, <code>setId</code>, <code>cardBackId</code></td><td><code>nil</code></td><td><code>setId</code> is auto-stamped from the enclosing <code>GameSet</code> on load and omitted on save when redundant (see <code>toJson(c, omitSetId)</code>)</td></tr>
+    <tr><td><code>extraFields</code></td><td><code>{}</code></td><td>arbitrary key/value map, author-defined per game; key order preserved on round-trip when the source table carries it</td></tr>
+    <tr><td><code>types</code></td><td><code>{}</code></td><td>list of tag strings (used by filters/sorting)</td></tr>
+    <tr><td><code>orientation</code></td><td><code>"portrait"</code></td><td>enum-checked against <code>CardOrientation</code></td></tr>
+    <tr><td><code>unownable</code></td><td><code>false</code></td><td>in collection-mode, an unownable card is always available regardless of what the player owns (per server/README.md); it also can never acquire an <code>ownerId</code> on the table — see <a href="#table-actions-lua">table_actions.lua</a></td></tr>
+    <tr><td><code>isFreeCard</code></td><td><code>false</code></td><td>-</td></tr>
+    <tr><td><code>uniqueBackOrientation</code></td><td><code>"portrait"</code></td><td>-</td></tr>
+  </table>
+
+  <h3 id="models-cardback">CardBackDefinition</h3>
+  <p>Fields: <code>id</code>, <code>name</code> (required), <code>imagePath</code>, <code>orientation</code> (default <code>"portrait"</code>). <code>GameDefinition.fromJson</code> migrates a legacy single <code>cardBackImagePath</code> field into a one-element <code>cardBacks</code> list with id <code>"default"</code>, so older gamedef files keep loading.</p>
+
+  <h3 id="models-pack-set-tag">PackSetting / GameSet / TagGroup</h3>
+  <ul>
+    <li><code>PackSetting</code>: <code>{tag, count}</code> — "include up to <code>count</code> cards tagged <code>tag</code>" for pack generation (consumed by <a href="#pack-generator-lua">pack_generator.lua</a>).</li>
+    <li><code>GameSet</code>: <code>{id, name, packSettings}</code> — a named set/expansion whose cards live under it in the gamedef's <code>sets</code> array.</li>
+    <li><code>TagGroup</code>: <code>{id, name, tags}</code> — a named group of tags (e.g. a "Rarity" group with tags Common/Rare/Mythic), used for filtering and sort order in <a href="#card-filters-lua">card_filters.lua</a> and the <a href="ui-gamedef-editor.html">gamedef editor</a>.</li>
+  </ul>
+
+  <h3 id="models-deck">DeckEntry / SubDeck / DeckConfig</h3>
+  <p><code>DeckEntry</code> is just <code>{definitionId, quantity}</code>. A <code>SubDeck</code> is <code>{name, entries}</code> — one named pile of entries (a game can define multiple deck-building zones with different <code>deckType</code>s, e.g. "main_deck" and "side_deck", each becoming its own subdeck). A <code>DeckConfig</code> is <code>{gameId, subdecks, isStarter}</code> — a whole built deck for one game.</p>
+  <div class="fn"><div class="sig">DeckConfig.subdeck(d, name) / entriesFor(d, name) / cardCountFor(d, name) / totalCardCount(d)</div>Lookup/aggregation helpers.</div>
+  <div class="fn"><div class="sig">DeckConfig.full(game) -&gt; DeckConfig</div>Builds the "one copy of every card" deck used for practice games with no explicit deck chosen — one subdeck per <code>GameDefinition.deckTypes(game)</code>, or a single <code>"main_deck"</code> subdeck if the game defines no deck-building zones at all.</div>
+  <div class="fn"><div class="sig">DeckConfig.fromJson(t)</div>Throws the special error table <code>M.LegacyDeckFormatError</code> (<code>{legacyDeckFormat = true, message = "..."}</code>) if <code>t.subdecks</code> is absent — i.e. a deck file saved before the subdeck format existed. Callers (<a href="data.html">deck_store.lua</a>) catch this specifically to prompt the user to rebuild the deck in the editor rather than crashing.</div>
+  <div class="note"><code>isStarter</code> is read case-insensitively from either <code>isStarter</code> or <code>IsStarter</code> in the JSON — a defensive nod to a field name that may have shipped inconsistently at some point.</div>
+
+  <h3 id="models-zone">ZoneDefinition</h3>
+  <p>The richest config object in the model — defines one deck-building zone, shared pile, or board-widget slot in a game's rules. Key fields beyond the obvious <code>id</code>/<code>name</code>:</p>
+  <table>
+    <tr><th>Field</th><th>Default</th><th>Meaning</th></tr>
+    <tr><td><code>shared</code></td><td><code>false</code></td><td>a shared zone belongs to the table, not a specific player (e.g. a central draw pile)</td></tr>
+    <tr><td><code>dealsBuiltDeck</code></td><td><code>false</code></td><td>true for a zone that gets dealt from a player's/table's <em>built</em> deck rather than fixed <code>entries</code> — this is what makes a zone "deck-building" per <code>GameDefinition.deckBuildingZones</code></td></tr>
+    <tr><td><code>deckType</code></td><td><code>"main_deck"</code></td><td>which named subdeck this zone deals from</td></tr>
+    <tr><td><code>deckOptional</code></td><td><code>false</code></td><td>whether a deck must be chosen before the game can start</td></tr>
+    <tr><td><code>entries</code></td><td><code>{}</code></td><td>fixed deal list, used instead of a built deck when <code>dealsBuiltDeck</code> is false</td></tr>
+    <tr><td><code>faceUp</code>, <code>visibleToAll</code>, <code>isDiscardPile</code>, <code>autoShuffle</code>, <code>standardDeck</code>, <code>shuffleable</code> (default <code>true</code>)</td><td>booleans</td><td><code>visibleToAll</code> drives <a href="#state-filter-lua">state_filter.lua</a>'s hiding rules; <code>standardDeck</code> deals a synthesized 52-card deck (see <code>M.buildStandardDeckCards</code> below) instead of the game's own cards</td></tr>
+    <tr><td><code>side</code></td><td><code>"left"</code></td><td>which side of the table a shared zone renders on</td></tr>
+    <tr><td><code>kind</code></td><td><code>"card"</code></td><td><code>"card"</code> or <code>"widget"</code> — a widget-kind zone is a docked counter slot, not a pile</td></tr>
+    <tr><td><code>widgetKind</code>, <code>counterStartingValue/Color/TextColor</code></td><td><code>"counter"</code>, <code>0</code>, defaults above</td><td>only relevant when <code>kind == "widget"</code></td></tr>
+  </table>
+
+  <h3 id="models-gamedefinition">GameDefinition</h3>
+  <p>The top-level object a <code>gamedef.json</code> file deserializes into — see <a href="data.html">game_loader.lua / gamedef_ops.lua</a> for the on-disk round-trip and <a href="ui-gamedef-editor.html">ui-gamedef-editor.html</a> for the authoring UI built on top of it.</p>
+  <p>Fields: <code>id</code>, <code>name</code>, <code>cards</code>, <code>cardBacks</code>, <code>zones</code>, <code>tagGroups</code>, <code>sets</code>, plus <code>folderPath</code> which is <strong>local-only and never serialized</strong> (it's where the game's folder lives on disk this session).</p>
+  <div class="fn"><div class="sig">GameDefinition.deckBuildingZones(g) -&gt; list</div>Non-shared zones with <code>dealsBuiltDeck == true</code>.</div>
+  <div class="fn"><div class="sig">GameDefinition.deckTypes(g) -&gt; list of strings</div>Ordered, de-duplicated <code>deckType</code>s across the deck-building zones (first-seen order, mirroring Dart's insertion-ordered <code>Set</code>).</div>
+  <div class="fn"><div class="sig">GameDefinition.needsDeckBuilding(g) -&gt; boolean</div><code>#deckBuildingZones(g) &gt; 0</code> — gates whether the <a href="ui-screens.html">practice flow</a> or <a href="ui-server-screens.html">server room</a> needs to show a deck picker before starting.</div>
+  <div class="fn"><div class="sig">GameDefinition.cardById(g, id) -&gt; CardDefinition|nil</div>Lazily builds and caches an id→card index on the table itself (<code>g._cardIndex</code>, invalidated when <code>#g.cards</code> changes) — an optimization since this is called constantly during dealing/rendering.</div>
+  <div class="fn"><div class="sig">GameDefinition.invalidateIndex(g)</div>Must be called by any code (the editor) that mutates <code>g.cards</code> in place, since the index only auto-invalidates on a length change, not arbitrary mutation.</div>
+  <div class="fn"><div class="sig">GameDefinition.zoneById(g, id) -&gt; ZoneDefinition|nil</div>Linear scan.</div>
+  <p><code>fromJson</code>/<code>toJson</code> handle two on-disk shapes transparently: a flat top-level <code>cards</code> array (legacy / set-less games), or a <code>sets</code> array where each set carries its own nested <code>cards</code> (current format) — on load, nested cards get stamped with their parent set's id and flattened into one <code>g.cards</code> list; on save, the reverse grouping happens, and each card's own redundant <code>setId</code> is omitted from its nested JSON via <code>CardDefinition.toJson(c, true)</code>.</p>
+
+  <h3 id="models-standarddeck">StandardDeck</h3>
+  <div class="fn"><div class="sig">M.buildStandardDeckCards() -&gt; list of CardDefinition</div>Synthesizes a full 52-card deck (4 suits × 13 ranks A,2–10,J,Q,K) with ids like <code>__standard52_hearts_A</code>, red/black <code>colorHex</code> by suit, and <code>unownable = true</code>. Used when a <code>ZoneDefinition.standardDeck</code> flag is set, so a game can offer "a normal deck of playing cards" without the game author having to define 52 cards by hand.</div>
+
+  <h3 id="models-cardinstance">CardInstance</h3>
+  <p>A single physical card <em>on the table</em> right now — as opposed to <a href="#models-carddefinition">CardDefinition</a>, the type it's an instance of. This is the record type <a href="#table-actions-lua">table_actions.lua</a> mutates constantly.</p>
+  <table>
+    <tr><th>Field</th><th>Notes</th></tr>
+    <tr><td><code>instanceId</code>, <code>definitionId</code></td><td>required; <code>definitionId</code> gets swapped to <code>M.hiddenDefinitionId</code> by state_filter when hidden from an opponent</td></tr>
+    <tr><td><code>x</code>, <code>y</code></td><td>canonical table-fraction coordinates (0..1-ish) — see <a href="#geometry-lua">geometry.lua</a> for the pixel conversion; for a zone-resident card these are just the zone's anchor point, not meaningful screen position</td></tr>
+    <tr><td><code>zIndex</code></td><td>draw/stacking order; <code>table_actions.nextZIndex</code> always hands out <code>max+1</code></td></tr>
+    <tr><td><code>faceUp</code></td><td>required boolean</td></tr>
+    <tr><td><code>zone</code></td><td>one of <code>M.CardZone</code>: <code>table</code>, <code>hand</code>, or <code>zone</code></td></tr>
+    <tr><td><code>ownerId</code></td><td><code>nil</code> = unowned/shared</td></tr>
+    <tr><td><code>stackParentId</code></td><td>non-nil when this card sits on top of another card on the table — see <a href="#stack-utils-lua">stack_utils.lua</a></td></tr>
+    <tr><td><code>zoneId</code></td><td>which <code>ZoneDefinition</code> (or synthetic deck-widget zone, see <a href="#deck-widget-zones-lua">deck_widget_zones.lua</a>) this card sits in, when <code>zone == "zone"</code></td></tr>
+    <tr><td><code>rotationTurns</code></td><td>default 0; a signed count of 90° turns, bumped by Q/E on the table (see <a href="ui-table.html">ui-table.html</a>)</td></tr>
+    <tr><td><code>unownable</code></td><td>copied from the <code>CardDefinition</code> at deal time; table_actions consults this on every ownership-changing op</td></tr>
+  </table>
+
+  <h3 id="models-boardwidget">BoardWidgetInstance</h3>
+  <p>A live board widget (counter, token, arrow, pack generator, or deck-builder widget) on the table.</p>
+  <table>
+    <tr><th>Field</th><th>Default</th></tr>
+    <tr><td><code>instanceId</code>, <code>kind</code>, <code>x</code>, <code>y</code>, <code>zIndex</code></td><td>required</td></tr>
+    <tr><td><code>value</code></td><td><code>0</code> (counter widgets)</td></tr>
+    <tr><td><code>backgroundColor</code> / <code>textColor</code></td><td><code>M.defaultBoardWidgetBackgroundColor</code> / <code>...TextColor</code></td></tr>
+    <tr><td><code>attachedCardId</code>, <code>attachOffsetX/Y</code></td><td><code>nil</code>, <code>0</code>, <code>0</code> — a token attached to a card; kept in sync with the card's position by <code>table_actions.syncAttachedWidgets</code></td></tr>
+    <tr><td><code>x2</code>, <code>y2</code></td><td><code>nil</code> — arrow widgets only, the arrow's endpoint</td></tr>
+    <tr><td><code>creatorId</code></td><td><code>nil</code> — who may delete it, see <code>host_engine:allowedDelete</code> in <a href="game.html#host-engine-lua">game.html</a></td></tr>
+    <tr><td><code>ownerId</code>, <code>zoneId</code></td><td><code>nil</code> — a deck-widget sets both when created in the deck-building flow</td></tr>
+  </table>
+  <div class="fn"><div class="sig">BoardWidgetInstance.isDocked(w) -&gt; boolean</div><code>w.zoneId ~= nil</code> — a docked widget (deck widget) can't be freely dragged the way a loose counter/token can.</div>
+
+  <h3 id="models-playerinfo">PlayerInfo</h3>
+  <p><code>{id, name, role, color, connected}</code> — <code>role</code> is <code>M.PlayerRole.host</code> or <code>.client</code>; <code>connected</code> defaults to <code>true</code> and is flipped by <code>Session:syncConnectedPlayerIds</code> (see <a href="game.html#session-lua">session.lua</a>) as players join/leave a networked game.</p>
+
+  <h3 id="models-activesearch">ActiveSearch</h3>
+  <p><code>{searcherId, targetType, targetId, targetOwnerId}</code> — represents one player's open "Search..." dialog on a zone or pile (right-click menu, per <a href="ui-table.html">CONTROLS.md</a>). <code>targetType</code> is <code>M.SearchTargetType.zone</code> or <code>.pile</code>.</p>
+
+  <h3 id="models-logentry">LogEntry &amp; time formatting</h3>
+  <p><code>{elapsedMs, message}</code> — one line of the in-game Game Log (<kbd>L</kbd> key). <code>M.formatElapsedTime(ms) -&gt; "HH:MM:SS"</code> formats it for display.</p>
+
+  <h3 id="models-tablestate">TableState</h3>
+  <p>The entire authoritative state of a running game: <code>{gameId, players, cards, revision, widgets, searches, log}</code>. <code>revision</code> is a monotonically increasing integer bumped by every mutating <a href="#table-actions-lua">table_actions</a> call — it's both the "has anything changed" signal for <a href="game.html#session-lua">Session</a> listeners and the version number the host broadcasts so clients know whether an incoming state is newer than what they have (<code>Session:applyRemoteState</code> ignores anything with <code>revision &lt;= current</code>).</p>
+  <div class="fn"><div class="sig">TableState.playerById / cardById / widgetById(s, id)</div>Linear-scan lookups used throughout the engine and UI.</div>
+
+  <h3 id="models-savedgame">SavedGame &amp; ISO-8601 helpers</h3>
+  <p><code>SavedGame</code> is just <code>{savedAt, state}</code> where <code>state</code> is a full <code>TableState</code> — see <a href="data.html">save_files.lua</a> for where these land on disk.</p>
+  <div class="fn"><div class="sig">M.isoNow(nowSeconds) -&gt; string</div>Formats a local-time ISO-8601 timestamp with milliseconds (<code>"2026-01-02T03:04:05.678"</code>), matching Dart's <code>DateTime.now().toIso8601String()</code> exactly, since old save files were written by the Flutter app and need to parse the same way.</div>
+  <div class="fn"><div class="sig">M.parseIso(s) -&gt; {year,month,day,hour,min,sec}|nil</div>Parses that format back (date-only strings default the time fields to zero).</div>
+
+  <h2 id="geometry-lua">geometry.lua — table coordinates</h2>
+  <div class="filecard">
+    <div class="path">src/core/geometry.lua</div>
+    <div class="role">Port of <code>lib/game/geometry_utils.dart</code>. Converts between the table's fixed logical "world" size and the canonical 0..1 fractional coordinates stored on a <a href="#models-cardinstance">CardInstance</a>, independent of a viewer's camera zoom/pan or mirrored seat.</div>
+  </div>
+  <table>
+    <tr><th>Constant</th><th>Value</th></tr>
+    <tr><td><code>G.worldWidth</code> / <code>worldHeight</code></td><td><code>2560</code> / <code>1440</code></td></tr>
+    <tr><td><code>G.tablePanMarginFraction</code></td><td><code>0.5</code> — how far past the table edge panning/clamping is allowed</td></tr>
+  </table>
+  <div class="fn"><div class="sig">G.worldCenteringOffset(worldW, worldH, viewportW, viewportH) -&gt; dx, dy</div>Centers the fixed-size world inside an arbitrary viewport.</div>
+  <div class="fn"><div class="sig">G.clampCardCenterY(proposedCenterY, tableHeight, cardHeight, margin=10) -&gt; number</div>Keeps a dragged card's vertical center within the table's pannable range (used so a card doesn't fly off past the extended margin).</div>
+  <div class="fn"><div class="sig">G.canonicalToLocalPixel(fx, fy, tableWidth, tableHeight, isMirrored) -&gt; px, py</div>Fractional canonical coordinates → this viewer's local pixel coordinates; flips both axes when <code>isMirrored</code> (a "far" seat, see <a href="#seat-utils-lua">seat_utils.lua</a>) is true so every seat sees the table from their own "near" side.</div>
+  <div class="fn"><div class="sig">G.localPixelToCanonical(pixelX, pixelY, tableWidth, tableHeight, isMirrored) -&gt; fx, fy</div>The inverse, used to translate a mouse drop point into the canonical coordinates stored on the card; clamps to <code>[-tablePanMarginFraction, 1+tablePanMarginFraction]</code> rather than strictly <code>[0,1]</code>, matching the pannable margin.</div>
+
+  <h2 id="color-lua">color.lua — ARGB colors</h2>
+  <div class="filecard">
+    <div class="path">src/core/color.lua</div>
+    <div class="role">Port of <code>lib/models/color_palette.dart</code>. Colors throughout the model layer (player colors, widget background/text colors, card <code>colorHex</code>) are stored as plain 32-bit ARGB integers (<code>0xAARRGGBB</code>), matching Flutter's <code>Color</code> representation.</div>
+  </div>
+  <div class="fn"><div class="sig">color.boardWidgetColorPalette</div>A fixed 12-color palette (blue-grey, white, black, red, orange, yellow, green, blue, purple, brown, grey, pink) offered in the widget color picker — see <a href="ui-framework.html">colorpicker.lua</a>.</div>
+  <div class="fn"><div class="sig">color.hexFromColor(argb) -&gt; "RRGGBB"</div> / <div class="sig">color.colorFromHex(input, fallback) -&gt; argb</div>String ⇄ opaque-ARGB conversions used by the color picker's hex field and by <code>CardDefinition.colorHex</code>.</div>
+  <div class="fn"><div class="sig">color.toRgba(argb, alphaMul) -&gt; r, g, b, a (0..1 floats)</div> / <div class="sig">color.fromRgba(r, g, b, a) -&gt; argb</div>The bridge to <code>love.graphics.setColor</code>, which wants 0..1 floats, not packed ints.</div>
+  <div class="fn"><div class="sig">color.parseHexRgb(hex) -&gt; r, g, b|nil</div>Convenience wrapper combining the two above for a <code>"#RRGGBB"</code> string.</div>
+  <div class="fn"><div class="sig">color.rgbToHsl / hslToRgb / hsvToRgb / rgbToHsv</div>Standard colorspace conversions. <code>rgbToHsl</code>'s header comment notes it backs the player-color table tint, computed as lightness&nbsp;&minus;&nbsp;0.30 (darkening a player's chosen color for zone/hand backgrounds); <code>hsv</code> conversions back the color picker's saturation/value square.</div>
+
+  <h2 id="util-lua">util.lua — shared helpers</h2>
+  <div class="filecard">
+    <div class="path">src/core/util.lua</div>
+    <div class="role">Small, dependency-free helpers ("no love.* dependencies" per its own header) used throughout the whole core/game layer: list operations, a copy-on-write helper, a seeded RNG, and string trimming.</div>
+  </div>
+  <div class="fn"><div class="sig">util.NIL</div>Sentinel table used as a change value in <code>copyWith</code> to mean "explicitly clear this field" (Lua has no way to distinguish "key absent" from "key set to nil" inside a changes table otherwise).</div>
+  <div class="fn"><div class="sig">util.copyWith(obj, changes) -&gt; table</div>Shallow-copies <code>obj</code> then applies <code>changes</code>; any change equal to <code>util.NIL</code> deletes that key instead of setting it. This is <em>the</em> mutation primitive the whole model layer and <a href="#table-actions-lua">table_actions.lua</a> are built on — nothing in the engine ever mutates a <code>CardInstance</code>/<code>TableState</code>/etc. table in place.</div>
+  <div class="fn"><div class="sig">util.shallowCopy(t)</div>Plain shallow copy, no changes applied.</div>
+  <div class="fn"><div class="sig">util.map(list, fn) / filter(list, pred) / find(list, pred) -&gt; value, index / any(list, pred) / concat(a, b) / contains(list, value) / removeValue(list, value) -&gt; boolean</div>Standard list combinators over 1-indexed Lua arrays. <code>removeValue</code> mutates its argument in place (the one exception to the copy-on-write convention, since it operates on a scratch list, not a model).</div>
+  <div class="fn"><div class="sig">util.toSet(list) -&gt; {value=true} / setSize(s) -&gt; integer</div>List↔set conversion and counting (Lua has no built-in set size).</div>
+  <div class="fn"><div class="sig">util.clamp(v, lo, hi)</div>Standard clamp.</div>
+  <div class="fn"><div class="sig">util.shuffle(list, rng) -&gt; list</div>In-place Fisher–Yates shuffle. <code>rng(n)</code> must return an integer in <code>[1,n]</code>; defaults to <code>math.random</code>.</div>
+  <div class="fn"><div class="sig">util.seededRng(seed) -&gt; function(n) -&gt; [1,n]</div>A deterministic Park–Miller linear-congruential generator, used wherever the original Dart code took an explicit <code>Random(seed)</code> — e.g. reproducible shuffles in tests (see <a href="tests-tools.html">tests-tools.html</a>). The header comment explicitly notes the resulting sequences differ from Dart's own RNG; seeding only exists for test reproducibility, not cross-runtime determinism.</div>
+  <div class="fn"><div class="sig">util.startsWith / endsWith / trim(s) / containsText(haystack, needle)</div>String helpers; <code>containsText</code> is a literal (non-pattern) substring search, used by <a href="#card-filters-lua">card_filters.lua</a>'s search box so card names with Lua "magic" characters don't break matching.</div>
+  <div class="fn"><div class="sig">util.deepCopy(v)</div>Recursive copy that also preserves each sub-table's metatable (important for JSON-tagged arrays/objects from <a href="#json-lua">json.lua</a> surviving a deep copy intact).</div>
+
+  <h2 id="uuid-lua">uuid.lua — id generation</h2>
+  <div class="filecard">
+    <div class="path">src/core/uuid.lua</div>
+    <div class="role">RFC 4122 version-4 (random) UUID generator, used for every <code>instanceId</code> created when cards/widgets are dealt or spawned.</div>
+  </div>
+  <div class="fn"><div class="sig">U.v4() -&gt; string</div>Returns a standard <code>"xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx"</code> UUID string. Uses <code>love.math.newRandomGenerator</code>, seeded from the OS clock, when LÖVE is present; falls back to plain <code>math.random</code> (seeded once from <code>os.time()</code>) otherwise — the fallback path is exactly what runs under gopher-lua on the server, since the server process has no <code>love</code> global at all.</div>
+
+  <h2 id="seat-utils-lua">seat_utils.lua — hand layout / mirroring</h2>
+  <div class="filecard">
+    <div class="path">src/core/seat_utils.lua</div>
+    <div class="role">Port of <code>lib/game/seat_utils.dart</code>. Decides, for a given viewer, which seats render as "near" (bottom row, their own hand) vs. "far" (top row, opponents) and whether the shared table itself should be mirrored for them.</div>
+  </div>
+  <p>Seat indices are 0-based, matching the original Dart. The core judgment call:</p>
+  <div class="fn"><div class="sig">S.isFarMirrorSeat(seatIndex, playerCount) -&gt; boolean</div>2 players: seat 1 is far. 3 players: seats 1+ are far. 4 players: seats 2+ are far. 5+: the ceiling of half the seats are far. This is what makes a 1v1 game put your opponent squarely across the table while a 4-player game splits two-and-two.</div>
+  <div class="fn"><div class="sig">S.computeHandRowLayout(players, localPlayerId) -&gt; {bottomRow, topRow}</div>Splits <code>players</code> into near/far lists via the function above; if the viewer themself is a "far" seat, both lists are reversed before being returned as bottomRow/topRow, so the layout always reads correctly from the viewer's own point of view — this is consumed by the hand-rendering code in <a href="ui-table.html">ui-table.html</a>.</div>
+  <div class="fn"><div class="sig">S.isViewerMirrored(players, localPlayerId) -&gt; boolean</div>Whether the viewer is sitting in a "far" seat and therefore needs the whole shared table mirrored on both axes — feeds directly into <code>geometry.canonicalToLocalPixel</code>'s <code>isMirrored</code> parameter.</div>
+
+  <h2 id="stack-utils-lua">stack_utils.lua — pile math</h2>
+  <div class="filecard">
+    <div class="path">src/core/stack_utils.lua</div>
+    <div class="role">Port of <code>lib/game/stack_utils.dart</code>. A "stack" (pile) on the table is a chain of cards linked through <code>stackParentId</code>, rooted at the bottom card (the one whose <code>stackParentId</code> is <code>nil</code>).</div>
+  </div>
+  <div class="fn"><div class="sig">S.rootIdOf(cards, card) -&gt; instanceId</div>Walks <code>stackParentId</code> links up to the root, guarding against a cycle via a <code>visited</code> set (defensive — a well-formed stack never cycles, but corrupt/replayed state shouldn't infinite-loop).</div>
+  <div class="fn"><div class="sig">S.stackOf(cards, rootInstanceId) -&gt; list</div>Every card in <code>cards</code> whose root resolves to <code>rootInstanceId</code> (including the root itself).</div>
+  <div class="fn"><div class="sig">S.groupByStack(cards) -&gt; groups, order</div>Buckets every card by its stack root in one pass; <code>order</code> is the first-seen order of root ids (mirroring Dart's insertion-ordered <code>LinkedHashMap</code>) so rendering order stays stable.</div>
+  <div class="fn"><div class="sig">S.topOf(stack) -&gt; card</div>The highest-<code>zIndex</code> card in the list; ties favor the <em>earlier</em> card in the list (replicates Dart's <code>reduce</code> with a <code>&gt;=</code> comparison exactly, which matters for deterministic draw order from a pile with duplicate z-indices).</div>
+
+  <h2 id="state-filter-lua">state_filter.lua — hiding private info</h2>
+  <div class="filecard">
+    <div class="path">src/core/state_filter.lua</div>
+    <div class="role">Port of <code>lib/networking/state_filter.dart`. Produces a per-recipient view of a <a href="#models-tablestate">TableState</a> before it's sent to a client — the server-authoritative half of "opponents' cards, piles and zones are read-only" (CONTROLS.md) is enforced by never even telling a client what a hidden card <em>is</em>.</div>
+  </div>
+  <div class="fn"><div class="sig">F.filterForRecipient(trueState, recipientId, visibleZoneIds) -&gt; TableState</div>
+  <code>visibleZoneIds</code> is a set <code>{zoneId -&gt; true}</code> of zones whose <code>ZoneDefinition.visibleToAll</code> flag is set. For every card: it's hidden from <code>recipientId</code> if it has an owner that isn't the recipient <em>and</em> either it's in someone's hand, or it's in a private (non-visible-to-all) zone. A hidden card is swapped via <code>util.copyWith</code> to <code>{faceUp = false, definitionId = models.hiddenDefinitionId}</code> — the recipient still sees <em>that a card exists</em> (its position, owner, zIndex) but not what it is.
+  </div>
+  <p>This is called from <a href="game.html#host-engine-lua">host_engine.lua</a>'s <code>broadcast()</code> once per player per revision before sending <code>fullState</code>, both when the host is the LÖVE client itself (direct host/join, <a href="net.html">net.html</a>) and — because this file is one of the ones mirrored into <code>server/engine/</code> — when the host role is played by the dedicated Go server (<a href="server.html">server.html</a>).</p>
+
+  <h2 id="card-filters-lua">card_filters.lua — sorting &amp; filtering</h2>
+  <div class="filecard">
+    <div class="path">src/core/card_filters.lua</div>
+    <div class="role">Port of the filter/sort logic in <code>lib/ui/widgets/card_sort_menu.dart</code>, shared by the <a href="ui-screens.html">Deck Editor</a>, the <a href="ui-gamedef-editor.html">Card View tab</a> of the gamedef editor, and the in-game Card Library (<a href="ui-table.html">right-click menu on empty table</a>). The actual filter-bar widgets live in <a href="ui-framework.html">src/ui/kit/card_filter_bar.lua and filter_menu.lua</a> — this file is the pure logic they call.</div>
+  </div>
+  <div class="fn"><div class="sig">F.sortBySet / F.sortByName</div>String constants for the two built-in sort keys; any other sort key is treated as a <code>TagGroup</code> id.</div>
+  <div class="fn"><div class="sig">F.sortCardDefinitions(cards, sortKey, sets, tagGroups) -&gt; list</div>Returns <code>cards</code> unchanged if <code>sortKey == nil</code>. For <code>sortBySet</code>, ranks by the card's set's position in <code>sets</code> (cards with no set sort last). For <code>sortByName</code>, rank is constant (falls through to the title-based secondary sort). For a tag-group key, ranks each card by the <em>earliest</em> matching tag's position within that group's own tag order (cards matching no tag in the group sort last). All three fall back to case-insensitive title, then original index, for a fully stable sort.</div>
+  <div class="fn"><div class="sig">F.cardMatchesFilters(card, tagGroups, selectedTagsByGroup, excludedTagsByGroup, selectedSetIds, searchQuery) -&gt; boolean</div>
+  Evaluated per-card by the filter bar. Order of checks: (1) if <em>any</em> of the card's tags appears in <em>any</em> group's exclusion set, reject outright; (2) for every tag group with a non-empty selection, the card must match at least one selected tag in that group (groups with nothing selected impose no constraint — this is an AND-across-groups, OR-within-group filter); (3) if any set is selected and the card belongs to a (different) set, reject; (4) finally, a trimmed, case-folded <code>searchQuery</code> must appear (via <code>util.containsText</code>, a literal substring match) in either the card's title or its id.
+  </div>
+
+  <h2 id="table-actions-lua">table_actions.lua — the state-transition engine</h2>
+  <div class="filecard">
+    <div class="path">src/core/table_actions.lua</div>
+    <div class="role">Port of <code>lib/game/table_actions.dart</code>. This is where every rule described in <a href="ui-table.html">CONTROLS.md</a>'s "Game table" section — dragging, stacking, flipping, rotating, dealing, drawing, shuffling, searching, and every board-widget operation — actually lives. Every function is a <strong>pure function</strong>: <code>(TableState, ...) -&gt; TableState</code>. Nothing is ever mutated in place; untouched cards/widgets are shared by reference with the old state (so a caller can cheaply diff old vs. new for logging), changed ones are fresh copy-on-write tables via <a href="#util-lua"><code>util.copyWith</code></a>.</div>
+  </div>
+  <div class="note">
+    Revision discipline: every op that actually changes something calls the local <code>bumped(state, changes)</code> helper, which sets <code>changes.revision = state.revision + 1</code>. The header comment is explicit that this happens <em>exactly where the original Dart version bumps it</em> — including some ops that bump the revision even when the target id isn't found, because the Dart original didn't guard those cases either. Getting this byte-for-byte identical matters because the server runs this exact file too: any divergence would desync revision numbers between a LuaJIT client and the gopher-lua server.
+  </div>
+  <p>This file is called almost exclusively from <a href="game.html#session-lua">session.lua</a> (never directly by UI code), which wraps each call with permission checks, game-log entries and listener notification — see that page for the full call chain from a mouse drag to a persisted state change.</p>
+  <h3 id="table-actions-helpers">Internal helpers</h3>
+  <div class="fn"><div class="sig">nextZIndex(state) -&gt; integer</div>Exported as <code>A.nextZIndex</code>; one past the current max card <code>zIndex</code> (0 if there are no cards). A parallel private <code>nextWidgetZIndex</code> does the same for widgets, kept as a separate counter space.</div>
+  <div class="fn"><div class="sig">syncAttachedWidgets(state) -&gt; state</div>Called after any op that moves cards; re-pins every widget with a non-nil <code>attachedCardId</code> to <code>card.x + attachOffsetX, card.y + attachOffsetY</code>, returning the original state unchanged (no new allocation) if nothing actually needed to move.</div>
+  <h3 id="table-actions-card-ops">Card operations</h3>
+  <table>
+    <tr><th>Function</th><th>What it does</th></tr>
+    <tr><td><code>A.moveCard(state, instanceId, x, y)</code></td><td>Moves a single card to the table at <code>(x,y)</code>, clearing <code>stackParentId</code>/<code>zoneId</code> (detaches from any pile/zone) and clearing ownership if the card is <code>unownable</code>. Bumps z to front and re-syncs attached widgets.</td></tr>
+    <tr><td><code>A.moveStack(state, rootInstanceId, x, y)</code></td><td>Moves an entire pile together; only the <em>top</em> card of the pile gets a new (frontmost) zIndex, the rest keep their relative order.</td></tr>
+    <tr><td><code>A.rotateStack(state, rootInstanceId, clockwise)</code></td><td>Adds ±1 to <code>rotationTurns</code> on every card in the pile that's currently on the table (not in a zone/hand); only the top card's zIndex is bumped.</td></tr>
+    <tr><td><code>A.bringToFront(state, rootInstanceId)</code></td><td>Re-zIndexes just the pile's top card to the new frontmost value.</td></tr>
+    <tr><td><code>A.moveToHand(state, instanceId, ownerId)</code></td><td>Sends a card into <code>ownerId</code>'s hand face-up, clearing pile/zone attachment and rotation.</td></tr>
+    <tr><td><code>A.reorderHand(state, instanceId, ownerId, targetIndex)</code></td><td>Reorders one owner's hand (<code>A.handCards</code>, stable-sorted by zIndex) by removing the card and re-inserting at the clamped 0-based <code>targetIndex</code>, then re-issuing contiguous zIndexes to the whole hand.</td></tr>
+    <tr><td><code>A.flipCard(state, instanceId)</code></td><td>Toggles <code>faceUp</code> and brings the card to front.</td></tr>
+    <tr><td><code>A.giveCard(state, instanceId, newOwnerId)</code></td><td>Reassigns ownership (forced to unowned if the card is <code>unownable</code> or <code>newOwnerId</code> is nil) and brings it to front.</td></tr>
+    <tr><td><code>A.stackCard(state, instanceId, ontoInstanceId)</code></td><td>Stacks one card onto another: adopts the target's position/zone and sets <code>stackParentId = ontoInstanceId</code>. No-op if the two ids are equal or the target isn't found. (Ownership-compatibility — "piles never mix owners" — is enforced one layer up, in <code>Session:canStackOnto</code>, not here.)</td></tr>
+    <tr><td><code>A.moveGroup(state, primaryInstanceId, passengerRootInstanceIds, x, y)</code></td><td>Moves a multi-select: the primary card goes exactly to <code>(x,y)</code> (clearing pile/zone like <code>moveCard</code>); every passenger pile is translated by the same delta the primary moved, keeping the whole selection's relative layout — this backs "Drag a selected item" from CONTROLS.md.</td></tr>
+  </table>
+  <h3 id="table-actions-draw-deal">Drawing, dealing, shuffling</h3>
+  <table>
+    <tr><th>Function</th><th>What it does</th></tr>
+    <tr><td><code>A.handCards(state, ownerId) -&gt; list</code></td><td>(exported as <code>A.sortedByZ</code>'s caller) An owner's hand, stably sorted by zIndex.</td></tr>
+    <tr><td><code>A.drawCard(state, pileInstanceId, ownerId, count=1) -&gt; state, drawnIds</code></td><td>Draws the top <code>count</code> cards off a table pile into <code>ownerId</code>'s hand (face up, pile links cleared, rotation reset). Returns the drawn instance ids alongside the new state so the caller can log/animate them.</td></tr>
+    <tr><td><code>A.zoneCards(state, zoneId, zoneOwnerId) -&gt; list</code></td><td>All cards currently in a given zone for a given owner (shared zones pass <code>nil</code> as owner).</td></tr>
+    <tr><td><code>A.drawFromZone(state, zoneId, zoneOwnerId, toOwnerId, count=1) -&gt; state, drawnIds</code></td><td>Same idea as <code>drawCard</code> but drawing off the top of a zone instead of a table pile.</td></tr>
+    <tr><td><code>A.dealNewCards(state, newCards)</code></td><td>Appends brand-new <code>CardInstance</code>s (freshly created, e.g. from a pack or the card library), assigning each the next contiguous zIndex in the order given.</td></tr>
+    <tr><td><code>A.returnToZone(state, instanceId, zoneId, zoneOwnerId, faceUp, toBottom)</code></td><td>Sends a card into a zone, on top (new frontmost zIndex) or bottom (one less than the zone's current minimum) per <code>toBottom</code>; adopts the zone's anchor position. No-op if the card is already in that exact zone.</td></tr>
+    <tr><td><code>A.shuffleZone(state, zoneId, zoneOwnerId, seed)</code> / <code>A.shufflePile(state, pileRootInstanceId, seed)</code></td><td>Both delegate to a shared private <code>reshuffle</code>: shuffles the ids (via <code>util.shuffle</code>, optionally seeded for deterministic tests), reassigns contiguous zIndexes in the new order, and turns every card face-down — matching "Pile's shuffle button: shuffle the pile and turn every card face-down" from CONTROLS.md. No-op below 2 cards.</td></tr>
+  </table>
+  <h3 id="table-actions-search">Searches</h3>
+  <div class="fn"><div class="sig">A.startSearch(state, searcherId, targetType, targetId, targetOwnerId)</div>Replaces any existing search by the same searcher, then appends a new <code>ActiveSearch</code>.</div>
+  <div class="fn"><div class="sig">A.stopSearch(state, searcherId)</div>Removes that searcher's entry; returns the same state unchanged (no revision bump) if there was nothing to remove.</div>
+  <h3 id="table-actions-widgets">Board widgets</h3>
+  <table>
+    <tr><th>Function</th><th>What it does</th></tr>
+    <tr><td><code>A.createWidget(state, instanceId, kind, x, y, ownerId)</code></td><td>Appends a new widget at the next widget zIndex.</td></tr>
+    <tr><td><code>A.addWidget(state, fields)</code></td><td>Lower-level variant taking a full fields table (used by the initial deal, for docked zone-widget counters, where more fields than the simple constructor needs must be set directly).</td></tr>
+    <tr><td><code>A.createArrow(state, instanceId, x, y, x2, y2, creatorId)</code></td><td>Appends an arrow widget (<code>kind = "arrow"</code>) — see <a href="game.html#session-lua">Session:createArrow</a> for the 5-second auto-delete timer layered on top of this.</td></tr>
+    <tr><td><code>A.moveWidget(state, instanceId, x, y)</code></td><td>Moves a widget to an absolute position, front zIndex, and <strong>detaches</strong> it (clears <code>attachedCardId</code>/offsets) — dragging an attached token off its card.</td></tr>
+    <tr><td><code>A.attachWidgetToCard(state, instanceId, cardId, x, y)</code></td><td>Attaches a widget to a card, computing and storing the offset from the card's current position so <code>syncAttachedWidgets</code> can keep tracking it.</td></tr>
+    <tr><td><code>A.setWidgetValue(state, instanceId, value)</code></td><td>Clamps <code>value</code> to <code>[boardWidgetCounterMin, boardWidgetCounterMax]</code> before storing (double-click ±1 on a Simple Counter, per CONTROLS.md).</td></tr>
+    <tr><td><code>A.deleteWidget(state, instanceId)</code></td><td>Removes the widget. <strong>Special case:</strong> if it's a <code>deckBuilder</code> widget, every card parked in one of its synthetic deck-widget zones (see <a href="#deck-widget-zones-lua">deck_widget_zones.lua</a>) is spilled onto the table at the widget's last position instead of being deleted with it.</td></tr>
+    <tr><td><code>A.setWidgetColors(state, instanceId, backgroundColor, textColor)</code></td><td>Recolors a widget (right-click "Set Colors").</td></tr>
+    <tr><td><code>A.duplicateWidget(state, sourceInstanceId, newInstanceId, x, y)</code></td><td>Clones a widget's kind/value/colors at a new position with a new id — the Ctrl-held-while-dropping-a-token behavior from CONTROLS.md.</td></tr>
+  </table>
+
+  <h2 id="deck-widget-zones-lua">deck_widget_zones.lua — synthetic zone ids</h2>
+  <div class="filecard">
+    <div class="path">src/core/deck_widget_zones.lua</div>
+    <div class="role">Port of <code>lib/game/deck_widget_zones.dart</code>. A board-placed Deck Widget (see <a href="ui-table.html">right-click &gt; Widgets &gt; Deck Widget</a>, only offered when a game defines deck-building zones) needs its own private zone namespace, separate from the game's fixed <code>ZoneDefinition</code>s — this file mints and parses those ids.</div>
+  </div>
+  <div class="fn"><div class="sig">D.build(widgetInstanceId, realZoneId) -&gt; string</div>Returns <code>"deckWidget:&lt;widgetInstanceId&gt;:&lt;realZoneId&gt;"</code>.</div>
+  <div class="fn"><div class="sig">D.isDeckWidgetZoneId(zoneId) -&gt; boolean</div>Simple prefix check.</div>
+  <div class="fn"><div class="sig">D.parse(zoneId) -&gt; {widgetInstanceId, realZoneId}|nil</div>Splits the synthetic id back apart; returns <code>nil</code> on anything malformed (missing separator, empty real zone id). Used throughout <a href="game.html#session-lua">session.lua</a> and <a href="game.html#host-engine-lua">host_engine.lua</a> wherever a zone-owning widget needs to be resolved (e.g. <code>Session:zoneDefinition</code> unwraps the synthetic id to find the underlying <code>ZoneDefinition</code>, and <code>host_engine:zoneOwnerId</code> resolves a deck-widget zone's effective owner to whoever owns the widget itself).</div>
+
+  <h2 id="pack-generator-lua">pack_generator.lua — pack-opening algorithm</h2>
+  <div class="filecard">
+    <div class="path">src/core/pack_generator.lua</div>
+    <div class="role">Port of <code>lib/game/pack_generator.dart</code>. The single algorithm behind <strong>both</strong> the table's Pack Generator board widget (free play) <strong>and</strong> the dedicated server's collection-mode card shop — server/README.md states the shop uses "the same algorithm as the Pack Generator widget, using each set's pack settings." See <a href="ui-server-screens.html">shop.lua</a> and <a href="server.html">server.html</a> for the two call sites.</div>
+  </div>
+  <div class="fn"><div class="sig">P.defaultPackCardCount</div><code>10</code> — how many cards a pack contains when the set defines no explicit <a href="#models-pack-set-tag">PackSetting</a>s.</div>
+  <div class="fn"><div class="sig">P.selectPackCards(setCards, packSettings, rng) -&gt; list of CardDefinition</div>
+  With no <code>packSettings</code>: shuffles the whole set and takes the first <code>defaultPackCardCount</code> cards. With settings: processes each <code>{tag, count}</code> setting in order, each time building a fresh pool of not-yet-picked cards in that set carrying that tag, shuffling it, and taking up to <code>count</code> from it. A card is <strong>never picked twice</strong> (tracked via a <code>pickedIds</code> set) and a pool that's smaller than its requested count is <strong>never padded</strong> — a pack can legitimately come back short if a tag doesn't have enough eligible cards left. <code>rng</code> is an optional seeded generator (see <a href="#util-lua"><code>util.seededRng</code></a>), otherwise it defaults to <code>math.random</code> inside <code>util.shuffle</code>.
+  </div>
+
+  <h2 id="save-remap-lua">save_remap.lua — reloading saved games</h2>
+  <div class="filecard">
+    <div class="path">src/core/save_remap.lua</div>
+    <div class="role">Port of <code>lib/game/save_game_remap.dart</code>. When a <a href="ui-screens.html">saved game</a> is reloaded, the people sitting down to play it now are almost never the exact same <code>PlayerInfo</code> objects (new ids each session) — this file reconciles old player identities with new ones, by name, and rebuilds a playable <a href="#models-tablestate">TableState</a> around the match.</div>
+  </div>
+  <div class="fn"><div class="sig">R.matchPlayersByName(savedPlayers, currentPlayers) -&gt; {matched, unmatchedSaved, unmatchedCurrent}</div>
+  Matches a saved player to a current player only when the name is <strong>unique on both sides</strong> (if two saved players shared a name, or two current players do, neither is auto-matched — ambiguous cases are left for the caller, presumably the <a href="ui-screens.html">load-saved-game UI</a>, to resolve manually). <code>matched</code> maps saved-id → current-id; the two unmatched lists are the leftovers on each side.
+  </div>
+  <div class="fn"><div class="sig">R.buildLoadedTableState(saved, currentPlayers, savedIdToCurrentId, validDefinitionIds) -&gt; TableState, droppedCardCount</div>
+  Rebuilds the saved state for today's players: players list is re-filtered/re-mapped to only the current players that matched; every card whose <code>definitionId</code> isn't in <code>validDefinitionIds</code> (the game's definitions may have changed since the save was made) is dropped entirely, and the drop count is returned so the UI can warn the user; every <em>surviving</em> card's <code>ownerId</code> is remapped through <code>savedIdToCurrentId</code> (or cleared to unowned if its old owner has no match); any card whose stack parent got dropped has its <code>stackParentId</code> cleared rather than pointing at a card that no longer exists; widgets are remapped the same way for <code>ownerId</code>/<code>creatorId</code>/<code>attachedCardId</code>. Unlike the original Flutter app, the game log is preserved as-is on reload — its entries name players the way they were at save time, which the header comment calls out as a deliberate difference.
+  </div>
+
+  <div class="nextprev">
+    <a href="ui-table.html">&larr; Game Table Rendering</a>
+    <a href="game.html">Game Session &amp; Controller &rarr;</a>
+  </div>
+</main>
+</body>
+</html>

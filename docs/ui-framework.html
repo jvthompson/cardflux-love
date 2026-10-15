@@ -1,0 +1,828 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>UI Toolkit (kit) — Cardflux Docs</title>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+<nav class="sidenav">
+  <a class="brand" href="index.html">Cardflux<small>Codebase Documentation</small></a>
+  <div class="group-label">Application</div>
+  <a href="architecture.html">Architecture &amp; App Lifecycle</a>
+  <a href="ui-framework.html" class="current">UI Toolkit (kit)</a>
+  <div class="group-label">User Interface</div>
+  <a href="ui-screens.html">Screens</a>
+  <a href="ui-gamedef-editor.html">Game Definition Editor</a>
+  <a href="ui-server-screens.html">Multiplayer Lobby Screens</a>
+  <a href="ui-table.html">Game Table Rendering</a>
+  <div class="group-label">Engine &amp; Data</div>
+  <a href="core.html">Core Rules Engine</a>
+  <a href="game.html">Game Session &amp; Controller</a>
+  <a href="data.html">Data &amp; Persistence</a>
+  <div class="group-label">Platform &amp; Network</div>
+  <a href="net.html">Networking</a>
+  <a href="platform.html">Platform Integration</a>
+  <div class="group-label">Server</div>
+  <a href="server.html">Cardflux Server (Go)</a>
+  <div class="group-label">Quality</div>
+  <a href="tests-tools.html">Tests &amp; Tools</a>
+</nav>
+<main class="page">
+  <header class="page-head">
+    <div class="crumb"><a href="index.html">Home</a> / Application</div>
+    <h1>UI Toolkit (kit)</h1>
+    <div class="subtitle">The hand-rolled immediate-mode UI framework every screen, dialog and widget in Cardflux is built on.</div>
+  </header>
+
+  <div class="toc">
+    <div class="toc-title">On this page</div>
+    <ul>
+      <li><a href="#overview">Overview</a></li>
+      <li><a href="#ui-lua">ui.lua: the immediate-mode core</a></li>
+      <li><a href="#input-model">Input model</a></li>
+      <li><a href="#layers-and-covers">Layers &amp; covers (z-order hit-testing)</a></li>
+      <li><a href="#widget-identity">Widget identity</a></li>
+      <li><a href="#clipping">Clipping</a></li>
+      <li><a href="#scaling">Scaling &amp; logical units</a></li>
+      <li><a href="#scroll-views">Scroll views</a></li>
+      <li><a href="#text-fields">Text fields &amp; focus</a></li>
+      <li><a href="#widget-catalog">ui.lua widget &amp; helper catalog</a></li>
+      <li><a href="#theme-lua">theme.lua: colors, fonts, icons</a></li>
+      <li><a href="#widgets-lua">widgets.lua: composite widgets</a></li>
+      <li><a href="#overlays-lua">overlays.lua: dialogs, menus, toasts</a></li>
+      <li><a href="#colorpicker-lua">colorpicker.lua</a></li>
+      <li><a href="#filter-menu-lua">filter_menu.lua</a></li>
+      <li><a href="#card-filter-bar-lua">card_filter_bar.lua</a></li>
+      <li><a href="#save-name-dialog-lua">save_name_dialog.lua</a></li>
+    </ul>
+  </div>
+
+  <h2 id="overview">Overview</h2>
+  <p>
+    Every visible pixel in Cardflux — screens, dialogs, menus, the table itself —
+    is drawn by the same small hand-written UI framework, <code>src/ui/kit/</code>.
+    There is no retained widget tree: nothing is "created" once and updated later.
+    Instead, every frame, screen code calls plain functions like
+    <code>ui.button("Save", x, y, w, h)</code> which <em>simultaneously</em> draw the
+    button and hit-test it against this frame's mouse state, returning whether it
+    was clicked. This is the "immediate-mode GUI" (IMGUI) pattern — the same family
+    as Dear ImGui or egui, just purpose-built in ~1100 lines of Lua for this app.
+    Persistent state that a widget needs across frames (a text field's caret
+    position, a scroll view's offset, whether a dropdown is open) is kept in small
+    per-id tables inside <code>ui.lua</code> itself, keyed by a widget id the caller
+    provides or that defaults to the widget's label and screen position.
+  </p>
+  <div class="filecard">
+    <div class="path">src/ui/kit/ui.lua</div>
+    <div class="role">The framework core: input queue, frame lifecycle, layers/hit-testing, clipping, scrolling, text editing, and every primitive/composite widget function.</div>
+  </div>
+  <div class="filecard">
+    <div class="path">src/ui/kit/theme.lua</div>
+    <div class="role">Material-3-flavored color schemes (light/dark), fonts, icon glyphs, and the global UI scale factor.</div>
+  </div>
+  <div class="filecard">
+    <div class="path">src/ui/kit/widgets.lua</div>
+    <div class="role">Higher-level composite widgets built from <code>ui.lua</code> primitives: avatars, banners, section headings, cards, toolbars, tab bars, chips, flow layout, drag-to-reorder.</div>
+  </div>
+  <div class="filecard">
+    <div class="path">src/ui/kit/overlays.lua</div>
+    <div class="role">Modal dialogs, nested context menus, and snackbar toasts — drawn above the current screen by the app shell every frame.</div>
+  </div>
+  <div class="filecard">
+    <div class="path">src/ui/kit/colorpicker.lua</div>
+    <div class="role">Palette swatch row + hex field + full HSV picker dialog, for assigning colors to board widgets, players, etc.</div>
+  </div>
+  <div class="filecard">
+    <div class="path">src/ui/kit/filter_menu.lua</div>
+    <div class="role">Multi-select filter popup and single-select sort popup, each an outlined trigger button with its own overlay panel.</div>
+  </div>
+  <div class="filecard">
+    <div class="path">src/ui/kit/card_filter_bar.lua</div>
+    <div class="role">The Set/tag-group filter row, Sort menu and search box shared by every filterable card list (deck editor pool, table's Card Library) — keeps them all filtering identically by delegating to <a href="core.html#card-filters-lua">core/card_filters.lua</a>.</div>
+  </div>
+  <div class="filecard">
+    <div class="path">src/ui/kit/save_name_dialog.lua</div>
+    <div class="role">Shared "name this save" dialog: a name field, a tap-to-reuse list of existing names, and an overwrite-confirmation step.</div>
+  </div>
+
+  <h2 id="ui-lua">ui.lua: the immediate-mode core</h2>
+  <p>
+    The module-level comment in the file states the model precisely: "Everything
+    is drawn and hit-tested in absolute screen coordinates during
+    <code>love.draw</code>. Input arrives through the <code>ui.on*</code> hooks
+    (called from the LÖVE callbacks) and is consumed during the next frame."
+    Concretely, <code>src/app.lua</code>'s LÖVE callback forwarders
+    (<a href="architecture.html#love-forwarders">App.mousepressed</a>, etc.) call
+    <code>ui.onMousePressed</code>/<code>onMouseReleased</code>/<code>onMouseMoved</code>/<code>onWheel</code>/<code>onKeyPressed</code>/<code>onTextInput</code>
+    to queue raw input into a module-local <code>input</code> table, and then
+    <code>App.draw</code> brackets the whole screen draw with
+    <code>ui.beginFrame(w, h)</code> / <code>ui.endFrame()</code>, during which every
+    widget call reads that queue to decide hover/press/click state for itself.
+  </p>
+
+  <h3 id="input-model">Input model</h3>
+  <p>
+    The <code>input</code> table holds: <code>mx, my</code> (current mouse position,
+    in logical units — already divided by <code>theme.scale</code> upstream);
+    <code>down[button]</code> (held state); <code>pressed[button]</code> /
+    <code>released[button]</code> (edge-triggered, true only on the frame the
+    transition happened, cleared at the end of every <code>endFrame</code>);
+    <code>clicks[button]</code> (the LÖVE "presses" count for that press — <code>2</code>
+    signals a double-click); <code>pressX</code>/<code>pressY</code> (where a button
+    went down, used by drag-threshold logic elsewhere in the app);
+    <code>wheelX</code>/<code>wheelY</code> (accumulated this frame, consumable via
+    <code>ui.consumeWheel()</code>); and two queues, <code>keys</code> and
+    <code>text</code>, which only ever fill up while a text field has focus
+    (<code>ui.onKeyPressed</code>/<code>ui.onTextInput</code> both check
+    <code>ui.focus</code> before queuing, and return whether they consumed the
+    event, which is how <code>App.keypressed</code>/<code>textinput</code> know
+    whether to also forward to the active screen).
+  </p>
+  <p>
+    Low-level accessors built on this state: <code>ui.mouse()</code>,
+    <code>ui.mouseDown(b)</code>, <code>ui.mousePressed(b)</code>,
+    <code>ui.mouseReleased(b)</code>, <code>ui.clickCount(b)</code>,
+    <code>ui.wheel()</code> (all default <code>b</code> to <code>1</code>, left
+    button). Most widget code doesn't call these directly though — it goes through
+    <code>ui.region</code> (see <a href="#widget-identity">Widget identity</a>), which
+    combines hit-testing with these primitives into one hover/press/click result.
+  </p>
+
+  <h3 id="layers-and-covers">Layers &amp; covers (z-order hit-testing)</h3>
+  <p>
+    Because nothing is retained, the framework needs an explicit way to know which
+    widget is "on top" when a dialog is drawn over a screen that's still being
+    drawn underneath it (the screen keeps calling its own widget functions even
+    while covered — it just shouldn't be able to receive clicks that a dialog
+    above it is intercepting). The mechanism is <strong>layers</strong> and
+    <strong>covers</strong>:
+  </p>
+  <ul>
+    <li>
+      <code>ui.overlay(fn)</code> defers a draw function to run <em>after</em> the main
+      screen body, each one bumping a <code>layerCount</code> and running in its own
+      layer — this is how dialogs, context menus, dropdown popups and tooltips all
+      stack above the screen and above each other (a dropdown's popup, itself drawn
+      via an inner <code>ui.overlay</code> call triggered from within an outer overlay
+      such as a dialog's content function, naturally lands one layer higher).
+    </li>
+    <li>
+      <code>ui.cover(x, y, w, h)</code> records that the <em>current</em> layer occupies
+      a rectangle of the screen, and <code>ui.coverAll()</code> is the common case of
+      covering the entire screen (also setting <code>ui._modalOpenNext = true</code>,
+      which becomes <code>ui.modalOpen()</code> next frame — queried by code that needs
+      to know "is some full-screen modal blocking the game table").
+    </li>
+    <li>
+      At the end of each frame, <code>ui.endFrame()</code> scans every cover recorded
+      this frame and finds the highest layer whose rect contains the current mouse
+      position — stored as <code>topLayerAtMouse</code> for <em>next</em> frame.
+    </li>
+    <li>
+      <code>ui.hover(x, y, w, h)</code> — the actual hit-test every widget ultimately
+      calls — first checks <code>layer == topLayerAtMouse</code>; if the calling
+      widget's current layer isn't the topmost layer under the mouse (as computed
+      last frame), it reports "not hovered" regardless of geometry. This is exactly
+      why a dialog visually on top of the screen also functionally blocks clicks to
+      whatever's underneath it, with no manual "is a dialog open" checks scattered
+      through screen code.
+    </li>
+    <li>
+      <code>ui.baseHasMouse()</code> exposes <code>topLayerAtMouse == 0</code> directly,
+      for code (like the game table) that does its own custom hit-testing outside the
+      <code>ui.region</code> helper and just needs to know whether anything above the
+      base layer currently owns the mouse.
+    </li>
+  </ul>
+  <p>
+    Because covers accumulate within a frame as drawing proceeds, this scheme
+    naturally supports arbitrarily nested popups (a menu's submenu, a dialog's own
+    dropdown) as long as each nested piece is itself deferred through
+    <code>ui.overlay</code> so it gets a higher layer number than its parent.
+  </p>
+
+  <h3 id="widget-identity">Widget identity</h3>
+  <p>
+    Interactive state that must persist across frames — which widget currently
+    holds mouse capture, which text field has keyboard focus, a dropdown's open/closed
+    flag — is keyed by a widget <strong>id</strong>, a string. Most widgets accept an
+    explicit <code>opts.id</code>; if omitted, <code>ui.defaultId(label, x, y)</code>
+    builds one from the label text, the widget's screen position (floored to
+    integers) and the current layer — adequate as long as two widgets with the same
+    label never sit at the exact same position in the same layer, which is true for
+    static layouts but <em>not</em> safe for widgets inside a loop (e.g. a list row
+    rendered per item) — those call sites pass an explicit id incorporating the
+    loop index or item key instead (see e.g. <code>Reorder:handle(i, ...)</code> in
+    <a href="#widgets-lua">widgets.lua</a>, which builds <code>self.id .. ":h" .. i</code>).
+  </p>
+  <p>
+    <code>ui.state(id)</code> is the generic escape hatch: lazily creates and returns
+    a persistent per-id table in <code>widgetState</code>, used by composite widgets
+    (dropdowns, filter menus, the reorder helper) to stash whatever ad-hoc fields they
+    need (<code>open</code>, <code>dragging</code>, cached picks, …) without the core
+    framework needing to know about them.
+  </p>
+  <p>
+    <code>ui.region(id, x, y, w, h, opts)</code> is the single workhorse hit-test/interaction
+    primitive almost every clickable widget is built from. It computes
+    <code>hovered</code> via <code>ui.hover</code>; if hovered and a press just
+    happened, claims mouse capture (<code>ui.active = id</code>), sets
+    <code>pressed = true</code>, and flags <code>doubleClicked</code> when
+    <code>clicks[1] &gt;= 2</code>; flags <code>rightClicked</code> on a hovered
+    right-button press; computes <code>held</code> as "this id currently owns capture
+    and the left button is still down"; and sets <code>clicked = true</code> on
+    release only if capture is still held by this id <em>and</em> the mouse is still
+    over it (so dragging off a button before releasing does not count as a click).
+    If <code>opts.cursor</code>/<code>opts.tooltip</code> are given and the region is
+    hovered, it also sets the frame's cursor and registers a tooltip. Capture itself
+    is released globally in <code>ui.endFrame()</code> whenever the left button is up.
+  </p>
+
+  <h3 id="clipping">Clipping</h3>
+  <p>
+    <code>ui.pushClip(x, y, w, h)</code> / <code>ui.popClip()</code> maintain a stack of
+    logical-unit clip rectangles, each new push intersected with the current top of
+    stack so nested clips can only shrink, never escape, their parent — then applies
+    it as a real GPU scissor rect via the local <code>setScissor</code> helper, which
+    converts to physical pixels using <code>theme.scale</code> (scissor rects are not
+    affected by <code>love.graphics.scale</code>, so this conversion has to be done by
+    hand). Clipping is used throughout for scroll views, text field interiors, and
+    anywhere text/content must not bleed past a container's edge.
+  </p>
+
+  <h3 id="scaling">Scaling &amp; logical units</h3>
+  <p>
+    All widget geometry is expressed in logical units matching the display's "design
+    size" — the same numbers at any DPI or user-chosen UI scale (see
+    <a href="architecture.html#ui-scale">Architecture: UI scale &amp; DPI</a>). Three
+    small helpers bridge logical units to crisp physical pixels:
+  </p>
+  <ul>
+    <li><code>ui.snap(v)</code> — floors a logical coordinate to the nearest whole
+    <em>physical</em> pixel (<code>floor(v * scale) / scale</code>) before text is drawn,
+    so glyphs never sit on a half-pixel boundary and blur.</li>
+    <li><code>ui.screenSize()</code> returns the current logical window size (set every
+    frame from <code>ui.beginFrame(w, h)</code>'s arguments, which <code>App.draw</code>
+    computes from the physical framebuffer size divided by scale).</li>
+    <li>Fonts themselves are rasterized at the physical pixel density (via LÖVE's font
+    "dpiscale" argument — see <a href="#theme-lua">theme.lua</a>'s <code>newFont</code>)
+    so text stays sharp while every measurement used by layout code stays in logical
+    units throughout.</li>
+  </ul>
+
+  <h3 id="scroll-views">Scroll views</h3>
+  <p>
+    A vertical scroll view is a <code>ui.beginScroll(id, x, y, w, h)</code> /
+    <code>ui.endScroll(id, contentHeight)</code> pair wrapped around content drawn at
+    <code>y - offset</code>, where <code>offset</code> is the value
+    <code>beginScroll</code> returns. Internally it keeps per-id state
+    (<code>y</code> the current rendered offset, <code>target</code> the offset it's
+    animating toward, <code>contentH</code> the last known content height) in
+    <code>scrollState</code>. <code>beginScroll</code> clamps any stale offset against
+    the content height known from <em>last</em> frame, then pushes a clip for the
+    viewport. <code>endScroll</code> pops that clip, records this frame's real
+    content height, and if the view is hovered and the mouse wheel moved, nudges
+    <code>target</code> by <code>wheelY * 60</code> clamped to the valid range; every
+    frame <code>y</code> eases 45% of the remaining distance toward <code>target</code>
+    (simple exponential smoothing, snapping once within 0.5px) — giving scrolling a
+    soft, slightly springy feel rather than an instant jump. It also draws (and makes
+    draggable, via another <code>ui.region</code>) a thin scrollbar thumb on the right
+    edge whenever the content overflows. <code>ui.scrollTo(id, y)</code> /
+    <code>ui.scrollToEnd(id)</code> let calling code jump a scroll view
+    programmatically (e.g. after appending a chat message), and
+    <code>ui.scrollOffset(id)</code> reads the current offset without drawing anything.
+  </p>
+
+  <h3 id="text-fields">Text fields &amp; focus</h3>
+  <p>
+    <code>ui.focus</code> holds the id of the text field currently receiving keyboard
+    input (or <code>nil</code>). It changes only at frame boundaries: widgets request
+    a change by writing to the module-local <code>pendingFocus</code>
+    (<code>ui.focusField(id, selectAll)</code> requests focus, optionally also queuing
+    a "select all text" flag consumed on the field's next draw; <code>ui.blur()</code>
+    requests no focus by setting <code>pendingFocus = false</code>, a sentinel distinct
+    from "no request" / <code>nil</code>) and <code>ui.endFrame()</code> applies it.
+    Clicking anywhere that isn't the currently-focused field's own hit region also
+    clears focus automatically (tracked via the per-frame flag
+    <code>ui._focusHitThisFrame</code>, set by the field itself when it's the one
+    being clicked).
+  </p>
+  <p>
+    <code>ui.textField(id, x, y, w, text, opts)</code> is a full single-line editor:
+    caret and selection-anchor tracking (per-id state in <code>fieldState</code>),
+    click-to-position and click-drag-to-select, double-click-to-select-word
+    (<code>wordLeft</code>/<code>wordRight</code> walk UTF-8 codepoints classified by
+    <code>isWordChar</code>), Shift-extend selection, Home/End, Ctrl+Left/Right
+    (word jumps), Backspace/Delete (word-aware with Ctrl), Ctrl+A/C/X/V (the
+    clipboard goes through <code>love.system.getClipboardText/setClipboardText</code>,
+    and pasted text has newlines collapsed to spaces since this is a single-line
+    field), Enter (reports <code>submitted = true</code>), Escape (blurs), and Tab
+    (moves focus to the next/previous focusable field in this frame's draw order,
+    unless <code>opts.noTab</code> or a custom <code>opts.onTab(shift)</code> handler is
+    given — used to make Tab do something else, e.g. advance a wizard step). All
+    text is handled as UTF-8 throughout (via Lua's <code>utf8</code> library) so
+    caret movement and selection respect multi-byte characters correctly. Other
+    options: <code>label</code> (a floating label that moves above the border once
+    the field has content or focus, Material-style), <code>hint</code>,
+    <code>prefix</code>, <code>error</code> (shows a red message line below and tints
+    the border), <code>password</code> (masks with •), <code>maxLength</code>,
+    <code>filter(str)</code> (reject inserted text conditionally), <code>autofocus</code>,
+    <code>selectAllOnFocus</code>. It returns <code>(text, changed, submitted)</code> —
+    the caller is expected to store the returned <code>text</code> back into its own
+    state (this is a controlled-component pattern, not an internally-owned value).
+  </p>
+  <p>
+    <code>ui.dropdown(id, x, y, w, options, selected, opts)</code> builds on the same
+    per-id <code>ui.state</code> plus an <code>ui.overlay</code> popup list (itself a
+    mini scroll view) that closes on outside click, right-click, or picking an
+    option — note the pick is applied with a one-frame delay (<code>st.hasPick</code>/<code>st.pick</code>)
+    because the popup is drawn in a later overlay pass than the dropdown's own
+    return value for this frame has already been computed.
+  </p>
+
+  <h3 id="widget-catalog">ui.lua widget &amp; helper catalog</h3>
+  <p>Grouped reference of every public function the module exposes.</p>
+  <table>
+    <tr><th>Function</th><th>Purpose</th></tr>
+    <tr><td><code>ui.beginFrame(w, h)</code> / <code>ui.endFrame()</code></td><td>Start/end a UI frame; resets per-frame layer/cover/overlay state and applies deferred focus/cursor changes.</td></tr>
+    <tr><td><code>ui.onMousePressed/Released/Moved(x, y, ...)</code>, <code>ui.onWheel(dx, dy)</code>, <code>ui.onKeyPressed(key, scancode, isrepeat)</code>, <code>ui.onTextInput(t)</code></td><td>Input hooks called from <code>src/app.lua</code>'s LÖVE callback forwarders.</td></tr>
+    <tr><td><code>ui.modalOpen()</code></td><td>True if a full-screen cover (<code>ui.coverAll</code>) was registered last frame.</td></tr>
+    <tr><td><code>ui.overlay(fn)</code> / <code>ui.cover(x,y,w,h)</code> / <code>ui.coverAll()</code> / <code>ui.layer()</code></td><td>Layering and z-order hit-test registration (see above).</td></tr>
+    <tr><td><code>ui.setCursor(name)</code></td><td>Requests a system cursor shape (applied once, at end of frame) for this frame.</td></tr>
+    <tr><td><code>ui.pushClip/popClip(x,y,w,h)</code></td><td>Nested logical-unit clip rectangles backed by a real GPU scissor.</td></tr>
+    <tr><td><code>ui.hover(x,y,w,h)</code> / <code>ui.baseHasMouse()</code> / <code>ui.hoverIgnoringLayer(x,y,w,h)</code></td><td>Hit-testing: layer-aware, "is anything above the base layer under the mouse", and a raw geometry-only check ignoring layering (used by overlay panels closing themselves on an outside click, where "outside" must ignore their own layer).</td></tr>
+    <tr><td><code>ui.mouse()</code>, <code>ui.mouseDown/Pressed/Released(b)</code>, <code>ui.clickCount(b)</code>, <code>ui.wheel()</code>, <code>ui.consumeWheel()</code></td><td>Raw input queries.</td></tr>
+    <tr><td><code>ui.region(id,x,y,w,h,opts)</code> / <code>ui.defaultId(label,x,y)</code></td><td>The core interactive-region primitive and its default id generator.</td></tr>
+    <tr><td><code>ui.tooltip(id, text)</code></td><td>Registers hover tooltip text for this frame; the tooltip itself fades in after a 0.5s delay and is drawn by an internal <code>drawTooltip</code> hooked into <code>endFrame</code>.</td></tr>
+    <tr><td><code>ui.setColor(c)</code>, <code>ui.rect(mode,x,y,w,h,r,color,lineWidth)</code>, <code>ui.divider(x,y,w,color)</code>, <code>ui.shadow(x,y,w,h,r,strength)</code></td><td>Low-level drawing helpers (rectangles, dividers, a soft 3-layer drop shadow used under dialogs/popups).</td></tr>
+    <tr><td><code>ui.text(str,x,y,opts)</code>, <code>ui.textWidth/Height(...)</code>, <code>ui.clampLines(...)</code>, <code>ui.ellipsize(...)</code></td><td>Text drawing with optional wrap width, max-line clamping with ellipsis, valign, and a binary-search-based ellipsizer that measures actual glyph widths.</td></tr>
+    <tr><td><code>ui.icon(name,x,y,size,color)</code>, <code>ui.iconCentered(name,x,y,w,h,size,color)</code></td><td>Draws a Material icon glyph from <code>theme.glyph</code>.</td></tr>
+    <tr><td><code>ui.buttonWidth(label,opts)</code>, <code>ui.button(label,x,y,w,h,opts)</code>, <code>ui.iconButton(icon,x,y,opts)</code></td><td>Filled/outlined/text/tonal/danger buttons and round icon buttons; return whether clicked this frame.</td></tr>
+    <tr><td><code>ui.checkbox(id,x,y,value,opts)</code>, <code>ui.switch(id,x,y,value,opts)</code>, <code>ui.switchRow(id,label,x,y,w,value,opts)</code></td><td>Boolean toggles; each returns the (possibly just-toggled) new value.</td></tr>
+    <tr><td><code>ui.segmented(id,x,y,w,options,selected,opts)</code></td><td>Material segmented-button group; returns the newly selected value.</td></tr>
+    <tr><td><code>ui.slider(id,x,y,w,value,min,max,opts)</code>, <code>ui.sliderRow(...)</code></td><td>Draggable horizontal slider (optionally stepped) and a labelled row variant; returns <code>(value, held)</code>.</td></tr>
+    <tr><td><code>ui.spinner(cx,cy,radius,color)</code>, <code>ui.progressBar(x,y,w,h,value,color)</code></td><td>Indeterminate spinner arc and a progress bar (determinate or, with <code>value = nil</code>, an animated indeterminate sweep).</td></tr>
+    <tr><td><code>ui.beginScroll/endScroll(id,...)</code>, <code>ui.scrollTo/scrollToEnd/scrollOffset(id,...)</code></td><td>Smoothed vertical scroll views with a drag-able thumb.</td></tr>
+    <tr><td><code>ui.focusField(id, selectAll)</code>, <code>ui.blur()</code></td><td>Request focus changes, applied at end of frame.</td></tr>
+    <tr><td><code>ui.textField(id,x,y,w,text,opts)</code>, <code>ui.textFieldHeight(opts)</code></td><td>Full text editing widget (see above) and the vertical space it needs including any error line.</td></tr>
+    <tr><td><code>ui.dropdown(id,x,y,w,options,selected,opts)</code></td><td>Select control with an overlay popup list.</td></tr>
+    <tr><td><code>ui.state(id)</code>, <code>ui.time()</code></td><td>Generic persistent per-id state table; current frame timestamp (<code>love.timer.getTime()</code> as of <code>beginFrame</code>).</td></tr>
+  </table>
+
+  <h2 id="theme-lua">theme.lua: colors, fonts, icons</h2>
+  <p>
+    The header comment says it plainly: this "mirrors <code>lib/app_theme.dart</code>
+    (Material 3 seeded from green, light and dark) plus the explicit colors the
+    Flutter widgets use." Colors are plain <code>{r, g, b, a}</code> tables in the
+    <code>0..1</code> range, built from hex strings by the local <code>hex(s, a)</code>
+    helper (exposed as <code>T.hex</code>).
+  </p>
+  <div class="fn">
+    <span class="sig">T.light / T.dark</span>
+    <p>Two full Material-3-style color role tables (<code>primary</code>, <code>onPrimary</code>,
+    <code>primaryContainer</code>, <code>secondaryContainer</code>, <code>surface</code>,
+    several <code>surfaceContainer*</code> tones, <code>outline</code>/<code>outlineVariant</code>,
+    <code>error</code>, <code>scrim</code>, <code>disabled</code>, <code>shadow</code>, …),
+    approximating tones generated from Flutter's <code>Colors.green</code> seed.</p>
+  </div>
+  <div class="fn">
+    <span class="sig">T.fixed</span>
+    <p>Colors that never change with the light/dark theme — the game table felt green,
+    the title bar's fixed dark background, pure white/black, and a handful of named
+    accent colors (<code>orange</code>, <code>blue</code>, <code>red</code>, <code>green</code>,
+    <code>cardBackBlue</code>, <code>missingBack</code>, …) used for banners, warnings and
+    card-back placeholders regardless of theme.</p>
+  </div>
+  <div class="fn">
+    <span class="sig">T.isDark</span> / <span class="sig">T.c</span> / <span class="sig">T.setDark(dark)</span>
+    <p><code>T.c</code> is the <em>active</em> palette (<code>T.light</code> or
+    <code>T.dark</code>), what almost all drawing code reads (<code>theme.c.primary</code>
+    etc.); <code>T.setDark</code> flips <code>T.isDark</code> and repoints <code>T.c</code>.
+    <a href="architecture.html#app-shell">App</a> re-derives <code>theme.c</code> from
+    <code>theme.isDark</code> at the end of every draw rather than caching it, and
+    screens with <code>forceLightTheme</code> can override <code>theme.c = theme.light</code>
+    for the duration of their own draw.</p>
+  </div>
+  <div class="fn">
+    <span class="sig">T.alpha(c, a)</span> / <span class="sig">T.mix(a, b, t)</span> / <span class="sig">T.isLight(c)</span>
+    <p>Small color-math helpers: return a copy of a color with its alpha multiplied,
+    linearly interpolate between two colors, and (via the WCAG relative-luminance
+    formula) decide whether a color is "light" so UI code can choose black or white
+    text/icon color for contrast on top of it (used e.g. by the color-picker preview
+    button).</p>
+  </div>
+  <div class="fn">
+    <span class="sig" id="theme-scale">T.scale</span> / <span class="sig">T.setScale(s)</span>
+    <p>The global UI scale factor (DPI × user setting — computed in
+    <a href="architecture.html#ui-scale">App.effectiveScale</a> and applied here).
+    <code>T.setScale</code> is a no-op if the scale hasn't actually changed; otherwise
+    it updates <code>T.scale</code> and <strong>clears both font caches</strong>
+    (<code>fonts</code>, <code>iconFonts</code>) since every cached font object was
+    rasterized at the old pixel density and must be rebuilt.</p>
+  </div>
+  <div class="fn">
+    <span class="sig">T.font(size, weight)</span> / <span class="sig">T.iconFont(size)</span>
+    <p>Lazily creates and caches <code>love.graphics.Font</code> objects keyed by
+    weight+size (<code>weight</code> one of <code>"regular"</code> (default),
+    <code>"medium"</code>, <code>"bold"</code>, mapped to three bundled Roboto TTF
+    files), always constructed with <code>T.scale</code> passed as LÖVE's font
+    "dpiscale" argument so glyphs rasterize at full physical-pixel sharpness
+    regardless of logical-unit size. Each text font also registers a fallback
+    font, <code>NotoSansSymbols2-Regular.ttf</code>, for glyphs Roboto is missing
+    (notably the card suit symbols ♠♥♦♣). <code>T.iconFont</code> separately caches
+    <code>MaterialIcons-Regular.ttf</code> fonts by size.</p>
+  </div>
+  <div class="fn">
+    <span class="sig">T.icons</span> / <span class="sig">T.glyph(name)</span>
+    <p><code>T.icons</code> is a lookup table from short semantic names (e.g.
+    <code>"delete_outline"</code>, <code>"shuffle"</code>, <code>"check_box"</code>) to
+    Material Icons font codepoints — the comment notes that outlined variants used
+    in the original Flutter code are mapped here to their filled counterparts
+    (the bundled icon font apparently only ships filled glyphs). <code>T.glyph(name)</code>
+    converts a codepoint to its UTF-8 character and caches the result, raising a Lua
+    error for an unknown icon name (a deliberate fail-fast — a typo'd icon name is a
+    programmer error, not something to silently swallow).</p>
+  </div>
+  <div class="fn">
+    <span class="sig">T.setColor(c, alphaMul)</span>
+    <p>Thin wrapper over <code>love.graphics.setColor</code> that also applies an
+    optional extra alpha multiplier; aliased in <code>ui.lua</code> as
+    <code>ui.setColor</code> and used throughout as the standard way to set the draw
+    color from a theme color table.</p>
+  </div>
+
+  <h2 id="widgets-lua">widgets.lua: composite widgets</h2>
+  <p>
+    Small, screen-agnostic widgets built on top of <code>ui.lua</code>'s primitives
+    and shared by several screens, grouped under the local table <code>W</code>:
+  </p>
+  <div class="fn">
+    <span class="sig">W.avatar(x, y, size, argb, source, showBorder)</span>
+    <p>Port of <code>avatar_widget.dart</code>: draws a player avatar as either a
+    cover-fit image (looked up through
+    <a href="data.html#image-cache"><code>image_cache.get</code></a> by
+    <code>source.path</code> or <code>source.key</code>) or, if no image is available,
+    a flat square in the player's color (<code>src/core/color.toRgba(argb)</code>
+    converts the app's packed ARGB integer representation to an <code>{r,g,b,a}</code>
+    table). Unless <code>showBorder == false</code>, draws a border in the same
+    player color (thicker at avatar sizes ≥100px).</p>
+  </div>
+  <div class="fn">
+    <span class="sig">W.banner(text, x, y, w, kind, onClick)</span>
+    <p>An orange ("warning", default) or blue (<code>kind == "info"</code>) message
+    banner that auto-sizes its height to the wrapped text, optionally clickable.
+    Returns the height it drew, so callers can lay out whatever follows. This is
+    what renders Home's "you were disconnected" message set by
+    <a href="architecture.html#screen-stack">App.popToHome</a>.</p>
+  </div>
+  <div class="fn">
+    <span class="sig">W.heading(text, x, y, opts)</span>
+    <p>A bold 14px (by default) section label; always returns <code>20</code> as the
+    height to advance by.</p>
+  </div>
+  <div class="fn">
+    <span class="sig">W.card(x, y, w, h, opts)</span>
+    <p>A rounded, optionally bordered filled rectangle in the surface-container
+    color — the generic "Material card" container background used under grouped
+    content.</p>
+  </div>
+  <div class="fn">
+    <span class="sig">W.editorToolbar(x, y, w, title, actions)</span>
+    <p>Port of <code>editor_toolbar.dart</code>: a 56px-tall (<code>W.editorToolbarHeight</code>)
+    in-body toolbar sitting just under the window's title bar, showing a screen
+    title on the left and a row of icon-button <code>actions</code>
+    (<code>{icon, tooltip, onClick, id, disabled}</code>) packed right-to-left from
+    the end. Used by editor-style screens (deck editor, game-definition editor) for
+    their own save/add/etc. actions, distinct from the app-wide title bar in
+    <a href="architecture.html#title-bar"><code>src/app.lua</code></a>.</p>
+  </div>
+  <div class="fn">
+    <span class="sig">W.tabBar(id, x, y, w, labels, selected)</span>
+    <p>Equal-width Material tab row (48px, <code>W.tabBarHeight</code>) with a
+    primary-colored underline beneath the selected tab; returns
+    <code>(selectedIndex, height)</code>. Used by the game-definition editor's tabs
+    (see <a href="ui-gamedef-editor.html">Game Definition Editor</a>).</p>
+  </div>
+  <div class="fn">
+    <span class="sig">W.chipWidth(label, selected, opts)</span> / <span class="sig">W.chip(label, x, y, selected, opts)</span>
+    <p>A 32px (<code>W.chipHeight</code>) Material filter chip: filled when selected,
+    outlined otherwise, with a leading check icon when selected or a caller-supplied
+    <code>opts.icon</code> otherwise. Returns <code>(clicked, width)</code>.</p>
+  </div>
+  <div class="fn">
+    <span class="sig">W.flow(x, y, w, rowH, gap)</span>
+    <p>A tiny flow-layout helper: returns a <code>place(width)</code> function that
+    hands back the next <code>(x, y)</code> for an item of the given width, wrapping
+    to a new row (advancing by <code>rowH + gap</code>) once the current row would
+    overflow <code>w</code>, plus a <code>bottom()</code> function returning the y just
+    below the last row placed. Used wherever chips/buttons need to wrap, e.g. tag
+    filter rows.</p>
+  </div>
+  <div class="fn">
+    <span class="sig">W.moveItem(list, from, to)</span>
+    <p>In-place reorder of a plain Lua array: removes the item at <code>from</code> and
+    re-inserts it at index <code>to</code> (interpreted <em>after</em> the removal — see
+    <code>Reorder:finish</code> below for how that index is computed from a drop
+    position).</p>
+  </div>
+  <div class="fn">
+    <span class="sig">W.reorder(id)</span> &rarr; <code>Reorder</code> object
+    <p>Drag-to-reorder support for an immediate-mode vertical list. Usage is a
+    three-step dance each frame: create the helper once per frame
+    (<code>local ro = W.reorder(id)</code>), call <code>ro:handle(i, hx, hy, rowY, rowH)</code>
+    once per row to draw a drag handle (grip icon) and record that row's current
+    <code>y</code>/height, then once after the loop call <code>ro:finish(x, w)</code>
+    which — while a drag is in progress — draws a ghost highlight over the
+    dragged row and a drop-indicator line at the insertion point implied by the
+    current mouse y, and on mouse release returns <code>(from, to)</code> (in
+    <code>W.moveItem</code> index semantics) if the item actually moved, or
+    <code>nil</code> otherwise. The drag only starts when the handle region itself is
+    pressed (<code>r.pressed and ui.mousePressed(1)</code>), not from pressing anywhere
+    in the row, so rows remain independently clickable elsewhere.</p>
+  </div>
+
+  <h2 id="overlays-lua">overlays.lua: dialogs, menus, toasts</h2>
+  <p>
+    While <code>ui.lua</code> provides the generic overlay/layer mechanism,
+    <code>overlays.lua</code> (module table <code>O</code>) is the concrete
+    implementation of the three overlay <em>kinds</em> the app actually uses, plus
+    the app-shell integration point: <code>src/app.lua</code>'s <code>App.draw</code>
+    calls <code>overlays.draw()</code> once per frame (after the screen's own draw)
+    to queue whatever's currently open, and <code>overlays.keypressed(key)</code> is
+    consulted by <code>App.keypressed</code> ahead of the active screen (see
+    <a href="architecture.html#love-forwarders">Architecture: LÖVE forwarders</a>).
+    <code>O.contentTop</code> is set by <code>App.draw</code> to the title bar's
+    height, so dialog scrims start below the title bar (keeping it visible/usable)
+    the way a Flutter <code>Navigator</code>'s dialog route would.
+  </p>
+  <div class="fn">
+    <span class="sig">O.dialog(spec)</span>
+    <p>Opens a modal dialog described by a spec table — <code>title</code>,
+    <code>width</code> (default 400), <code>dark</code> (use the fixed dark overlay
+    panel color, for in-game dialogs drawn over the felt table rather than a
+    screen), <code>content(d, x, y, w) -&gt; heightUsed</code> (a custom-drawing
+    callback), <code>message</code> (plain-text shortcut instead of/alongside
+    <code>content</code>), <code>actions</code> (an array of
+    <code>{label, variant, onClick(d) -&gt; keepOpen?, disabled}</code>, right-aligned,
+    where returning a truthy value from <code>onClick</code> keeps the dialog open —
+    used for multi-step dialogs like the save-name overwrite confirmation), and
+    <code>onDismiss(d)</code> called when closed via Escape or a scrim click. Returns
+    the live dialog object, which gets a <code>:close()</code> method via metatable
+    <code>__index</code>. Dialogs stack (pushed onto a local array) so one dialog can
+    open another on top of it.</p>
+  </div>
+  <div class="fn">
+    <span class="sig">O.confirm(title, message, confirmLabel, onConfirm, opts)</span> / <span class="sig">O.alert(title, message, opts)</span>
+    <p>Convenience wrappers over <code>O.dialog</code> for the two most common
+    shapes: a Cancel/Confirm pair (<code>opts.danger</code> renders the confirm button
+    in the danger/red variant; <code>opts.cancelLabel</code> overrides "Cancel") and a
+    single-OK informational alert.</p>
+  </div>
+  <div class="fn">
+    <span class="sig">O.closeDialog(d)</span> / <span class="sig">O.topDialog()</span> / <span class="sig">O.anyOpen()</span>
+    <p>Remove a specific dialog from the stack (blurring UI focus as it closes), peek
+    the topmost dialog, and check whether any dialog <em>or</em> menu is currently
+    open (consulted widely by screens/App to suppress input that shouldn't reach the
+    table while something modal is up).</p>
+  </div>
+  <p>
+    Internally, <code>drawDialog(d, isTop)</code> (called from an <code>ui.overlay</code>
+    queued by <code>O.draw</code>) covers the whole screen below <code>O.contentTop</code>
+    with a translucent scrim, sizes the dialog box to fit its title/content/actions
+    (clamped to the available screen height, with content scrolling via
+    <code>ui.beginScroll</code>/<code>endScroll</code> if it's taller than that), draws a
+    soft shadow and rounded panel, the title, the scrollable content region, and the
+    right-aligned action buttons. Only the <em>top</em> dialog closes itself on an
+    outside click (and only if <code>d.dismissible</code>, default true, and no menu is
+    currently open) — dialogs beneath it stay open and simply remain covered.
+  </p>
+  <div class="fn">
+    <span class="sig">O.menu(x, y, items, opts)</span> / <span class="sig">O.closeMenus()</span> / <span class="sig">O.menuOpen()</span> / <span class="sig">O.menuItemRect(label)</span>
+    <p>Opens a context menu at a point. <code>items</code> is an array of
+    <code>{label, icon, onSelect, submenu, disabled, checked, divider}</code> —
+    <code>submenu</code> nests another items array, opened automatically on hover of
+    its parent row (<code>drawMenu</code> recurses, pushing successive overlay layers
+    so a submenu always draws above its parent and is itself dismissed correctly).
+    <code>divider = true</code> draws a thin separator instead of a row.
+    <code>menuItemRect(label)</code> exposes a currently-visible item's screen rect,
+    used by scripted UI tests (see <a href="architecture.html#dev-hooks">--script</a>)
+    to click a specific menu entry by label without hardcoding coordinates.</p>
+  </div>
+  <p>
+    All context menus used throughout the game table — right-click on a card, a
+    pile, a zone, a board widget — are built with <code>O.menu</code>; see
+    <a href="ui-table.html">Game Table Rendering</a> for how each menu's item list is
+    assembled, and <code>CONTROLS.md</code>'s "Right-click menus" table for the
+    user-facing behavior.
+  </p>
+  <div class="fn">
+    <span class="sig">O.toast(text, seconds)</span>
+    <p>Queues a snackbar message shown at the bottom-center of the screen for
+    <code>seconds</code> (default 4), fading out over the last quarter-second. Multiple
+    toasts queue up but only the most recent is drawn at a time
+    (<code>drawToasts</code> only renders <code>toasts[#toasts]</code>, discarding
+    expired ones each frame).</p>
+  </div>
+  <div class="fn">
+    <span class="sig">O.draw()</span> / <span class="sig">O.keypressed(key)</span>
+    <p><code>O.draw()</code> is the per-frame integration point called from
+    <code>App.draw</code>: queues one overlay per open dialog (checking the dialog is
+    still in the stack before drawing it, in case an action closed it mid-queue),
+    one overlay for the menu stack if any menu is open, and one overlay for
+    toasts. <code>O.keypressed(key)</code> is the integration point called from
+    <code>App.keypressed</code>: Escape closes the innermost open submenu first, else
+    the top dismissible dialog (firing its <code>onDismiss</code>); Enter/Return
+    triggers a dialog's <code>onEnter(d)</code> if it defined one; either way it
+    returns whether <em>any</em> dialog or menu is open, so the caller knows whether to
+    swallow the key from the underlying screen.</p>
+  </div>
+
+  <h2 id="colorpicker-lua">colorpicker.lua</h2>
+  <p>
+    Port of <code>color_swatch_row.dart</code> and <code>color_picker_field.dart</code>
+    (module table <code>P</code>). Provides a reusable "pick a color" control used
+    anywhere a player, board widget or similar needs a color assigned.
+  </p>
+  <div class="fn">
+    <span class="sig">P.swatchRow(id, x, y, w, selected)</span>
+    <p>Lays out <code>color.boardWidgetColorPalette</code> (from
+    <a href="core.html#color-lua">core/color.lua</a>) as a wrapping grid of 28px
+    circular swatches (as many per row as fit in <code>w</code>), highlighting the
+    selected one with a thicker blue ring. Returns <code>(newSelected, heightUsed)</code>.</p>
+  </div>
+  <div class="fn">
+    <span class="sig">P.openPickerDialog(initial, onPicked)</span>
+    <p>Opens a full HSV picker dialog via <code>overlays.dialog</code>: a
+    saturation/value square (rendered as a 24×24 grid of flat-colored rectangles —
+    cheap enough per-frame without needing a shader), a hue bar below it (60
+    one-degree-wide strips), and a live color preview with its hex code, converting
+    via <code>core/color</code>'s <code>rgbToHsv</code>/<code>hsvToRgb</code>/<code>hexFromColor</code>.
+    Dragging within the square sets saturation/value from the cursor position
+    (clamped 0..1); dragging the hue bar sets hue (clamped to just under 1 so it
+    doesn't wrap back to red). "Select" calls <code>onPicked(argb)</code> with the
+    final color converted to the app's packed ARGB format.</p>
+  </div>
+  <div class="fn">
+    <span class="sig">P.field(id, x, y, w, selected, opts)</span>
+    <p>The composite control most screens actually use: the swatch row, a hex text
+    field (editable, auto-synced whenever <code>selected</code> changes from outside),
+    and a square preview/"more colors" button that opens the full picker dialog
+    above. Typing a valid hex value updates the selection live via
+    <code>color.colorFromHex</code>; picking from the full dialog is staged through
+    per-id state (<code>st.picked</code>) and applied on the next call, the same
+    one-frame-delay pattern <code>ui.dropdown</code> uses for its popup picks. Returns
+    <code>(newArgb, heightUsed)</code>.</p>
+  </div>
+
+  <h2 id="filter-menu-lua">filter_menu.lua</h2>
+  <p>
+    Ports of <code>multi_select_filter_menu.dart</code> and the <code>CardSortMenu</code>
+    widget from <code>card_sort_menu.dart</code> (module table <code>M</code>) — two
+    outlined "trigger button + popup" controls, differing in whether the popup
+    stays open across picks (filters, since multiple can be toggled) or closes on
+    the first pick (sort, single-select).
+  </p>
+  <div class="fn">
+    <span class="sig">M.multiSelect(id, x, y, label, options, selected, excluded)</span>
+    <p>Trigger button shows <code>label (N)</code> where <code>N</code> is the current
+    selected count. Its popup (opened/closed via per-id <code>ui.state</code>) lists
+    every option as a checkbox row, flowing into multiple columns if there are more
+    than <code>MAX_PER_COLUMN</code> (20) options, plus a "Select All"/"Deselect All"
+    row at the top. <code>selected</code> and the optional <code>excluded</code> are
+    plain id-keyed set tables (<code>{[id] = true}</code>) <strong>mutated in place</strong> —
+    the function has no meaningful return value for them; callers read the same
+    tables back after the call. When <code>excluded</code> is provided, each row also
+    gets a small secondary toggle (a "stop excluding" / "exclude" icon button) that
+    marks an option as actively <em>excluded</em> rather than merely unselected —
+    this powers the Card Library/deck editor's "exclude cards with this tag" filter
+    behavior documented alongside <a href="core.html#card-filters-lua">core/card_filters.lua</a>.
+    Selecting an option clears its exclusion and vice versa. The popup closes on an
+    outside click (checked with <code>ui.hoverIgnoringLayer</code> against both the
+    popup panel and the trigger button itself, so re-clicking the trigger toggles
+    rather than reopening instantly).</p>
+  </div>
+  <div class="fn">
+    <span class="sig">M.sortMenu(id, x, y, options, selectedId)</span>
+    <p>Trigger button shows "Sort" or "Sort: &lt;name&gt;"; its popup is a plain
+    single-select list (prefixed with a synthetic "Default order" entry whose id is
+    <code>nil</code>) that closes immediately on pick, again via the one-frame-delayed
+    <code>st.hasPick</code>/<code>st.pick</code> pattern. Returns
+    <code>(selectedId, triggerWidth)</code>.</p>
+  </div>
+  <div class="fn">
+    <span class="sig">M.triggerWidth(label)</span> / <span class="sig">M.close(id)</span>
+    <p>Measures a trigger button's width without drawing it (for layout
+    pre-computation, as <a href="#card-filter-bar-lua">card_filter_bar.lua</a> does), and
+    force-closes a specific menu's popup by id.</p>
+  </div>
+
+  <h2 id="card-filter-bar-lua">card_filter_bar.lua</h2>
+  <p>
+    The shared filter/sort/search UI strip (module table <code>B</code>) used by
+    every screen that shows a filterable list of card definitions — the Deck
+    Editor's card pool and the game table's Card Library overlay — so that both
+    present and behave identically. All of the actual filtering/sorting logic it
+    drives lives in <a href="core.html#card-filters-lua"><code>src/core/card_filters.lua</code></a>;
+    this module is purely the UI shell around it.
+  </p>
+  <div class="fn">
+    <span class="sig">B.newState(game)</span> / <span class="sig">B.clear(st, game)</span>
+    <p>Builds (or resets) the filter state table for a given game definition: a
+    <code>selected</code> and <code>excluded</code> set per tag group (keyed by
+    <code>game.tagGroups[i].id</code>), a <code>sets</code> set, and an empty search
+    <code>query</code>. A freshly-created state is "fully permissive" — nothing
+    filters anything out. <code>B.clear</code> resets only the Set/tag-group filters,
+    deliberately leaving <code>sortKey</code> and <code>query</code> untouched (a
+    "Clear Filters" action shouldn't also clear what you were searching for or how
+    you sorted).</p>
+  </div>
+  <div class="fn">
+    <span class="sig">B.visible(st, game)</span>
+    <p>Returns the game's cards filtered by <code>core.card_filters.cardMatchesFilters</code>
+    against the current state and then sorted by <code>core.card_filters.sortCardDefinitions</code>
+    according to <code>st.sortKey</code> — the single function screens call each frame
+    to get "what should I actually draw right now".</p>
+  </div>
+  <div class="fn">
+    <span class="sig">B.isFiltered(st)</span>
+    <p>True if any Set or tag-group filter is active (selected <em>or</em> excluded) —
+    note search text and sort choice do not count, matching <code>B.clear</code>'s
+    scope. Used to decide whether to show a "Clear Filters" affordance at all.</p>
+  </div>
+  <div class="fn">
+    <span class="sig">B.drawFilters(prefix, st, game, x, y, w, opts)</span>
+    <p>Draws nothing at all for a game with no sets, no non-empty tag groups, and no
+    caller-supplied <code>opts.leading</code> buttons. Otherwise draws (depending on
+    <code>opts.compact</code>) either a full-width "Clear Filters" button above a
+    wrapping row of filter trigger buttons, or a single compact row — optional
+    leading buttons first (<code>opts.leading = {{label, icon, id, onClick, variant}}</code>,
+    e.g. the Card Library's "Open Library" style actions), then a <code>Set (N)</code>
+    multi-select (only if the game defines sets, counting how many cards belong to
+    each set for the popup labels) via <a href="#filter-menu-lua">filter_menu.multiSelect</a>,
+    then one multi-select per non-empty tag group, then a Sort trigger
+    (<a href="#filter-menu-lua">filter_menu.sortMenu</a>, offering "Set" and "Name
+    (A-Z)" plus one entry per tag group) — and in compact mode, a trailing "Clear
+    Filters" button that only appears once <code>B.isFiltered</code> is true. Uses
+    <a href="#widgets-lua">widgets.lua's <code>W.flow</code></a>-style manual wrapping
+    (reimplemented locally as the <code>place(width)</code> closure) to wrap buttons
+    onto new rows as needed. Returns the y coordinate just below everything drawn.</p>
+  </div>
+  <div class="fn">
+    <span class="sig">B.drawSearch(prefix, st, x, y, w, opts)</span>
+    <p>A labelled search text field ("Search by name or ID") with a clear ("×")
+    button that appears only once there's text to clear. Returns the y just below
+    it. Kept separate from <code>B.drawFilters</code> so callers can place search
+    above or below (or interleaved with) the filter row as their layout needs.</p>
+  </div>
+
+  <h2 id="save-name-dialog-lua">save_name_dialog.lua</h2>
+  <p>
+    Shared port of <code>save_game_dialog.dart</code> and <code>save_deck_dialog.dart</code>
+    (module table <code>D</code>) — the "give this a name" prompt used both for
+    saving a practice game and for saving a deck, unified into one dialog builder
+    since the two flows are otherwise identical in shape.
+  </p>
+  <div class="fn">
+    <span class="sig">D.open(spec)</span>
+    <p>
+      <code>spec</code> fields: <code>title</code>, <code>fieldLabel</code>,
+      <code>emptyNameMessage</code> (validation error text for a blank name),
+      <code>existing</code> (an array of <code>{name, trailing}</code> — or a function
+      returning one, evaluated once up front — rendered as a tap-to-reuse list below
+      the name field, <code>trailing</code> typically a timestamp),
+      <code>existingHint</code>/<code>emptyListText</code> (captions for that list),
+      <code>exists(name) -&gt; bool</code> (called on submit to decide whether to show
+      an overwrite step), <code>overwriteTitle</code>/<code>overwriteMessage(name)</code>,
+      <code>onSave(name)</code> (called once the name is finally confirmed, whether
+      fresh or overwritten), and an optional <code>footer(x, y, w)</code>/<code>footerH</code>
+      for extra caller-supplied content under the list (reserved space subtracted
+      from the list's own height).
+    </p>
+    <p>
+      Internally it's a single <code>overlays.dialog</code> whose <code>content</code>
+      function switches entirely based on local state <code>st.confirming</code>:
+      normally it shows the name field (validated through
+      <a href="data.html#deck-library"><code>deck_library.validateName</code></a>
+      on submit — note this generic name-validity check is reused even for saving a
+      practice game, not just decks) and the reusable-name list; once
+      <code>spec.exists(name)</code> returns true on submit, it flips into a
+      one-screen confirmation showing <code>spec.overwriteMessage(name)</code> instead,
+      and relabels the dialog's own title and its primary action button
+      ("Save" → "Overwrite") by mutating <code>d.title</code> and
+      <code>d.actions[2].label</code> from inside the content callback — an example of
+      a dialog spec reaching back into its own live object to adapt itself after the
+      fact, rather than being fully declarative up front. Pressing the text field's
+      Enter key, picking a name from the list and clicking "Save", or clicking an
+      existing-name row all funnel through the same local <code>submit()</code>
+      function so the validation/overwrite logic only exists once.
+    </p>
+  </div>
+
+  <div class="nextprev">
+    <a href="architecture.html">&larr; Architecture &amp; App Lifecycle</a>
+    <a href="ui-screens.html">Screens &rarr;</a>
+  </div>
+</main>
+</body>
+</html>

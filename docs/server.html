@@ -1,0 +1,529 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Cardflux Server (Go) — Cardflux Docs</title>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+<nav class="sidenav">
+  <a class="brand" href="index.html">Cardflux<small>Codebase Documentation</small></a>
+  <div class="group-label">Application</div>
+  <a href="architecture.html">Architecture &amp; App Lifecycle</a>
+  <a href="ui-framework.html">UI Toolkit (kit)</a>
+  <div class="group-label">User Interface</div>
+  <a href="ui-screens.html">Screens</a>
+  <a href="ui-gamedef-editor.html">Game Definition Editor</a>
+  <a href="ui-server-screens.html">Multiplayer Lobby Screens</a>
+  <a href="ui-table.html">Game Table Rendering</a>
+  <div class="group-label">Engine &amp; Data</div>
+  <a href="core.html">Core Rules Engine</a>
+  <a href="game.html">Game Session &amp; Controller</a>
+  <a href="data.html">Data &amp; Persistence</a>
+  <div class="group-label">Platform &amp; Network</div>
+  <a href="net.html">Networking</a>
+  <a href="platform.html">Platform Integration</a>
+  <div class="group-label">Server</div>
+  <a href="server.html" class="current">Cardflux Server (Go)</a>
+  <div class="group-label">Quality</div>
+  <a href="tests-tools.html">Tests &amp; Tools</a>
+</nav>
+<main class="page">
+  <header class="page-head">
+    <div class="crumb"><a href="index.html">Home</a> / Server</div>
+    <h1>Cardflux Server <span class="badge go">Go</span></h1>
+    <div class="subtitle">The dedicated lobby server: accounts, rooms, chat, decks, trading and admin tools, backed by SQLite and an embedded copy of the client's own Lua rules engine.</div>
+  </header>
+
+  <div class="toc">
+    <div class="toc-title">On this page</div>
+    <ul>
+      <li><a href="#why-go-embeds-a-lua-engine">Why Go embeds a Lua engine</a></li>
+      <li><a href="#cmd-main">cmd/cardflux-server/main.go — entrypoint</a></li>
+      <li><a href="#embed-go">embed.go — embedding the engine files</a></li>
+      <li><a href="#engine-go">internal/engine/engine.go — the gopher-lua bridge</a></li>
+      <li><a href="#room-lua">The engine mirror &amp; room.lua</a></li>
+      <li><a href="#server-go">internal/server/server.go — connection lifecycle</a></li>
+      <li><a href="#auth-go">auth.go — accounts &amp; sessions</a></li>
+      <li><a href="#lobby-go">lobby.go — roster, chat, game list</a></li>
+      <li><a href="#rooms-go">rooms.go — rooms &amp; the per-room goroutine</a></li>
+      <li><a href="#decks-go">decks.go — decks, collections &amp; packs</a></li>
+      <li><a href="#trade-go">trade.go — player-to-player trading</a></li>
+      <li><a href="#admin-go">admin.go, admin_files.go, admin_games.go — administration</a></li>
+      <li><a href="#assets-go">assets.go — the asset channel</a></li>
+      <li><a href="#shutdown-go">shutdown.go — graceful shutdown</a></li>
+      <li><a href="#store-go">internal/store/store.go — SQLite persistence</a></li>
+      <li><a href="#games-go">internal/games/games.go — the game library &amp; manifests</a></li>
+      <li><a href="#proto-go">internal/proto/proto.go — the Go side of the wire protocol</a></li>
+      <li><a href="#security">Security notes</a></li>
+      <li><a href="#dev-tooling">Development &amp; tooling</a></li>
+    </ul>
+  </div>
+
+  <h2 id="why-go-embeds-a-lua-engine">Why Go embeds a Lua engine</h2>
+  <p>The single most distinctive design decision in this codebase: <strong>the Go server does not reimplement
+  Cardflux's card-game rules.</strong> Instead, it runs a byte-for-byte copy of the LÖVE client's own Lua rules code —
+  <code>lib/json.lua</code>, every file in <a href="core.html">src/core/</a>, and
+  <a href="game.html">src/game/session.lua</a> + <a href="game.html">src/game/host_engine.lua</a> — inside an
+  embedded Lua interpreter (<a href="https://github.com/yuin/gopher-lua">gopher-lua</a>, a pure-Go Lua 5.1 VM). These
+  files are vendored into <code>server/engine/</code> by <code>server/tools/sync-engine.ps1</code> and compiled
+  straight into the server binary via <code>//go:embed</code>.</p>
+  <p>The payoff is that a server-hosted game is refereed by <em>exactly</em> the same code that would run if one
+  player directly hosted for their friends (see <a href="net.html#two-hosting-modes">the two hosting modes</a> on
+  the Networking page) — every card-movement rule, every zone constraint, every pack-opening algorithm lives in one
+  place and one place only. There is no second, Go-flavored implementation of the rules that could silently drift
+  from the Lua one. The cost is the small Go↔Lua bridge described below, and a build-time discipline: the comment at
+  the top of <code>sync-engine.ps1</code> literally says to run it after <em>any</em> change to those client files,
+  and <code>internal/server/version_test.go</code> fails the test suite if the vendored copy's recorded protocol
+  version doesn't match the server's.</p>
+
+  <h2 id="cmd-main">cmd/cardflux-server/main.go — entrypoint</h2>
+  <div class="filecard">
+    <div class="path">server/cmd/cardflux-server/main.go</div>
+    <div class="role">Command-line entrypoint: parses flags, opens the data directory, builds the game library, and starts <code>Server.Serve</code>.</div>
+  </div>
+  <p>Flags: <code>--data</code> (default <code>data</code>) and <code>--port</code> (default <code>51234</code> —
+  the same default as the client's <a href="net.html#protocol">P.defaultGamePort</a>). It creates
+  <code>&lt;data&gt;/games/</code> if missing, opens <code>server.log</code> for append (logging to both the file and
+  stdout via <code>io.MultiWriter</code>), opens the SQLite store, builds a <code>games.Library</code> seeded with
+  one built-in game (the embedded <code>standard_52</code> deck read from <code>EngineFS</code>), scans it, and logs
+  a one-line summary per game (card count, file count, starter deck count). <code>var build = "dev"</code> is
+  overwritten at build time via <code>-ldflags -X main.build=N</code> by <code>tools/build.ps1</code>, so a release
+  binary always logs its exact build number on the first startup line. SIGINT/SIGTERM trigger a graceful
+  <code>srv.Close()</code> (see <a href="#shutdown-go">shutdown.go</a>).</p>
+
+  <h2 id="embed-go">embed.go — embedding the engine files</h2>
+  <div class="filecard">
+    <div class="path">server/embed.go</div>
+    <div class="role">Three lines: a package-level <code>//go:embed engine</code> directive that bakes the entire <code>server/engine/</code> directory tree into the compiled binary as <code>cardflux.EngineFS</code>.</div>
+  </div>
+  <p>This is what lets the server ship as a single self-contained executable with no external Lua files to
+  distribute or go missing — the rules engine, the built-in standard deck JSON, and a recorded protocol-version
+  marker are all inside the binary.</p>
+
+  <h2 id="engine-go">internal/engine/engine.go — the gopher-lua bridge</h2>
+  <div class="filecard">
+    <div class="path">server/internal/engine/engine.go</div>
+    <div class="role">Package <code>engine</code>: the only Go code that actually talks to Lua. Wraps one <code>gopher-lua</code> state (<code>VM</code>) per running game (<code>Room</code>), running the embedded <code>room.lua</code> shim.</div>
+  </div>
+  <p>Every value that crosses the Go↔Lua boundary is a <strong>JSON string</strong> — Go never inspects or builds a
+  Lua table directly, and Lua never needs to understand a Go struct. This keeps the bridge tiny and means the engine
+  package's Go-side API is just a handful of methods taking/returning strings:</p>
+  <div class="fn">
+    <span class="sig">type Sink interface { SendTo(id, msgType, payload string); Broadcast(msgType, payload, exceptID string) }</span>
+    <p>Implemented by <code>Room</code> (see <a href="#rooms-go">rooms.go</a>) — how the Lua side delivers outgoing
+    messages back out to real network connections. Lua calls the globals <code>__send</code> and
+    <code>__broadcast</code> (installed as closures over a <code>Sink</code> in <code>newVM</code>), which simply
+    forward to this interface.</p>
+  </div>
+  <div class="fn">
+    <span class="sig">newVM(sink Sink) (*VM, error)</span>
+    <p>Creates a fresh <code>lua.LState</code> with an enlarged registry (<code>RegistrySize: 20480</code>, growable
+    to 8&nbsp;MiB) — the comment notes <code>lib/json.lua</code> builds large documents like a full
+    <code>gameData</code> payload with <code>table.concat</code> over many small pushes, which needs headroom beyond
+    gopher-lua's default stack size. It installs three globals (<code>installRequire</code>,
+    <code>__now</code>, <code>__send</code>/<code>__broadcast</code>), then loads and runs the embedded
+    <code>room.lua</code> string, capturing the table it returns as <code>vm.room</code> — this table's fields are
+    the actual entry points (<code>start</code>, <code>roster</code>, <code>message</code>, etc.) that
+    <code>vm.call(name, args...)</code> invokes.</p>
+  </div>
+  <div class="fn">
+    <span class="sig">installRequire(L *lua.LState)</span>
+    <p>Replaces Lua's global <code>require</code> with a closure that maps a dotted module name
+    (<code>"src.core.models"</code>) onto an embedded file path (<code>engine/src/core/models.lua</code>), reads it
+    out of <code>cardflux.EngineFS</code>, compiles and runs it, and memoizes the result — functionally identical to
+    what LÖVE's own <code>require</code> does for the client, just reimplemented against the embedded filesystem
+    instead of <code>love.filesystem</code>. This is the mechanism that lets <code>room.lua</code> (and transitively
+    <code>src/game/session.lua</code>/<code>host_engine.lua</code>) <code>require</code> the exact same module names
+    the client uses, unmodified.</p>
+  </div>
+  <h3 id="engine-go-room">Room: the per-game handle</h3>
+  <div class="fn">
+    <span class="sig">StartRoom(sink Sink, gameJSON, playersJSON, sharedJSON string) (*Room, error)</span>
+    <p>Creates a VM and calls <code>room.lua</code>'s <code>start</code> — this is what turns a server
+    <code>Room</code> (see <a href="#rooms-go">rooms.go</a>) from a lobby waiting-list entry into a live game.</p>
+  </div>
+  <div class="fn"><span class="sig">(*Room) Roster(connectedJSON string) error</span><p>Tells the engine which seated players currently have a live connection (as a JSON array of ids), so it knows whom it can actually message.</p></div>
+  <div class="fn"><span class="sig">(*Room) Message(playerID, line string) error</span><p>Delivers one raw client line (the exact <code>{"type",...,"payload",...}</code> JSON text, unparsed by Go) as if that player had sent it directly to a <code>host_server.lua</code>-style host.</p></div>
+  <div class="fn"><span class="sig">(*Room) AddSpectator(id) / RemoveSpectator(id)</span><p>Adds/removes a read-only observer.</p></div>
+  <div class="fn"><span class="sig">(*Room) Tick() error</span><p>Advances timers (e.g. the fading drawn-arrow widget) — called on a fixed schedule by the owning <code>Room</code>'s goroutine, not by player messages.</p></div>
+  <div class="fn">
+    <span class="sig">OpenPack(cardsJSON, settingsJSON string) (string, error)</span>
+    <p>A one-shot, roomless VM invocation that runs the exact same pack-opening algorithm as the client's Pack
+    Generator widget (<a href="core.html">src/core/pack_generator.lua</a>), used by collection-mode pack purchases
+    (<a href="#decks-go">decks.go</a>'s <code>handlePackBuy</code>) so server-sold packs use identical odds to a
+    locally-hosted game's widget.</p>
+  </div>
+
+  <h2 id="room-lua">The engine mirror &amp; room.lua</h2>
+  <p><code>server/engine/</code> holds the vendored client files plus two server-only additions:</p>
+  <ul>
+    <li><code>server/engine/builtin/standard_52.json</code> — a copy of the client's built-in standard 52-card deck
+    definition, so a server can offer that game out of the box with zero files on disk.</li>
+    <li><code>server/internal/engine/room.lua</code> (embedded via <code>//go:embed room.lua</code> right in
+    <code>engine.go</code>, not under <code>server/engine/</code>) — the shim that makes the client's
+    <a href="game.html">HostEngine</a> and <a href="game.html">Session</a> runnable headless inside Go. It
+    constructs a fake "host" object (<code>shim</code>) exposing <code>:roster()</code>, <code>:sendTo</code>,
+    <code>:broadcast</code> — the same shape <a href="net.html#host-server">src/net/host_server.lua</a> presents to
+    <code>HostEngine</code> on the client — but wired to the Go-provided <code>__send</code>/<code>__broadcast</code>
+    globals instead of real sockets. <code>HostEngine</code> itself never knows it's running inside a Go process.</li>
+  </ul>
+  <p><code>room.lua</code> exposes exactly the functions <code>engine.go</code>'s <code>Room</code> methods call:
+  <code>R.start</code> (builds a <code>GameDefinition</code>, adds the generated 52 standard cards if any zone wants
+  a standard deck — mirroring <a href="data.html">game_loader.lua</a>'s own logic — then calls
+  <code>Session.dealFromZones</code> and <code>HostEngine.new</code>), <code>R.roster</code>, <code>R.message</code>,
+  <code>R.addSpectator</code>/<code>R.removeSpectator</code> (spectators are filtered through
+  <a href="core.html">state_filter.lua</a> so they never see hidden information, even one who also holds a seat —
+  note the <code>specID</code> prefix trick in <code>rooms.go</code> that gives a spectating seat-holder a distinct
+  engine identity from their own seat), <code>R.tick</code>, and <code>R.openPack</code>.</p>
+
+  <h2 id="server-go">internal/server/server.go — connection lifecycle</h2>
+  <div class="filecard">
+    <div class="path">server/internal/server/server.go</div>
+    <div class="role">The <code>Server</code> type: top-level state (clients, rooms, trades, settings) and the accept loop. Also where <code>ProtocolVersion</code> lives.</div>
+  </div>
+  <div class="fn">
+    <span class="sig">const ProtocolVersion = 1</span>
+    <p>Must equal <code>serverProtocolVersion</code> in the client's <a href="net.html#protocol">src/net/protocol.lua</a>.
+    This is the one hard version gate between client and server: <code>handleConn</code> (below) refuses any client
+    whose <code>hello.serverProtocol</code> doesn't match, with reason <code>versionMismatch</code> — rather than
+    attempt best-effort compatibility across protocol revisions.</p>
+  </div>
+  <div class="fn">
+    <span class="sig">(*Server) Serve(ln net.Listener) error</span>
+    <p>Starts the background <code>allowanceLoop</code> (see <a href="#lobby-go">lobby.go</a>) then accepts
+    connections forever, handing each to <code>go s.handleConn(proto.Wrap(nc))</code> — one goroutine per TCP
+    connection.</p>
+  </div>
+  <div class="fn">
+    <span class="sig">(*Server) handleConn(conn *proto.Conn)</span>
+    <p>Reads exactly one first message to decide what kind of connection this is, mirroring the client's own
+    dual-purpose dial logic: a <code>"hello"</code> starts an authenticated lobby <code>Client</code> session (after
+    checking protocol version and whether the server is shutting down, then replying with <code>serverInfo</code> —
+    the message that makes <a href="net.html#game-client">game_client.lua</a> recognize this as a server rather than
+    a peer host); an <code>"assetHello"</code> instead hands the raw connection to
+    <code>s.serveAssets</code> (<a href="#assets-go">assets.go</a>) for file transfer. A pre-protocol client (one
+    whose <code>serverProtocol</code> field is absent/zero — i.e. too old to know servers exist) is closed with
+    <code>serverRequiresUpdate</code> rather than a version-mismatch message it wouldn't understand.</p>
+  </div>
+  <h3 id="server-go-client">Client &amp; request dispatch</h3>
+  <p>Each connected <code>Client</code> runs <code>c.run()</code> in its own goroutine: a tight loop of
+  <code>conn.Read()</code> → <code>c.handle(m)</code>. <code>handle</code> looks up the message type across three
+  ordered handler maps populated by <code>init()</code> functions scattered across every other file in this
+  package (<code>publicHandlers</code> → no login required, e.g. <code>register</code>/<code>login</code>;
+  <code>authedHandlers</code> → must be signed in; <code>adminHandlers</code> → must be signed in <em>and</em>
+  <code>IsAdmin</code>) — and if the message type matches none of them, treats it as raw game traffic and calls
+  <code>c.forwardToRoom(m)</code> (defined in <a href="#rooms-go">rooms.go</a>). This Go-side dispatch table mirrors
+  the client's own habit of routing "everything I don't specifically recognize" straight through to the game engine.</p>
+  <p>Every request/response exchange follows the same shape: the client payload carries an opaque <code>rid</code>
+  (round-trip id, see <a href="net.html#server-client-request-response">server_client.lua's request/response
+  multiplexing</a>), and <code>c.reply(rid, data)</code> / <code>c.fail(rid, code, message)</code> echo it back inside
+  a <code>type: "response"</code> message with <code>ok: true/false</code>.</p>
+  <h3 id="server-go-limiter">Login rate limiting</h3>
+  <p>A small in-memory <code>limiter</code> tracks failed sign-in attempts per key (both <code>"ip:&lt;addr&gt;"</code>
+  and <code>"email:&lt;address&gt;"</code> are checked, so a distributed attack against one email from many IPs is
+  still caught). After 5 failures the wait doubles each additional failure, from 30 seconds up to 30×2⁵ seconds,
+  capped by the <code>min(e.fails-5, 5)</code> shift. A successful login clears both keys.</p>
+
+  <h2 id="auth-go">auth.go — accounts &amp; sessions</h2>
+  <div class="filecard">
+    <div class="path">server/internal/server/auth.go</div>
+    <div class="role">Registration, login, session resume, profile updates, avatar fetch. Handlers: <code>register</code>, <code>login</code>, <code>resume</code> (public); <code>logout</code>, <code>profileUpdate</code>, <code>avatarGet</code> (authed).</div>
+  </div>
+  <p>Passwords never reach the server in the clear: the client hashes with
+  <a href="net.html#server-client-auth">server_client.lua's <code>S.passwordHash</code></a> (SHA-256 of a fixed
+  string template) before sending, and the server <code>bcrypt</code>s <em>that hash</em> for storage
+  (<code>validPassHash</code> just checks it's a well-formed 64-hex-char SHA-256 digest). <code>register</code>
+  additionally validates email format, enforces <code>ValidName</code> (1–24 printable characters, no leading
+  <code>__</code> — that prefix is reserved, matching how <a href="#rooms-go">rooms.go</a>'s <code>specID</code>
+  mangles spectator ids and <code>SERVER_ID</code> in <code>room.lua</code> uses <code>__server__</code>), decodes
+  and validates an optional avatar (must be a real PNG — checked by magic-byte signature — under 512&nbsp;KB), and
+  respects the server's <code>registrationOpen</code> setting (always allowing exactly the very first account,
+  so there is always a way to bootstrap an admin).</p>
+  <p><code>CreateUser</code> in the store makes the <strong>first account ever created</strong> an admin
+  automatically (<code>count == 0</code> check inside the same transaction) — this is the server's entire
+  admin-bootstrapping mechanism, matching the behavior documented in <code>server/README.md</code>.</p>
+  <p><code>authenticateWithToken</code> is the shared tail of register/login/resume: it refuses a disabled account
+  or a server mid-shutdown, grants a collection-mode token allowance if a new day/week has started since the last
+  grant, and — notably — if the same account is already connected elsewhere, it <strong>evicts the older
+  connection</strong> (<code>CloseWith("loggedInElsewhere")</code>) rather than refusing the new one, enforcing
+  "one active connection per account" without a separate presence check.</p>
+
+  <h2 id="lobby-go">lobby.go — roster, chat, game list</h2>
+  <div class="filecard">
+    <div class="path">server/internal/server/lobby.go</div>
+    <div class="role">The shared lobby snapshot (<code>lobbyState</code>, sent once right after sign-in) plus ongoing broadcasts (<code>users</code>, <code>rooms</code>, <code>serverInfo</code>) and lobby/room chat. Handlers: <code>chatSend</code>, <code>gameList</code>, <code>gameManifest</code>.</div>
+  </div>
+  <p><code>lobbyState</code> bundles everything a freshly-signed-in client needs in one message: server info, the
+  caller's own account, every online user, every open room, every available game (with set/starter-deck summaries),
+  and recent chat history — avoiding a flurry of separate round trips on login. After that, incremental changes are
+  pushed via the narrower <code>users</code>/<code>rooms</code>/<code>games</code>/<code>serverInfo</code> broadcast
+  types.</p>
+  <p><code>handleChat</code> branches three ways by payload shape: a <code>tradeId</code> defers to
+  <a href="#trade-go">trade.go</a>'s <code>handleTradeChat</code>; a <code>roomId</code> appends to that room's own
+  100-line chat buffer and sends only to that room's members; neither means lobby chat, persisted via
+  <code>Store.AddChat</code> (trimmed server-side to the admin-configured <code>ChatHistory</code> length) and
+  broadcast to every signed-in client.</p>
+  <p><code>allowanceLoop</code> runs on a 5-minute ticker for the lifetime of the server, crediting the configured
+  periodic token allowance to every <em>currently online</em> authed client whose day/week boundary has passed —
+  complementing the on-login grant in <code>auth.go</code> so a player who stays connected across midnight still
+  gets credited without having to reconnect.</p>
+
+  <h2 id="rooms-go">rooms.go — rooms &amp; the per-room goroutine</h2>
+  <div class="filecard">
+    <div class="path">server/internal/server/rooms.go</div>
+    <div class="role">Room lifecycle (create/join/spectate/leave/reorder seats/start/close) and the single goroutine-per-room concurrency model that owns each running <a href="#engine-go">engine.Room</a>.</div>
+  </div>
+  <p>This is the file where the server's two concurrency domains meet. <code>Server.mu</code> guards
+  lobby-visible, cross-goroutine-shared <code>Room</code> fields (<code>seats</code>, <code>state</code>,
+  <code>players</code>, <code>spectators</code>, <code>chat</code>) — anything another client's handler goroutine
+  might read via <code>roomInfos()</code> or mutate via join/leave. But the live <code>engine.Room</code> itself,
+  and the <code>live</code>/<code>liveSpecs</code> maps of currently-connected table participants, belong
+  <strong>exclusively</strong> to that one <code>Room</code>'s own goroutine (<code>(*Room).loop()</code>) — because
+  <code>engine.go</code>'s doc comment says a <code>Room</code> (and therefore its one Lua <code>VM</code>) "must
+  only be used from a single goroutine." Any other goroutine that needs to touch the engine does so by posting a
+  closure onto <code>r.inbox</code> via <code>r.post(f)</code>, which <code>loop()</code> drains one at a time —
+  this is the server's way of giving the single-threaded Lua VM safe, serialized access from a highly concurrent Go
+  program, instead of putting a mutex around Lua calls (which gopher-lua states aren't safe for anyway).</p>
+  <div class="fn">
+    <span class="sig">(*Room) loop()</span>
+    <p>The room goroutine's entire body: a <code>select</code> over four cases — drain <code>r.inbox</code>, a
+    100&nbsp;ms ticker calling <code>eng.Tick()</code> (timers like fading drawn arrows), a 5-second idle-check ticker
+    that starts an "empty since" clock once <code>len(r.live) == 0</code> and asynchronously closes the room once
+    that's exceeded the admin-configured <code>RoomIdleTimeoutMin</code>, and <code>r.done</code> (closes the Lua VM
+    and returns).</p>
+  </div>
+  <div class="fn">
+    <span class="sig">(*Room) SendTo / Broadcast</span>
+    <p>Implements <code>engine.Sink</code> — looks the recipient id up in <code>r.live</code> or
+    <code>r.liveSpecs</code> (room-goroutine-only maps, safe without a lock) and writes a pre-encoded line directly
+    to that client's <code>proto.Conn</code>.</p>
+  </div>
+  <p>Room creation (<code>handleRoomCreate</code>) enforces a per-room seat cap (<code>maxSeats = 8</code>) and an
+  optional server-wide room-count cap (<code>Settings.MaxRooms</code>). Joining mid-game
+  (<code>handleRoomJoin</code>) is only allowed for someone who already holds a seat — i.e. reconnecting — exactly
+  like the client's own <a href="net.html#host-server">reclaimableIdCheck</a> mechanism for direct peer hosting, just
+  enforced by seat membership instead of a callback. <code>handleRoomStart</code> resolves each shared zone's
+  built-in starting deck from the game library, marshals the seat list (in seat order — the order
+  <code>handleRoomSeats</code> lets the room's owner rearrange beforehand) and posts a closure that actually calls
+  <code>engine.StartRoom</code> on the room goroutine.</p>
+  <p><code>collectionBlocked</code>/<code>forwardToRoom</code> add one small but important rule on top of pure
+  message-forwarding: in a collection-mode room, a handful of message types that would conjure cards a player
+  doesn't own (opening the free-for-all Pack Generator widget, creating a card straight from the Card Library, or
+  loading a deck the collection can't back — checked via <code>checkDeckAgainstCollection</code> in
+  <a href="#decks-go">decks.go</a>) are rejected server-side with a toast rather than forwarded into the engine at
+  all, regardless of what the client-side UI did or didn't already prevent.</p>
+
+  <h2 id="decks-go">decks.go — decks, collections &amp; packs</h2>
+  <div class="filecard">
+    <div class="path">server/internal/server/decks.go</div>
+    <div class="role">Server-kept decks (<code>deckList</code>/<code>deckGet</code>/<code>deckSave</code>/<code>deckDelete</code>) and collection-mode currency spending (<code>collectionGet</code>, <code>packBuy</code>, <code>starterBuy</code>).</div>
+  </div>
+  <p><code>handlePackBuy</code> gathers a set's collectible cards (<code>Collectible()</code> excludes
+  <code>unownable</code> and always-free cards — see <a href="#games-go">games.go</a>), runs them through
+  <a href="#engine-go">engine.OpenPack</a> (the same Lua pack algorithm the client's widget uses), and only then
+  calls <code>Store.BuyPack</code> to atomically deduct tokens and add the resulting cards — so a pack that happens
+  to come up empty costs nothing (<code>"noCards"</code> failure, no tokens spent). <code>handleStarterBuy</code>
+  similarly sells one of a game's starter decks: it strips the <code>isStarter</code> flag from the deck JSON before
+  saving it as a normal player deck, and auto-suffixes the deck name (<code>"Starter Deck 2"</code>, etc.) if the
+  player already has one by that name.</p>
+  <p><code>deckShortfall</code> is the human-readable half of collection-mode deck validation: given what a deck
+  needs and what the collection owns, it lists (capped at 3, plus an "and N more") which cards fall short, formatted
+  as <code>"Title (owned/needed)"</code> — surfaced to the player as a toast from <a href="#rooms-go">rooms.go</a>'s
+  <code>forwardToRoom</code>.</p>
+
+  <h2 id="trade-go">trade.go — player-to-player trading</h2>
+  <div class="filecard">
+    <div class="path">server/internal/server/trade.go</div>
+    <div class="role">Two-party collection trading: an invite/response handshake, a live offer-editing session, and an atomic swap. Handlers: <code>tradeRequest</code>, <code>tradeRespond</code>, <code>tradeOffer</code>, <code>tradeConfirm</code>, <code>tradeLeave</code>, <code>tradeCollectionGet</code>.</div>
+  </div>
+  <p>Trading is modeled as two short-lived types, both guarded by <code>Server.mu</code> just like a
+  <code>Room</code>'s lobby-visible fields: a <code>pendingTrade</code> (an outstanding invite, auto-expiring after
+  <code>pendingTradeTimeout</code> = 30s via <code>time.AfterFunc</code>) that becomes a <code>Trade</code> once
+  accepted. Each side's <code>tradeOffer</code> is keyed by <em>the id of the user who would receive those
+  cards</em> — i.e. "what I'm asking the other person for" — which is why <code>handleTradeConfirm</code>'s final
+  swap reads as "a gives up what b asked for; b gives up what a asked for." <code>tradeEligible</code> blocks
+  starting a trade while already in a room or already mid-trade, checked for <em>both</em> parties before an invite
+  is even sent.</p>
+  <p>Editing an offer (<code>handleTradeOffer</code>) clamps the requested quantity to what the <em>giving</em>
+  player's collection (<code>t.otherID</code>) actually holds, and silently un-confirms both sides whenever either
+  offer changes — so a late edit can never sneak past a swap the other player already locked in.
+  <code>handleTradeConfirm</code> only executes the swap once <em>both</em> sides have confirmed the current state,
+  via <code>Store.ExecuteTrade</code> — one SQL transaction that re-checks both parties still actually own what
+  they're giving up before moving anything, failing the whole trade atomically (and un-confirming both sides) if a
+  collection changed out from under it (e.g. the player spent those cards in a game started on another trade).</p>
+
+  <h2 id="admin-go">admin.go, admin_files.go, admin_games.go — administration</h2>
+  <div class="filecard">
+    <div class="path">server/internal/server/admin.go</div>
+    <div class="role">Account administration: list/update/delete users, kick, server settings, rescan the games folder, clear a collection.</div>
+  </div>
+  <p>All handlers here are registered in <code>adminHandlers</code>, so <code>Client.handle</code>
+  (<a href="#server-go-client">server.go</a>) rejects them with <code>notAdmin</code> before they even run for a
+  non-admin. <code>handleAdminUserUpdate</code> is the single richest endpoint: it can rename, re-email, promote/demote
+  admin status, enable/disable, reset a password, and set-or-add tokens in one call — but refuses to demote or
+  disable the <em>last</em> remaining admin (<code>AdminCount() &lt;= 1</code> check, mirrored in
+  <code>handleAdminUserDelete</code>), so a server can never end up adminless. Disabling or deleting an online user
+  immediately kicks their live connection (<code>reason: "accountDisabled"</code> / <code>"accountDeleted"</code>) —
+  matching the exact disconnect-reason strings
+  <a href="net.html#server-client">server_client.lua's <code>DISCONNECT_MESSAGES</code></a> table translates into
+  user-facing text.</p>
+  <div class="filecard">
+    <div class="path">server/internal/server/admin_files.go</div>
+    <div class="role">Browse and delete a game's files on disk, for the admin Files tab.</div>
+  </div>
+  <p><code>gameFileRoot</code> is the load-bearing security check here: it resolves an admin-supplied
+  slash-separated relative path against the game's real folder by cleaning it as an absolute path first
+  (<code>filepath.Join(separator, path)</code> then <code>filepath.Clean</code>) before re-joining it under the
+  game's folder — a <code>../../etc/passwd</code>-style escape attempt collapses harmlessly inside the fake root
+  rather than reaching outside the game's own directory. <code>handleAdminFileDelete</code> additionally refuses to
+  delete the game's own folder root or a non-empty directory, and triggers a library rescan afterward so the
+  in-memory manifest reflects the change immediately.</p>
+  <div class="filecard">
+    <div class="path">server/internal/server/admin_games.go</div>
+    <div class="role">Remove a game entirely, or install a new one from an uploaded zip. Handlers: <code>adminGameDelete</code>, <code>adminGameInstall</code>.</div>
+  </div>
+  <p><code>handleAdminGameInstall</code> re-validates the uploaded zip server-side even though the client already
+  did its own check (<a href="net.html#admin-game-manager">admin_game_manager.lua's <code>validateZip</code></a>) —
+  never trusting the client: it rejects any entry whose cleaned path is <code>..</code>, starts with
+  <code>../</code>, or is absolute (a zip-slip guard), requires exactly one top-level folder whose name matches the
+  game id declared inside its <code>gamedef.json</code>, enforces a conservative id charset
+  (<code>validGameID</code>), caps total uncompressed size at 512&nbsp;MiB as a zip-bomb backstop, and refuses to
+  overwrite an id that already exists. Removing a game first force-closes every room currently playing it
+  (<code>s.closeRoom(r, "gameRemoved")</code>) before deleting its folder, so no room is ever left pointing at files
+  that no longer exist.</p>
+
+  <h2 id="assets-go">assets.go — the asset channel</h2>
+  <div class="filecard">
+    <div class="path">server/internal/server/assets.go</div>
+    <div class="role">A second, dedicated protocol for bulk file transfer — downloads for every client and admin-only uploads — kept entirely separate from the lobby/game connection so a multi-megabyte file never delays chat or gameplay.</div>
+  </div>
+  <p>This is the server-side counterpart to the client's <a href="net.html#asset-sync">asset_sync.lua</a>/<a href="net.html#asset-worker">asset_worker.lua</a>
+  (downloads) and <a href="net.html#admin-upload-worker">admin_upload_worker.lua</a> (uploads) — both open a
+  <em>second</em> TCP connection and authenticate it with an <code>assetHello{token}</code> carrying the same session
+  token as the main connection, answered with <code>assetReady</code>. A background goroutine inside
+  <code>serveAssets</code> keeps reading and answering pings on this connection independently, so the idle-timeout
+  clock stays fresh for the whole duration of a long transfer even while the main loop below is busy streaming
+  chunks.</p>
+  <p>Downloads (<code>assetGet</code>) stream a file in <code>assetChunk</code> (192&nbsp;KiB,
+  <code>~256&nbsp;KB once base64-encoded</code> — matching the client's own 192&nbsp;KB chunk constant) pieces as
+  <code>assetData</code> messages, using <code>conn.SendWait</code> rather than the normal non-blocking send so a
+  slow client naturally applies backpressure instead of the server's send queue filling up unbounded. Uploads
+  (<code>assetPut</code>, admin-only) are written to a <code>.uploading</code> temp file and atomically
+  <code>os.Rename</code>d into place only once the final chunk (<code>done: true</code>) arrives — so a transfer
+  that's interrupted midway never leaves a half-written file at the real destination path. A <code>gameId: ""</code>
+  upload is special-cased as a flat "staging" write into <code>&lt;games&gt;/.uploads/</code> rather than into any
+  game's folder — this is exactly the mechanism <a href="#admin-go">admin_games.go</a>'s
+  <code>handleAdminGameInstall</code> expects a new game's zip to have landed at before it asks the server to
+  install it.</p>
+
+  <h2 id="shutdown-go">shutdown.go — graceful shutdown</h2>
+  <div class="filecard">
+    <div class="path">server/internal/server/shutdown.go</div>
+    <div class="role">Admin-initiated shutdown with a warning countdown, plus auto-shutdown once everyone but the initiating admin has left.</div>
+  </div>
+  <p><code>handleAdminShutdown</code> schedules <code>s.Close()</code> <code>DefaultShutdownDelay</code> (5 minutes)
+  in the future via <code>time.AfterFunc</code>, broadcasts a <code>serverShutdown{seconds}</code> message every
+  authed client reacts to (on the client, <a href="net.html#server-client">server_client.lua</a> pops a countdown
+  alert via <a href="ui-framework.html">overlays</a>), and from that moment on refuses any new sign-in or connection
+  attempt (<code>shuttingDown()</code> is checked in both <code>handleConn</code> and <code>handleRegister</code>).
+  <code>shutdownIfEmpty</code> is called after every disconnect and right after scheduling the shutdown itself: if a
+  shutdown is pending and nobody but the admin who started it remains online, it closes immediately rather than
+  making everyone wait out the full delay for an empty server.</p>
+
+  <h2 id="store-go">internal/store/store.go — SQLite persistence</h2>
+  <div class="filecard">
+    <div class="path">server/internal/store/store.go</div>
+    <div class="role">All durable state in one <code>cardflux.db</code> SQLite file, via the pure-Go <code>modernc.org/sqlite</code> driver (no cgo, so the server cross-compiles trivially for Windows/Linux — see <a href="#dev-tooling">build.ps1</a>).</div>
+  </div>
+  <p>Six tables: <code>users</code>, <code>sessions</code> (only a session token's SHA-256 <em>hash</em> is stored,
+  never the token itself — <code>SessionUser</code> looks up by re-hashing the presented token), <code>decks</code>,
+  <code>collections</code> (card id → quantity per user per game), <code>token_ledger</code> (an append-only audit
+  trail of every balance change and its reason — "starting balance", "pack &lt;game&gt;/&lt;set&gt;", "granted by
+  &lt;admin&gt;", etc.), <code>settings</code> (one JSON blob row) and <code>chat</code>. The connection pool is
+  deliberately capped at <code>SetMaxOpenConns(1)</code> with the comment "SQLite writes serialize anyway; avoids
+  SQLITE_BUSY" — rather than fight SQLite's single-writer nature with retries, the Go side just never contends with
+  itself for a write in the first place. WAL mode and a 5-second busy timeout are set via connection-string pragmas.</p>
+  <p>Every multi-step mutation is wrapped in an explicit <code>tx, err := s.db.Begin()</code> /
+  <code>defer tx.Rollback()</code> / <code>tx.Commit()</code> — <code>AddTokens</code> (refuses to go negative),
+  <code>BuyPack</code>, <code>BuyStarter</code> (adds cards <em>and</em> saves a deck in one transaction), and
+  <code>ExecuteTrade</code> (re-verifies both parties' holdings inside the same transaction that moves them,
+  described above) — so a crash or a concurrent read never observes a half-applied purchase or trade.
+  <code>NewPeriod</code> is the small pure function deciding whether a daily/weekly token allowance is due, comparing
+  calendar date or ISO week number between the last grant and now.</p>
+
+  <h2 id="games-go">internal/games/games.go — the game library &amp; manifests</h2>
+  <div class="filecard">
+    <div class="path">server/internal/games/games.go</div>
+    <div class="role">Scans <code>&lt;data&gt;/games/&lt;folder&gt;/gamedef.json</code> the same way the client's own game library works, builds a content-hashed file manifest per game, and tracks built-in (embedded) games alongside on-disk ones.</div>
+  </div>
+  <p><code>Library.Scan()</code> rereads the whole games directory: for every subfolder containing a
+  <code>gamedef.json</code> it parses just the fields the server actually needs (ids, titles, set/card/zone shape —
+  not the full client-side schema), walks every file with an allowed asset extension
+  (<code>assetExt</code>: images and JSON) while skipping <code>savegames</code>/<code>gamelogs</code> and
+  dot-folders (client-written data that's never part of what a joining player needs to download), and SHA-256-hashes
+  each one. <code>fileHash</code> memoizes by <code>(path, size, mtime)</code> so an unchanged file is never
+  re-hashed on a later rescan. <code>manifestHash</code> folds every file's path+hash into one short digest — this
+  is the value <a href="#games-go">gameInfos()</a>/<code>gameManifest</code> send the client, and what
+  <a href="net.html#asset-sync">asset_sync.lua's <code>A.ensureGame</code></a> memo-caches against to skip a
+  completely redundant re-sync. Built-in games (just <code>standard_52</code> today, from <code>embed.go</code>'s
+  <code>EngineFS</code>) get a synthetic single-file manifest and are served straight out of memory via
+  <code>Game.embedded</code> rather than the filesystem.</p>
+  <p><code>scanStarterDecks</code> reads every deck file under a game's <code>decks/</code> folder, keeping only
+  ones marked <code>isStarter</code> (and matching the game's own id) and summing each card's total quantity across
+  every subdeck — exactly the data <a href="#decks-go">decks.go</a>'s <code>handleStarterBuy</code> needs to credit
+  a collection without re-parsing the deck file itself.</p>
+
+  <h2 id="proto-go">internal/proto/proto.go — the Go side of the wire protocol</h2>
+  <div class="filecard">
+    <div class="path">server/internal/proto/proto.go</div>
+    <div class="role">The Go mirror of <a href="net.html#protocol">src/net/protocol.lua</a>: the same one-JSON-object-per-line framing, reimplemented with Go's concurrency primitives instead of LÖVE's per-frame polling.</div>
+  </div>
+  <p>Where the Lua <code>Connection</code> is polled once per frame from the main thread, Go's <code>Conn</code> runs
+  a dedicated <code>writer()</code> goroutine reading off a buffered channel (<code>out</code>, capacity 4096):
+  <code>SendLine</code> is non-blocking and simply <strong>drops the connection entirely</strong>
+  (<code>c.Close()</code>) if that queue is ever full, rather than let one slow client's buffer grow without bound —
+  the same "a peer that can't keep up is disconnected" policy <code>Conn</code>'s own doc comment states outright.
+  <code>SendWait</code> (used only for asset downloads, see <a href="#assets-go">assets.go</a>) blocks instead,
+  because a bulk file transfer legitimately needs backpressure rather than disconnection. The writer goroutine also
+  owns the heartbeat: a <code>HeartbeatInterval</code> ticker sends <code>ping</code> and checks
+  <code>HeartbeatTimeout</code> against the last successful read — identical constants and policy to the client's
+  own <a href="net.html#protocol">P.heartbeatInterval</a>/<code>heartbeatTimeout</code>. <code>Read()</code> answers
+  <code>ping</code>/<code>pong</code> transparently and skips malformed lines, just like the Lua side.</p>
+
+  <h2 id="security">Security notes</h2>
+  <div class="warn">
+  Per <a href="https://github.com/jvthompson/cardflux-love/blob/main/server/README.md">server/README.md</a>: the
+  wire connection is <strong>plain, unencrypted TCP</strong> — the LÖVE client's bundled LuaSocket has no TLS
+  support. Passwords are hashed client-side before transmission and bcrypted again server-side for storage, and
+  session tokens mean a password only needs to be typed once per device, but all other traffic (chat, game state,
+  deck contents) travels in the clear. This is explicitly scoped as suitable for "a game server for friends, not a
+  bank." Repeated failed sign-ins are rate-limited (see <a href="#server-go-limiter">server.go</a>); there is no
+  outbound email, so a forgotten password can only be reset by an admin via <code>adminUserUpdate</code>'s
+  <code>newPasswordHash</code> field.
+  </div>
+
+  <h2 id="dev-tooling">Development &amp; tooling</h2>
+  <p>The Go module has its own test suite (<code>go test ./...</code>, per <code>server/README.md</code>):
+  <code>internal/engine/engine_test.go</code> exercises the gopher-lua bridge directly, <code>internal/server/server_test.go</code>
+  drives the server end-to-end with fake in-process TCP clients (accounts, rooms, spectating, decks, collections,
+  admin calls — per the README), and <code>version_test.go</code> is the small but important guardrail described
+  above in <a href="#why-go-embeds-a-lua-engine">Why Go embeds a Lua engine</a>: it fails outright if
+  <code>engine/PROTOCOL_VERSION</code> (a one-line file <code>sync-engine.ps1</code> writes by scraping the client's
+  <code>protocol.lua</code>) doesn't match this build's <code>ProtocolVersion</code> constant, catching exactly the
+  "forgot to re-sync after bumping the client's protocol version" mistake before it ships.</p>
+  <p><code>server/tools/sync-engine.ps1</code> is the one-way copy step described throughout this page: it wipes and
+  rewrites <code>server/engine/</code> from the sibling client checkout (<code>lib/json.lua</code>,
+  <code>src/core/*.lua</code>, <code>src/game/{session,host_engine}.lua</code>, the standard-52 deck JSON, and the
+  scraped protocol version marker). <code>server/tools/build.ps1</code> is the release pipeline: run the full Go test
+  suite first (aborting the build on any failure), then atomically increment a <code>BUILD</code> counter file, then
+  cross-compile CGO-free Windows and Linux amd64 binaries into <code>dist/</code> with that build number baked in via
+  <code>-ldflags -X main.build=N</code> — the same number <code>main.go</code> logs on every startup.</p>
+
+  <div class="nextprev">
+    <a href="net.html">&larr; Networking</a>
+    <a href="tests-tools.html">Tests &amp; Tools &rarr;</a>
+  </div>
+</main>
+</body>
+</html>

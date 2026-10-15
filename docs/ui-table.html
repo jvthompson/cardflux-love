@@ -1,0 +1,445 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Game Table Rendering — Cardflux Docs</title>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+<nav class="sidenav">
+  <a class="brand" href="index.html">Cardflux<small>Codebase Documentation</small></a>
+  <div class="group-label">Application</div>
+  <a href="architecture.html">Architecture &amp; App Lifecycle</a>
+  <a href="ui-framework.html">UI Toolkit (kit)</a>
+  <div class="group-label">User Interface</div>
+  <a href="ui-screens.html">Screens</a>
+  <a href="ui-gamedef-editor.html">Game Definition Editor</a>
+  <a href="ui-server-screens.html">Multiplayer Lobby Screens</a>
+  <a href="ui-table.html" class="current">Game Table Rendering</a>
+  <div class="group-label">Engine &amp; Data</div>
+  <a href="core.html">Core Rules Engine</a>
+  <a href="game.html">Game Session &amp; Controller</a>
+  <a href="data.html">Data &amp; Persistence</a>
+  <div class="group-label">Platform &amp; Network</div>
+  <a href="net.html">Networking</a>
+  <a href="platform.html">Platform Integration</a>
+  <div class="group-label">Server</div>
+  <a href="server.html">Cardflux Server (Go)</a>
+  <div class="group-label">Quality</div>
+  <a href="tests-tools.html">Tests &amp; Tools</a>
+</nav>
+<main class="page">
+  <header class="page-head">
+    <div class="crumb"><a href="index.html">Home</a> / User Interface</div>
+    <h1>Game Table Rendering</h1>
+    <div class="subtitle">The virtual tabletop — rendering, camera, drag-and-drop and selection for live play.</div>
+  </header>
+
+  <div class="toc">
+    <div class="toc-title">On this page</div>
+    <ul>
+      <li><a href="#overview">Overview</a></li>
+      <li><a href="#table-screen">table_screen.lua — state &amp; behavior</a></li>
+      <li><a href="#table-view">table_view.lua — camera, layout &amp; drawing</a></li>
+      <li><a href="#card-render">card_render.lua — drawing a single card</a></li>
+      <li><a href="#selection">selection.lua — box-select geometry</a></li>
+      <li><a href="#controls-mapping">How this maps to CONTROLS.md</a></li>
+    </ul>
+  </div>
+
+  <h2 id="overview">Overview</h2>
+  <p>
+    <code>src/ui/table/</code> implements the game table itself — the screen a player spends almost all of a session
+    looking at. It is a direct Lua port of the Flutter client's <code>lib/ui/table_screen.dart</code>, split across
+    four files with a clean separation of concerns:
+  </p>
+  <table>
+    <tr><th>File</th><th>Lines</th><th>Responsibility</th></tr>
+    <tr><td><code>table_screen.lua</code></td><td>~1870</td><td>The screen object: state, input handling, drag lifecycle, context menus, dialogs, hotkeys, and the top-level <code>draw</code>/<code>update</code> entry points.</td></tr>
+    <tr><td><code>table_view.lua</code></td><td>~950</td><td>Pure layout and drawing: the camera transform, the felt/sidebars/player-row/hand-fan rendering, and recording hit-test "items" and drop zones for <code>table_screen.lua</code> to consume next frame.</td></tr>
+    <tr><td><code>card_render.lua</code></td><td>~340</td><td>Drawing a single card (face or back, image or code-drawn fallback) at an arbitrary position/scale/rotation, plus the large hover-preview overlay.</td></tr>
+    <tr><td><code>selection.lua</code></td><td>~60</td><td>Pure geometry helpers for box-selection hit-testing and keeping dragged items on the table — deliberately free of any <code>love.*</code> call so it can be unit-tested directly (see <a href="tests-tools.html">Tests &amp; Tools</a>).</td></tr>
+  </table>
+  <p>
+    The screen is handed a live <a href="game.html">session and controller</a> pair: <code>session</code>
+    (<code>src/game/session.lua</code>) is the read model — authoritative table state plus a few client-only
+    conveniences like drag previews — and <code>controller</code> (<code>src/game/controller.lua</code>) is how this
+    screen requests changes (move a card, flip it, shuffle a pile, etc.), which get validated against
+    <a href="core.html#table-actions-lua">src/core/table_actions.lua</a> before taking effect, then broadcast to every
+    seat. Nothing in this directory mutates game state directly; it only reads <code>session.state</code> and calls
+    <code>controller:*</code> methods.
+  </p>
+  <p>
+    A single table-screen instance also serves three different contexts with minor behavioral differences, all
+    threaded through its constructor <code>opts</code>: a local offline/practice game, a hosted multiplayer game
+    (<code>src/net/host_server.lua</code>), and a joined server game
+    (<a href="ui-server-screens.html">src/ui/screens/server/*</a>) — the latter additionally sets
+    <code>deckStore</code>, <code>collectionMode</code> (hides the Pack Generator and Card Library) and
+    <code>spectator</code> (disables all drags, menus and card hotkeys).
+  </p>
+
+  <h2 id="table-screen">table_screen.lua — state &amp; behavior</h2>
+  <div class="filecard">
+    <div class="path">src/ui/table/table_screen.lua</div>
+    <div class="role">The game table screen object: owns per-frame derived state, box selection, drag &amp; drop, hotkeys, context menus, dialogs and in-game overlays (game menu, log, library, search, hover preview).</div>
+  </div>
+
+  <h3>Construction and derived state</h3>
+  <p>
+    <code>T.new(opts)</code> copies every field of <code>opts</code> onto <code>self</code>, then initializes camera
+    state (<code>zoom = 1</code>, <code>camX/camY = 0</code>), animation tables (<code>rotAnim</code>,
+    <code>wiggle</code>), the hit-test item lists (<code>items</code>, <code>prevItems</code>, <code>dropZones</code>),
+    selection state, and loads this game's playmat images (<code>T:loadPlaymats</code>, scanning
+    <code>&lt;gameFolder&gt;/_playmats</code> for png/jpg/jpeg/webp files and shuffling their order — F12 cycles
+    through them in-game, see <a href="#controls-mapping">below</a>).
+  </p>
+  <p>
+    <code>T:derive()</code> runs once per frame, at the very top of <code>draw</code>, and rebuilds a
+    <code>self.derived</code> table from the live <code>session.state</code>: it buckets every card into hand /
+    zone / table groups, groups table cards into piles via
+    <a href="core.html#stack-utils-lua"><code>stack_utils.groupByStack</code></a>, sorts pile roots by top-card z-index,
+    computes which widgets dock into owned zones, and runs
+    <a href="core.html#seat-utils-lua"><code>seat_utils.computeHandRowLayout</code></a> to decide which player panels
+    go in the top row vs. bottom row of the screen (this is what makes a 1v1 game show your hand at the bottom and
+    the opponent's at the top, while bigger player counts wrap around). Every other method on <code>T</code> reads
+    from this freshly rebuilt <code>self.derived</code> rather than walking <code>session.state</code> itself.
+  </p>
+
+  <h3>Selection model</h3>
+  <p>
+    Selection is tracked as two id sets, <code>self.selection.cards</code> and <code>self.selection.tokens</code>
+    (instance ids), but <code>T:refreshSelection()</code> — called every frame right after <code>derive()</code> —
+    is what turns raw card-id membership into the pile-level view the rest of the code actually uses:
+    <code>self.selRoots</code> (pile root id → true) and <code>self.selCount</code>. A pile counts as selected the
+    moment <em>any</em> of its cards is selected, provided its top card still belongs to the acting player (so a
+    pile you no longer own, or that changed hands, silently drops out of the selection on the next frame — there is
+    no explicit "deselect on ownership change" code path; it falls out of recomputing from scratch every frame).
+    Tokens follow the same drop-stale-entries pattern via <code>T:isSelectableToken</code>.
+  </p>
+  <p>
+    <code>T:toggleSelected(item)</code> implements Ctrl+click: for a token it flips one id in
+    <code>sel.tokens</code>; for a pile it flips every card in that pile's group together, so partial-pile
+    selection is impossible. <code>T:finishBoxSelect(b)</code> implements drag-to-box-select: it converts the
+    dragged world-pixel rectangle to screen space, then tests it against <code>self.prevItems</code> (not the items
+    just drawn this frame — see <a href="#table-view">why below</a>) using
+    <a href="#selection"><code>selection.boxHits</code></a>, adding every owned <code>tableCard</code>/<code>pile</code>
+    item's whole pile and every selectable token it touches. <code>T:selectedCards()</code> and
+    <code>T:selectedTokenIds()</code> are the read-side accessors nearly everything else (drag, context menus,
+    hotkeys) builds on.
+  </p>
+
+  <h3>Hotkeys (keyboard)</h3>
+  <p>
+    <code>T:keypressed(key, _, isrepeat)</code> is the dispatcher. Escape is special-cased first: it clears an
+    active selection/box-select before it's allowed to toggle the game menu, and is swallowed entirely while a menu
+    or the log is open. While the game menu or log has focus, nothing else processes (except <code>L</code> to close
+    the log). A spectator gets only the view-only subset (camera reset, border toggle, color-tint toggle, playmat
+    cycle, log). Everyone else gets the full table of hotkeys documented in
+    <a href="../CONTROLS.md"><code>CONTROLS.md</code></a>: <code>Q</code>/<code>E</code> rotate
+    (<code>T:rotateHovered</code>), <code>X</code> discards (<code>T:discardHovered</code>), <code>F</code> flips
+    (<code>T:flipHovered</code>), <code>Z</code> brings to front (<code>T:bringHoveredToFront</code>), digits 1–9
+    draw that many cards (<code>T:drawNFromHovered</code>, via a <code>DRAW_KEYS</code> lookup covering both the
+    number row and numpad), plus camera/view toggles. Every one of these first checks
+    <code>T:hoveredSelectionRoots()</code> — if the card under the cursor is part of the current multi-selection,
+    the hotkey acts on the <em>whole</em> selection instead of just that one card, exactly as documented in
+    CONTROLS.md ("F, Q / E, X and Z on a selected card act on the whole selection").
+  </p>
+  <p>
+    Continuous camera panning (W/A/S/D, <code>PAN_SPEED = 600</code> px/s) and the Tab/Space/Alt modifier flags are
+    polled every frame in <code>T:update(dt)</code> rather than on key events, since they need to behave like
+    "held", not "pressed once".
+  </p>
+
+  <h3>Drag &amp; drop pipeline</h3>
+  <p>
+    Dragging is a three-stage state machine threaded through <code>T:processInput()</code> (called once per frame
+    from <code>draw</code>, before anything is actually drawn, against <em>last</em> frame's hit-test items):
+  </p>
+  <ol>
+    <li><strong>Press</strong> — <code>T:pressSource(src, mx, my)</code> records <code>self.pending = { src, pressX, pressY }</code> without starting a drag yet. <code>src</code> is built by <code>T:sourceFor(item)</code>, which knows how to turn each draggable item kind (<code>tableCard</code>, <code>pile</code>, <code>handCard</code>, <code>zone</code> top card, <code>counter</code>, <code>token</code>, <code>packGenerator</code>, <code>deckHeader</code>) into a generic <code>{ kind, ..., cx, cy, scale }</code> descriptor. <code>T:applySelectionToPress(item, src)</code> intercepts this for cards/tokens: Ctrl+click swaps in a toggle-selection click handler instead of a drag; pressing an already-multi-selected item upgrades the source to <code>kind = "selection"</code> so the whole selection drags together; pressing an unselected item while something else is selected clears the selection first.</li>
+    <li><strong>Threshold</strong> — while <code>self.pending</code> exists, each frame checks whether the mouse has moved past <code>DRAG_THRESHOLD = 4</code> px; if so <code>T:startDrag()</code> promotes it to <code>self.drag</code>. If the mouse is released first instead, it's treated as a plain click (<code>src.onClick</code> runs) — this is how clicking a pile draws its top card, and clicking a shuffle button, Save Deck, or a practice-mode avatar all work through the same pressure-sensitive path.</li>
+    <li><strong>Drag</strong> — <code>self.drag.started = true</code>; <code>T:drawDragFeedback()</code> renders the floating card(s)/widget/selection under the pointer every frame (with a card easing its scale toward hand-size over the hand or table-zoom over the table, <code>GHOST_SCALE_RATE</code>), and for single-card/pile drags with a live <code>primaryId</code>, <code>T:sendCardPreview()</code> throttles (<code>PREVIEW_THROTTLE = 0.05s</code>) a <code>controller:previewCardDrag</code> call so every other connected player sees a ghost of the card moving in real time (rendered by <a href="#table-view"><code>table_view.lua</code>'s <code>drawRemoteGhosts</code></a>). Releasing the mouse calls <code>T:endDrag()</code>, which dispatches to one of <code>handleCardDrop</code>, <code>handlePileDrop</code>, <code>handleWidgetDrop</code>, <code>handleTokenDrop</code>, <code>handleLibraryDrop</code>, or <code>handleSelectionDrop</code> based on <code>drag.kind</code>.</li>
+  </ol>
+  <p>Each <code>handle*Drop</code> function encodes exactly the drop rules documented in CONTROLS.md:</p>
+  <ul>
+    <li><code>T:handleCardDrop</code> — Alt+drag on a multi-card pile (<code>T:pickupGroup</code>, see below) moves the whole visual stack together via <code>T:moveItemsBy</code>; dropping on your hand inserts at the index <code>T:handDropIndex</code> computes from the hand's live screen-space card centers; dropping on a docked zone returns it there (Alt = bottom); Alt+drop near another loose card within <code>STACK_HIT_RADIUS</code> stacks onto it <em>only if</em> <code>session:canStackOnto</code> allows it (piles never mix owners); anything else moves it to that table point, clamped fully onto the table by <a href="#selection"><code>selection.clampWorldCenter</code></a>.</li>
+    <li><code>T:handleSelectionDrop</code> — the same rules generalized to the whole selection: dropping on the hand deals every selected card in, in order; Alt+drop onto a stack target requires <em>every</em> selected card to pass <code>canStackOnto</code> or nothing moves (no partial stacking); otherwise the whole group translates together by the same world-pixel delta, using <code>T:selectionAnchorWorld</code> to compute the offset from whichever item was actually grabbed.</li>
+    <li><code>T:handleTokenDrop</code> — Ctrl while dropping duplicates the token (<code>controller:duplicateWidget</code>) instead of moving the original; dropping within range of a card attaches it (<code>controller:attachWidgetToCard</code>); otherwise it's just moved.</li>
+  </ul>
+  <p>
+    <code>T:pickupGroup(dragged)</code> computes "every card visually stacked on top of the dragged one" by a
+    breadth-first flood fill over cards that overlap in world space and have a higher z-index — this is what makes
+    Alt+dragging a card also carry along anything resting on it (including attached widgets, handled separately in
+    <code>drawDragFeedback</code> and the drop handlers via <code>groupIds</code>).
+  </p>
+
+  <h3>Context menus</h3>
+  <p>
+    Right-click is handled as its own press/release pair (<code>self.rightPressItem</code>) so a menu only opens if
+    both the press and release land on the same item. <code>T:openItemMenu(item, mx, my)</code> is the dispatcher:
+    it special-cases a right-click on a card or pile that's part of a 2+ item selection to show
+    <code>T:selectionMenuItems</code> instead of the single-item menu. <code>T:cardMenuItems(card, onSearch)</code>
+    builds the standard per-card menu — "Send to..." submenu (Hand, Discard, and every other card zone, each itself
+    expanding to Top/Shuffle Into/Bottom via the shared <code>placementMenu</code> helper), Flip, a Rotate submenu
+    (<code>T:rotateMenu</code>), and — only for table cards not inside a pile — "Give to &lt;player&gt;" per
+    connected opponent and "Remove Ownership", both routed through <code>T:confirmGive</code> which asks before
+    anything leaves your ownership. Right-clicking empty table opens <code>T:openBoardMenu</code> (Widgets submenu:
+    Simple Counter, Token, and — unless <code>collectionMode</code> — Pack Generator and, only if the game defines
+    deck-building zones, Deck Widget; plus Card Library, also hidden in collection mode).
+  </p>
+
+  <h3>Dialogs and overlays</h3>
+  <p>
+    Several prompts are built with <code>overlays.dialog</code> (see <a href="ui-framework.html">the UI
+    toolkit</a>): <code>T:promptSetValue</code>/<code>promptSetColors</code> for counters,
+    <code>T:promptSetTokenColor</code>, and <code>T:promptLoadDeck</code> (delegates to
+    <code>deck_library_dialog.lua</code>, documented on <a href="ui-screens.html">Screens</a>).
+    <code>T:saveDeckWidget(w)</code> reconstructs a <code>DeckConfig</code>/<code>SubDeck</code> (see
+    <a href="core.html#models-lua">core/models.lua</a>) by tallying the cards currently sitting in each of the deck
+    widget's synthetic sub-zones (<a href="core.html#deck-widget-zones-lua">deck_widget_zones.lua</a>), then hands it to
+    the same save-deck dialog used elsewhere. <code>T:saveLog()</code> writes the session's action log to the
+    game's folder via <a href="data.html">save_files.lua</a>.
+  </p>
+  <p>
+    Full-screen overlay panels share a common chrome drawn by the local <code>panel(id, w, h, title, onClose,
+    trailing)</code> helper (scrim that closes on an outside click, dark rounded panel, title row with a close
+    button) and are layered in a fixed order at the bottom of <code>T:draw</code>: search results
+    (<code>T:drawSearch</code>, for "Search..." on a pile/zone), the Card Library (<code>T:drawLibrary</code>, its
+    own instance of the shared <a href="ui-framework.html">card_filter_bar</a>, temporarily swapping in the dark
+    theme), the Space hover-preview (<code>T:drawPreview</code>, always on top of those but under the menu/log),
+    the Game Log (<code>T:drawLog</code>, virtualized — it only text-shapes and draws rows currently in the visible
+    scroll range despite measuring every entry's height up front since "logs are small"), the Game Menu
+    (<code>T:drawGameMenu</code> — Leave/Save/Settings/Controls plus, for a hosting player, a kick list), and finally
+    whatever is being dragged, so it always renders on top of every dialog.
+  </p>
+
+  <h2 id="table-view">table_view.lua — camera, layout &amp; drawing</h2>
+  <div class="filecard">
+    <div class="path">src/ui/table/table_view.lua</div>
+    <div class="role">Everything about where things are drawn: the pan/zoom camera transform, the felt/sidebar/player-panel layout, hand fanning, and recording this frame's hit-test items and drop zones onto the screen object (<code>T</code>) passed in.</div>
+  </div>
+  <div class="warn">This file has uncommitted local edits in the working tree at the time this documentation was written (<code>git status</code> shows <code>M src/ui/table/table_view.lua</code>). The description below reflects the content currently on disk.</div>
+
+  <h3>The world/canonical/screen coordinate pipeline</h3>
+  <p>
+    Table positions exist in three coordinate spaces, and <code>table_view.lua</code> is where all the conversions
+    live:
+  </p>
+  <ul>
+    <li><strong>Canonical</strong> — the coordinates actually stored in game state (<code>card.x</code>, <code>card.y</code>), seat-relative and mirrored so that rules logic never needs to know which physical seat is "yours". Converted via <a href="core.html#geometry-lua">src/core/geometry.lua</a>'s <code>canonicalToLocalPixel</code>/<code>localPixelToCanonical</code>, wrapped here as <code>V.canonicalToWorld</code>/<code>V.worldToCanonical</code> (and the <code>T.isMirrored</code> flag — set per seat — is what actually flips the board for the far player in a 2-player game).</li>
+    <li><strong>World</strong> — a fixed <code>WW x WH</code> pixel rectangle (<code>geometry.worldWidth/worldHeight</code>) representing the whole table surface, independent of window size or zoom.</li>
+    <li><strong>Screen</strong> — actual pixels on screen, after the camera (<code>T.camX</code>, <code>T.camY</code>, <code>T.zoom</code>) and the table viewport rect (<code>T.tableRect</code>, computed by <code>V.layout</code>) are applied: <code>V.worldToScreen</code> / <code>V.screenToWorld</code>.</li>
+  </ul>
+  <p>
+    <code>V.clampedCamera(T)</code> keeps the pan within <code>V.maxPan(T)</code>, which allows panning out to
+    <code>geometry.tablePanMarginFraction</code> (<code>M</code>) beyond the table edge in each direction — this is
+    the margin <a href="#selection"><code>selection.clampWorldCenter</code></a> also respects when pulling a dropped
+    card back onto the table, so "off the table" and "off the pannable area" agree. <code>V.toScreen</code> and
+    <code>V.screenToCanonical(Clamped)</code> are the composed convenience functions nearly every drag/drop
+    calculation in <code>table_screen.lua</code> actually calls.
+  </p>
+
+  <h3>Hit-test items and the one-frame lag</h3>
+  <p>
+    <code>V.addItem(T, item)</code> appends to <code>T.items</code> as things are drawn, automatically tagging the
+    item with <code>T.drawMirror</code> if it's currently being drawn inside a rotated region (see
+    <code>withRotated</code> below) so <code>V.hitTest</code> can transform mouse coordinates back into the item's
+    own frame. Critically, <strong>input processing reads <code>T.prevItems</code> — last frame's list — not the one
+    being built this frame</strong> (<code>table_screen.lua</code> swaps <code>prevItems = items</code> at the end of
+    every <code>draw</code>). This one-frame lag is what lets hit-testing happen before drawing each frame without
+    the two ever racing each other, at the cost of hit-test geometry always being exactly one frame stale — invisible
+    at 60fps but worth knowing when reasoning about edge cases.
+  </p>
+  <p>
+    <code>V.hitTest(item, mx, my)</code> supports three hit shapes: an axis-aligned box (default), a rotated box
+    (when <code>item.angle</code> and half-extents <code>item.hw</code>/<code>item.hh</code> are set — used for
+    table cards, which must be hit-tested in their own rotated frame), and a circle (<code>item.circle</code> — used
+    for tokens and the shuffle button). <code>withRotated(T, rotate, x, y, w, h, fn)</code> is the mechanism behind
+    drawing an opponent's panel upside-down in a &gt;2-player game: it pushes a 180° graphics rotation around the
+    panel's center and sets <code>T.drawMirror</code> for the duration of <code>fn</code>, so every item registered
+    inside automatically gets a mirrored hit test later.
+  </p>
+
+  <h3>Drawing the table surface</h3>
+  <p><code>V.drawTable(T)</code> clips to <code>T.tableRect</code> and draws, in order: the center playmat marker (<code>drawCenterMarker</code> — a rounded rectangle outline with the current playmat image cover-fit and stencil-clipped inside it), table piles (<code>drawTablePiles</code>), board widgets (<code>drawTableWidgets</code>), arrows (<code>drawArrows</code>), other players' in-flight drag ghosts (<code>drawRemoteGhosts</code>), the discard-flight animation (<code>drawFlight</code>), and the active box-selection rectangle (<code>drawSelectionBox</code>).</p>
+  <p>
+    <code>drawTablePiles</code> is the richest of these: for each pile root it draws either a single card
+    (1 card) or a pile box with a count badge and, for the local player's own non-opponent piles, a shuffle button
+    (<code>drawPileBox</code>, also reused for zones and deck-widget sub-zones — it's the shared "a stack of cards
+    with a count badge" renderer). Rotation (<code>V.cardTurns</code>) folds together seat-mirroring, the card's
+    defined orientation (portrait/left/right), and any manual quarter-turns from Q/E, and
+    <code>V.animatedTurns</code> eases between rotation states over <code>ROT_DURATION = 0.15s</code> using a cubic
+    ease-out. <code>V.ghostAlpha(T, id)</code> dims a card to 30% opacity while it's being dragged locally or
+    previewed as being dragged by someone else.
+  </p>
+  <p>
+    Widgets each have a dedicated face-drawing function reused both for their resting position and for drag
+    feedback: <code>counterFace</code> (rounded square, auto-shrinking number text), <code>packFace</code> (shows
+    the game's configured pack-generator art, or a text fallback), <code>tokenFace</code> (a plain colored
+    circle), and <code>deckWidgetFace</code> (the most complex: a header with a drag handle and owner label, one
+    sub-zone pile box per deck-building zone defined by the game, and — for the owner only — a "Save Deck" button
+    strip at the bottom).
+  </p>
+
+  <h3>Player panels and the hand fan</h3>
+  <p>
+    <code>drawPlayerRow</code> lays out one row (top or bottom) of player panels side by side, each composed of a
+    hand band, that player's owned zone slots, and an avatar corner — and the order these three are drawn in flips
+    (<code>reverse</code>) depending on seat position so panels visually mirror correctly across the table.
+    <code>drawHandBand</code> draws one player's hand: for the local player it's the actual playable fan
+    (<code>T.derived.localHand</code>); for anyone else it's just a count of face-down card backs.
+  </p>
+  <p>
+    The fan shape itself — <code>fanLayout(P, count, innerW)</code> — places cards along a circular arc: it picks an
+    angle step up to the user's configured tilt-per-card, capped so the <em>total</em> spread never exceeds
+    <code>maxSpread</code>, then derives the arc radius from the configured horizontal step and shrinks it further
+    if needed so the fan's outer corners (accounting for tilt and the hover-lift) still fit within the available
+    width. All of these shape parameters — card scale, spacing, tilt, max spread, raise, reveal — come from
+    <a href="data.html">hand_settings.lua</a> (**Settings &gt; Hand**, per CONTROLS.md), read fresh each frame via
+    <code>V.handParams()</code>. A hovered card eases upward (<code>FAN_LIFT_RATE</code>, exponential easing toward
+    <code>P.lift</code>) so it can be read without fully leaving the fan, and the hit box
+    (<code>kind = "handCard"</code>) is grown vertically to cover both its resting and lifted position so the hover
+    doesn't flicker at the boundary.
+  </p>
+  <p>
+    <code>V.layout(T, x, y, w, h)</code> runs once per frame before any drawing to compute
+    <code>T.layoutRects</code> (left/right shared-zone sidebars, top/bottom player rows) and
+    <code>T.tableRect</code> (whatever space is left in the middle) — shared zones with <code>side == "left"</code>
+    or <code>"right"</code> (per the game definition) reserve a fixed-width sidebar column drawn by
+    <code>drawSidebar</code>.
+  </p>
+
+  <h2 id="card-render">card_render.lua — drawing a single card</h2>
+  <div class="filecard">
+    <div class="path">src/ui/table/card_render.lua</div>
+    <div class="role">Draws one card (face or back) at a base size under a transform, so every caller positions by center with an independent scale and rotation. Also the standalone "big preview" renderer used by the Space-hold feature and the card pool/shop/collection screens.</div>
+  </div>
+  <p>
+    Every card is drawn at a fixed base size, <code>R.cardWidth = 70</code> × <code>R.cardHeight = 100</code>
+    (<code>R.radius = 3.5</code> corner radius), under a <code>love.graphics.push/translate/rotate/scale/pop</code>
+    transform — so the same drawing code works identically whether it's rendering a 70×100 table card at
+    <code>T.zoom</code>, a larger hand card, a 4/3-scaled pool tile in the Deck Editor or Collection screen, or a
+    huge hover-preview copy.
+  </p>
+  <div class="fn">
+    <span class="sig">R.draw(opts)</span>
+    <p>
+      The single entry point everything else in the app uses to draw a card. <code>opts</code>: <code>def</code>
+      (a <code>CardDefinition</code> or <code>nil</code> for an unknown/opponent card), <code>faceUp</code>,
+      <code>cx</code>/<code>cy</code> (screen center), <code>scale</code>, <code>angle</code> (radians),
+      <code>border</code>/<code>tint</code>/<code>alpha</code> (color overlays — <code>border</code> draws the
+      owner-colored outline, <code>tint</code> is the translucent selection-color overlay), <code>cardBacks</code>
+      (the game's card-back definitions, needed to resolve what a face-down card should actually look like), and
+      <code>forceFaceUp</code> (used by previews that must show the face regardless of the card's real state).
+    </p>
+  </div>
+  <p>
+    Face/back drawing falls through three tiers, handled by <code>imageFace</code>: (1) if the definition's image is
+    already decoded in <a href="data.html">the image cache</a>, draw it cover-fit into the card rect with rounded
+    corners via a small custom shader (<code>roundedShader</code> — discards pixels outside a rounded rect computed
+    in the destination's own coordinate space, with a graceful <code>pcall</code> fallback if shader compilation
+    ever fails); (2) if it's still decoding, draw a plain gray placeholder; (3) otherwise fall back to a
+    <strong>code-drawn face</strong> (<code>codeDrawnFace</code>) — a colored rectangle using the card's
+    <code>colorHex</code>, with the title and a suit glyph (♥♦♣♠, from <code>SUIT_GLYPHS</code>) printed in opposite
+    corners, mirroring the classic playing-card layout. Card backs without a defined image get an analogous
+    code-drawn pattern (<code>codeDrawnBack</code> — a blue card with a crosshatch and diamond motif) or, if the
+    game specifically has configured card backs but none resolves for this card, a red "missing" warning card
+    (<code>missingBack</code>).
+  </p>
+  <p>
+    <code>R.shownOrientation(def, showingBack, cardBacks)</code> and <code>R.orientationTurns(o)</code> translate a
+    card's declared orientation (<code>portrait</code>/<code>left</code>/<code>right</code>) into a quarter-turn
+    fraction, used throughout <a href="#table-view">table_view.lua</a> wherever a card's drawn angle is computed.
+    Text drawn inside the transformed card (<code>scaledPrint</code>) quantizes its own font size to quarter-scale
+    steps so LÖVE reuses font objects instead of rasterizing a new one on every tiny zoom change, while undoing
+    that quantization in the print call so text still renders crisply at the exact requested scale.
+  </p>
+  <div class="fn">
+    <span class="sig">R.drawPreview(faces, cardBacks, sw, sh, mx)</span>
+    <p>
+      The large hover-preview renderer used by the Space hotkey everywhere in the app (table, deck editor, shop,
+      collection, trade). <code>faces</code> is a small list of <code>{ def, faceUp, orientation }</code> — usually
+      one, or two when <code>R.definitionFaces(def, cardBacks)</code> is used to show both a card's front and its
+      distinct back. It stacks the faces vertically, sized so a single face fills up to 70% of the screen height
+      (90% for a stack) while staying under 42% of the screen width, and centers the stack in whichever half of the
+      screen (left or right of <code>mx</code>, the cursor x) is farther from the mouse, so the preview never
+      covers the thing being previewed.
+    </p>
+  </div>
+  <p>
+    Small helpers also live here because they're purely about drawing a card-adjacent decoration:
+    <code>R.drawEmptySlot</code> (dashed-looking rounded outline for an empty zone), <code>R.drawCountBadge</code>
+    (the black circular "×N" pile-count badge), and <code>R.drawSearchBadge</code> (the eye icon shown on a
+    pile/zone currently being searched).
+  </p>
+
+  <h2 id="selection">selection.lua — box-select geometry</h2>
+  <div class="filecard">
+    <div class="path">src/ui/table/selection.lua</div>
+    <div class="role">Pure geometric helpers for table box-selection hit-testing and keeping moved items fully on the table. No love.* calls, so these are unit-tested directly (see tests/table_actions_test.lua and tests/selection_test.lua in Tests &amp; Tools).</div>
+  </div>
+  <div class="fn">
+    <span class="sig">S.rectFromPoints(x1, y1, x2, y2)</span>
+    <p>Normalizes two arbitrary corner points (the box-select drag can go in any direction) into a <code>{x, y, w, h}</code> rect with non-negative width/height.</p>
+  </div>
+  <div class="fn">
+    <span class="sig">S.boxHits(rect, item)</span>
+    <p>
+      Does a box-select rectangle touch a given hit-test item? Three cases, mirroring
+      <a href="#table-view"><code>table_view.lua</code>'s <code>V.hitTest</code></a> shapes: a circular item
+      (tokens) tests distance from the circle's center to the nearest point on the rect; a rotated item (angled
+      table cards) first computes the rotated shape's axis-aligned bounding box (via <code>|cos|</code>/<code>|sin|</code>
+      projections of its half-extents) and then does a plain box overlap against <em>that</em> — a conservative
+      approximation (a rotated card's corner can be "selected" slightly before the box visually touches its edge)
+      that keeps the hit test cheap; anything else is a plain axis-aligned rectangle overlap.
+    </p>
+  </div>
+  <div class="fn">
+    <span class="sig">S.halfExtents(w, h, turns)</span>
+    <p>Returns the half-width/half-height of a <code>w x h</code> box after being rotated by a number of full turns, swapping width and height whenever the nearest quarter-turn is odd (90°/270°) — used wherever code needs "how much space does this card actually occupy on screen right now," e.g. when clamping a drop position.</p>
+  </div>
+  <div class="fn">
+    <span class="sig">S.clampWorldCenter(wx, wy, halfW, halfH)</span>
+    <p>
+      The function behind CONTROLS.md's "Anything that would end up partly off the table is pulled back fully onto
+      it." Given an item's half-extents, it clamps its center so the item's full extent stays within the table
+      <em>plus</em> the pan margin (<code>geometry.tablePanMarginFraction</code>) in from <code>S.EDGE_MARGIN = 10</code>
+      world pixels — the same margin the camera itself is allowed to pan into (see
+      <a href="#table-view"><code>V.maxPan</code></a>), so a card can be dropped anywhere the camera could currently
+      see. If an item is simply too large to fit within the margins on an axis (shouldn't normally happen for
+      cards), it falls back to centering on that axis.
+    </p>
+  </div>
+
+  <h2 id="controls-mapping">How this maps to CONTROLS.md</h2>
+  <p>Every documented table interaction in <a href="../CONTROLS.md"><code>CONTROLS.md</code></a> traces to a specific piece of this code:</p>
+  <table>
+    <tr><th>Documented behavior</th><th>Implementation</th></tr>
+    <tr><td>Drag a card; dragging a stacked card carries cards (and tokens) on top of it along</td><td><code>table_screen.lua</code>: <code>T:pickupGroup</code>, <code>T:moveItemsBy</code>, drag-feedback group drawing</td></tr>
+    <tr><td>Click a pile draws its top card; drag a pile peels one card; Alt+drag moves the whole pile</td><td><code>T:sourceFor</code> (pile <code>onClick</code>), <code>T:endDrag</code>'s Alt branch calling <code>handlePileDrop</code> vs. <code>handleCardDrop</code></td></tr>
+    <tr><td>Pile shuffle button</td><td><code>table_view.lua</code>'s <code>drawPileBox</code> shuffle hit region; <code>T:shufflePile</code>/<code>T:shuffleZone</code></td></tr>
+    <tr><td>Mouse wheel zoom around the cursor</td><td><code>T:processInput</code>'s wheel-zoom block, re-centering the camera on the cursor via <code>V.maxPan</code>/<code>camX</code>/<code>camY</code> adjustment</td></tr>
+    <tr><td>Middle-drag pan; Tab+drag draws a shared arrow</td><td><code>T:processInput</code>'s <code>midPan</code> and <code>arrowDrag</code> blocks; arrows drawn by <code>table_view.lua</code>'s <code>drawArrows</code>/<code>drawArrow</code></td></tr>
+    <tr><td>Drag/Shift+drag on empty table box-selects; Ctrl+click toggles one item</td><td><code>T:processInput</code>'s <code>k == "table"</code> press branch sets <code>boxSelect</code>; <code>T:finishBoxSelect</code>; <code>T:toggleSelected</code></td></tr>
+    <tr><td>Dropping on hand / a zone / a pile / elsewhere, piles never mix owners</td><td><code>T:handleCardDrop</code>/<code>handleSelectionDrop</code>/<code>handlePileDrop</code>, gated by <code>session:canStackOnto</code></td></tr>
+    <tr><td>Opponents' items are read-only (hover for preview, no drag/menu)</td><td><code>item.interactable</code>/<code>ownedByOpponent</code> flags set when items are registered in <code>table_view.lua</code>, checked in <code>sourceFor</code> and <code>openItemMenu</code></td></tr>
+    <tr><td>Space hold: large preview of exactly what's visible</td><td><code>T:drawPreview</code>, delegating to <code>card_render.lua</code>'s <code>R.drawPreview</code></td></tr>
+    <tr><td>F / Q,E / X / Z hotkeys, acting on the whole selection when applicable</td><td><code>T:keypressed</code> + <code>T:hoveredSelectionRoots</code></td></tr>
+    <tr><td>1–9 draws that many cards</td><td><code>T:drawNFromHovered</code> via the <code>DRAW_KEYS</code> table</td></tr>
+    <tr><td>W/A/S/D pans your camera; Home/H resets it</td><td><code>T:update(dt)</code>'s WASD block; <code>home</code>/<code>h</code> branch in <code>T:keypressed</code></td></tr>
+    <tr><td>F1 hides ownership borders; F2 toggles zone/hand tint; F12 cycles playmats</td><td><code>T.bordersHidden</code>/<code>T.colorTintEnabled</code> flags consumed in <code>table_view.lua</code>; <code>T:cyclePlaymat</code></td></tr>
+    <tr><td>L opens/closes the Game Log with a Save Log button</td><td><code>T:toggleLog</code>, <code>T:drawLog</code>, <code>T:saveLog</code></td></tr>
+    <tr><td>Esc clears selection, then opens the Game Menu (save, settings, controls, kick, leave/end)</td><td><code>T:keypressed</code>'s escape branch; <code>T:drawGameMenu</code></td></tr>
+    <tr><td>Ctrl while dropping a token duplicates it</td><td><code>T:handleTokenDrop</code>'s <code>ctrl</code> branch, <code>controller:duplicateWidget</code></td></tr>
+    <tr><td>Right-click menus (card / pile / zone / counter / token / pack generator / deck widget)</td><td><code>T:openItemMenu</code> and its per-kind menu builders</td></tr>
+    <tr><td>Hand shape settings (card size, spacing, tilt, spread, raise, reveal)</td><td><code>table_view.lua</code>'s <code>V.handParams</code>/<code>fanLayout</code>, reading <a href="data.html">hand_settings.lua</a></td></tr>
+    <tr><td>Board widgets: drag to move; token attach/detach on a card; Simple Counter double-click halves</td><td><code>T:sourceFor</code>/drop handlers for widgets; <code>T:processInput</code>'s double-click branch for <code>counter</code>/<code>dockedCounter</code></td></tr>
+  </table>
+
+  <div class="nextprev">
+    <a href="ui-server-screens.html">&larr; Multiplayer Lobby Screens</a>
+    <a href="core.html">Core Rules Engine &rarr;</a>
+  </div>
+</main>
+</body>
+</html>
