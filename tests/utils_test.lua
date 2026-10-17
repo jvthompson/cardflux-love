@@ -157,6 +157,38 @@ return function(t)
       local b = packs.selectPackCards(pool(20), {}, util.seededRng(42))
       t.eq(t.ids(a, "id"), t.ids(b, "id"))
     end)
+    -- A scripted rng: each call pops the next value from `values` (clamped
+    -- into range), falling back to 1 once exhausted.
+    local function sequenceRng(values)
+      local i = 0
+      return function(n)
+        i = i + 1
+        local v = values[i] or 1
+        return v > n and n or v
+      end
+    end
+    t.it("fractional-only setting: all-floor-zero falls back to the default fill", function()
+      local p = pool(10)
+      p[#p + 1] = H.cardDef("legendary", { "Legendary" })
+      t.eq(#packs.selectPackCards(p, { { tag = "Legendary", count = 0.4 } }, util.seededRng(1)), 10)
+    end)
+    t.it("fractional remainder is an additional-card chance on top of the guaranteed counts", function()
+      local setCards = { H.cardDef("common1", { "Common" }), H.cardDef("legendary1", { "Legendary" }) }
+      local settings = { { tag = "Common", count = 1 }, { tag = "Legendary", count = 0.5 } }
+      local hit = packs.selectPackCards(setCards, settings, sequenceRng({ 500000 }))
+      t.eq(t.ids(hit, "id"), { "common1", "legendary1" })
+      local miss = packs.selectPackCards(setCards, settings, sequenceRng({ 500001 }))
+      t.eq(t.ids(miss, "id"), { "common1" })
+    end)
+    t.it("count >= 1 with a fractional remainder: guaranteed floor, chance of one more", function()
+      local setCards = { H.cardDef("r1", { "Rare" }), H.cardDef("r2", { "Rare" }), H.cardDef("r3", { "Rare" }) }
+      local settings = { { tag = "Rare", count = 1.5 } }
+      local hit = packs.selectPackCards(setCards, settings, sequenceRng({ 1, 1, 500000 }))
+      t.eq(#hit, 2)
+      local miss = packs.selectPackCards(setCards, settings, sequenceRng({ 1, 1, 999999 }))
+      t.eq(#miss, 1)
+      for _, c in ipairs(hit) do t.ok(util.contains(c.types, "Rare")) end
+    end)
   end)
 
   t.describe("card sort/filter", function()

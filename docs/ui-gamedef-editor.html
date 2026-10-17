@@ -269,7 +269,7 @@
   <h2 id="sets-tab">gamedef/sets_tab.lua — Sets tab</h2>
   <div class="filecard">
     <div class="path">src/ui/screens/gamedef/sets_tab.lua</div>
-    <div class="role">Port of widgets/sets_tab.dart: bulk-import a folder of card art as a new set, and configure pack generation.</div>
+    <div class="role">Port of widgets/sets_tab.dart, laid out as list + detail like the <a href="#zones-tab">Zones tab</a>: bulk-import a folder of card art as a new set, reorder sets, and configure pack generation.</div>
   </div>
   <p>
     "Add Set..." is the headline feature: it opens a folder picker, derives the set's id from the folder's own name
@@ -280,20 +280,27 @@
     the fast path for turning a folder of card scans into a playable set without touching the Cards tab at all.
   </p>
   <p>
-    Each set row shows its name (editable), id and card count, a delete button
+    The left-hand list (<code>T:drawList</code>) is drag-reorderable via the same <code>widgets.reorder</code> /
+    <code>widgets.moveItem</code> mechanism as the Zones tab — dragging a set changes its position in
+    <code>game.sets</code> directly, which is also the order <code>GameDefinition.toJson</code> writes sets (and
+    their nested cards) out in, so the first set in this list is always the first set a card pool sees when
+    browsing. Selecting a set shows its fields in the right-hand detail pane (<code>T:drawDetail</code>): an
+    editable name, its (immutable) id and card count, a "Delete Set" button
     (<code>T:confirmDelete</code> — removes the set <em>and</em> every card whose <code>setId</code> matches it,
     after confirmation, since that's destructive to data the Cards tab owns), and — only when at least one card in
-    the set carries a tag from whichever tag group the game uses for rarity — a collapsible <strong>Pack
-    Settings</strong> section.
+    the set carries a tag from whichever tag group the game uses for rarity — a <strong>Pack Settings</strong>
+    section.
   </p>
   <div class="fn">
-    <div class="sig">packSummary(set) / rarityTags</div>
-    Pack Settings is a list of <code>(tag, count)</code> pairs — "deal <code>count</code> random cards carrying
-    <code>tag</code>" — consumed by the Pack Generator board widget and by a collection-mode server's pack-opening
-    logic (see <a href="core.html#pack-generator-lua">src/core/pack_generator.lua</a>). With no settings configured,
-    the collapsed summary reads "10 random cards" (the generator's built-in default), ignoring rarity entirely.
-    <code>ops.rarityTags(game.tagGroups)</code> decides which tag group, if any, counts as the rarity vocabulary
-    offered in the tag dropdown here.
+    <div class="sig">drawPackRow(set, tag, ...) / rarityTags</div>
+    Pack Settings is one fixed, always-visible row per rarity tag (<code>ops.rarityTags(game.tagGroups)</code>
+    decides which tag group, if any, counts as the rarity vocabulary, and in what order the rows appear) — no more
+    add/remove list. Each row is a single editable decimal field (no negative numbers) bound to that tag's
+    <a href="core.html#models-pack-set-tag">PackSetting</a>: a value's integer part is a guaranteed number of cards
+    of that rarity; its fractional part is the chance of one <em>additional</em> card of that rarity on top of the
+    rest of the pack (see <a href="core.html#pack-generator-lua">src/core/pack_generator.lua</a>). A field left at 0
+    has no <code>PackSetting</code> entry at all — <code>set.packSettings</code> only ever holds nonzero rows. With
+    no rarities configured, a pack is 10 random cards (the generator's built-in default), ignoring rarity entirely.
   </div>
 
   <h2 id="card-view-tab">gamedef/card_view_tab.lua — Cards tab</h2>
