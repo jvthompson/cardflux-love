@@ -1,0 +1,31 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache LOVE AppImage
+        id: cache-love
+        uses: actions/cache@v4
+        with:
+          path: love.AppImage
+          key: love-11.5-x86_64-appimage
+
+      - name: Download LOVE 11.5
+        if: steps.cache-love.outputs.cache-hit != 'true'
+        run: curl -L -o love.AppImage https://github.com/love2d/love/releases/download/11.5/love-11.5-x86_64.AppImage
+
+      - name: Extract LOVE AppImage
+        run: |
+          chmod +x love.AppImage
+          ./love.AppImage --appimage-extract
+
+      - name: Run Lua test suite
+        run: ./squashfs-root/AppRun . --test
