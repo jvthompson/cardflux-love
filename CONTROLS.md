@@ -57,6 +57,7 @@ Hotkeys act on the card under the cursor and fire once per key press (holding a 
 | F2 | Toggle zone/hand backgrounds between player-color tint and black | This session only |
 | F12 | Cycle through the game's playmats | |
 | L | Open/close the Game Log (with a Save Log button) | |
+| Ctrl + R | Open/close the Rulebook viewer (if the game has a rulebook.md), with a collapsible table-of-contents sidebar. Also works in the Deck Editor. | |
 | Esc | Clear the selection; with nothing selected, open/close the Game Menu (save game, settings, controls, kick a player, leave/end game) | |
 | Ctrl (while dropping a token) | Duplicate the token instead of moving it | Token widgets |
 
@@ -92,3 +93,4 @@ Your hand is drawn as a fan of cards along the bottom of the screen, and opponen
 | Right-click a card in the pool | Remove one copy |
 | Click a card in the deck list | Remove one copy |
 | Hover | Preview the card |
+| Ctrl + R | Open/close the Rulebook viewer |
