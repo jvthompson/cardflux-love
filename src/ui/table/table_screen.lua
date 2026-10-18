@@ -1912,7 +1912,8 @@ function T:draw(x, y, w, h)
   self:refreshSelection()
   if self.tableRect then self:processInput() end
   self.libraryHoverDef = nil
-  V.draw(self, x, y, w, h)
+  local chatSqueeze = (self.sc and CHAT_W * self.chatAnim) or 0
+  V.draw(self, x, y, w - chatSqueeze, h)
   self.prevItems = self.items
   -- Overlays, in Flutter's stacking order.
   if self:mySearchOpen() then ui.overlay(function() self:drawSearch() end) end
