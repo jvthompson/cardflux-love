@@ -49,6 +49,9 @@ local function apply()
   local parts, lastPush = {}, 0
   local status, err = http.get(job.url, {
     timeoutMs = 30000,
+    -- A retry restarts the download from byte 0, so whatever this attempt
+    -- had already buffered must be discarded first.
+    onRetry = function() parts, lastPush = {}, 0 end,
     onChunk = function(chunk, received, total)
       parts[#parts + 1] = chunk
       total = total or job.size
