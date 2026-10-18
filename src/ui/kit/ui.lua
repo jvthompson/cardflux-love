@@ -858,19 +858,26 @@ function ui.textField(id, x, y, w, text, opts)
 
   local r = opts.disabled and { hovered = false } or ui.region(id, x, y, w, h, { cursor = "ibeam" })
 
+  -- Width of the first i characters. Binary-searched below rather than
+  -- probed character-by-character (same technique as ui.ellipsize): width
+  -- is monotonic in i, so this is O(log n) getWidth calls instead of O(n).
+  local function widthAt(i)
+    if i <= 0 then return 0 end
+    return f:getWidth(text:sub(1, (utf8.offset(text, i + 1) or #text + 1) - 1))
+  end
+
   local function caretFromMouse(mx)
     local rel = mx - innerX + st.scrollX
-    local best, bestD = 0, math.abs(rel)
-    local i = 0
-    for p, _ in utf8.codes(text) do
-      i = i + 1
-      local wpx = f:getWidth(text:sub(1, (utf8.offset(text, i + 1) or #text + 1) - 1))
-      local d = math.abs(rel - wpx)
-      if d < bestD then best, bestD = i, d end
-      if wpx > rel + 50 then break end
-      local _ = p
+    if rel <= 0 then return 0 end
+    if rel >= widthAt(n) then return n end
+    local lo, hi = 0, n
+    while lo < hi do
+      local mid = math.ceil((lo + hi) / 2)
+      if widthAt(mid) <= rel then lo = mid else hi = mid - 1 end
     end
-    return best
+    local dLo = math.abs(rel - widthAt(lo))
+    local dHi = lo < n and math.abs(rel - widthAt(lo + 1)) or math.huge
+    return dHi < dLo and lo + 1 or lo
   end
 
   if r.pressed then
