@@ -2,12 +2,12 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Architecture &amp; App Lifecycle — Cardflux Docs</title>
+<title>Architecture &amp; App Lifecycle — CardTable Docs</title>
 <link rel="stylesheet" href="assets/style.css">
 </head>
 <body>
 <nav class="sidenav">
-  <a class="brand" href="index.html">Cardflux<small>Codebase Documentation</small></a>
+  <a class="brand" href="index.html">CardTable<small>Codebase Documentation</small></a>
   <div class="group-label">Application</div>
   <a href="architecture.html" class="current">Architecture &amp; App Lifecycle</a>
   <a href="ui-framework.html">UI Toolkit (kit)</a>
@@ -24,7 +24,7 @@
   <a href="net.html">Networking</a>
   <a href="platform.html">Platform Integration</a>
   <div class="group-label">Server</div>
-  <a href="server.html">Cardflux Server (Go)</a>
+  <a href="server.html">CardTable Server (Go)</a>
   <div class="group-label">Quality</div>
   <a href="tests-tools.html">Tests &amp; Tools</a>
 </nav>
@@ -59,7 +59,7 @@
 
   <h2 id="overview">Overview</h2>
   <p>
-    Cardflux is a Windows desktop card-table application built on
+    CardTable is a Windows desktop card-table application built on
     <strong>LÖVE2D</strong> (a Lua game framework on top of SDL2). It began life as a
     Flutter app — comments throughout the Lua source point back at the original
     <code>.dart</code> files each module was "ported" from — and that history still
@@ -94,7 +94,7 @@
     <code>love.draw</code>, <code>love.keypressed</code>, …) and the engine's
     default <code>love.run</code> calls them every frame: pump OS events, step the
     timer, call <code>love.update(dt)</code>, clear the screen, call
-    <code>love.draw()</code>, present. Cardflux defines all of the standard
+    <code>love.draw()</code>, present. CardTable defines all of the standard
     callbacks in <code>main.lua</code>, each one just forwarding to the
     <code>App</code> singleton in <code>src/app.lua</code> (lazily required via a
     local <code>A()</code> helper so <code>src/app.lua</code> isn't loaded during
@@ -105,7 +105,7 @@
   <h2 id="conf-lua">conf.lua: window &amp; test-mode setup</h2>
   <p>
     <code>love.conf(t)</code> runs before any window exists and configures LÖVE itself.
-    Cardflux's <code>conf.lua</code> does a few notable things:
+    CardTable's <code>conf.lua</code> does a few notable things:
   </p>
   <ul>
     <li>
@@ -127,7 +127,7 @@
       off-Windows or in test mode.
     </li>
     <li>
-      <strong>Window defaults:</strong> title "Cardflux", 1280×720 starting size,
+      <strong>Window defaults:</strong> title "CardTable", 1280×720 starting size,
       960×600 minimum, resizable, <code>borderless = true</code> (the app draws its
       own title bar — see <a href="#title-bar">below</a>), vsync on, 4x MSAA,
       <code>highdpi = false</code> (intentional — the app manages its own scale
@@ -135,7 +135,7 @@
     </li>
     <li>
       <strong>Test mode overrides:</strong> when <code>TEST_MODE</code> is set, the
-      identity (save-folder name) becomes <code>"cardflux_tests"</code> so tests
+      identity (save-folder name) becomes <code>"cardtable_tests"</code> so tests
       never read or write real user data, <code>t.window = false</code> skips
       creating a window at all, and the audio/sound/joystick modules are disabled.
     </li>
@@ -212,9 +212,9 @@
     e.g. <code>"0.2.0"</code>), <code>build</code> (an integer that increases with
     every release and is compared against GitHub release tag suffixes like
     <code>"+10"</code>), <code>releaseRepo</code>
-    (<code>"jvthompson/cardflux-love"</code>), <code>releaseAssetName</code>
-    (<code>"cardflux-windows.zip"</code>), and <code>exeName</code>
-    (<code>"Cardflux.exe"</code>). The in-file comment explains <em>why</em> the
+    (<code>"jvthompson/cardtable"</code>), <code>releaseAssetName</code>
+    (<code>"cardtable-windows.zip"</code>), and <code>exeName</code>
+    (<code>"CardTable.exe"</code>). The in-file comment explains <em>why</em> the
     build number is independent of any other numbering scheme in the project: the
     LÖVE port is versioned separately from the original Flutter app it was ported
     from, and must publish releases to its own GitHub repository — if it reused the
@@ -331,7 +331,7 @@
     <code>App.load</code>. Discord Rich Presence invites encode the host as a
     <code>"host:port"</code> secret string; <code>discord.parseJoinSecret(secret)</code>
     splits it, and if valid, <code>App</code> raises a confirm dialog ("Join the
-    Cardflux game at host:port?") whose confirm action pushes a
+    CardTable game at host:port?") whose confirm action pushes a
     <a href="ui-screens.html#multiplayer">Join screen</a> pre-filled with
     <code>{ host, port, autoConnect = true }</code> — this is also how a friend's
     "Join Game" click in Discord can <em>cold-launch</em> the app straight into a

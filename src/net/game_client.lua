@@ -1,6 +1,6 @@
 -- Port of lib/networking/game_client.dart.
 --   status: "connecting" | "connected" | "failed" | "disconnected" | "server"
--- "server" means the address is a Cardflux server rather than a peer host:
+-- "server" means the address is a CardTable server rather than a peer host:
 -- it answered hello with serverInfo, and the connection (self.conn) is
 -- handed to src/net/server_client.lua.
 -- Callbacks: onMessage(msg) for everything except ping/welcome/disconnect,

@@ -1,4 +1,4 @@
--- Cardflux (LÖVE port) entry point.
+-- CardTable (LÖVE port) entry point.
 
 local function runTests(args)
   local filterArg
@@ -21,9 +21,14 @@ function love.load(args)
   end
   -- Dev: --identity <name> uses a separate save folder (settings, avatar),
   -- e.g. to run a second instance as another player.
+  local identityOverridden = false
   for i, a in ipairs(args) do
-    if a == "--identity" and args[i + 1] then love.filesystem.setIdentity(args[i + 1]) end
+    if a == "--identity" and args[i + 1] then
+      love.filesystem.setIdentity(args[i + 1])
+      identityOverridden = true
+    end
   end
+  if not identityOverridden then require("src.data.paths").migrateLegacyIdentity("cardflux") end
   require("src.app").load(args)
 end
 

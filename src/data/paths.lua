@@ -59,4 +59,16 @@ end
 
 function P.avatarDir() return fs.join(P.supportDir(), "avatar") end
 
+-- One-time carry-over from a previous app identity (e.g. after a rename):
+-- copies settings.json/avatar/etc. from the old save folder into the new
+-- one. No-ops once the new folder has its own settings.json, and never
+-- deletes the old folder.
+function P.migrateLegacyIdentity(oldIdentity)
+  local newDir = P.supportDir()
+  if fs.exists(fs.join(newDir, "settings.json")) then return end
+  local oldDir = fs.join(fs.dirname(newDir), oldIdentity)
+  if not fs.exists(oldDir) then return end
+  fs.copyTree(oldDir, newDir)
+end
+
 return P

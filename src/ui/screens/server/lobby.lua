@@ -28,7 +28,7 @@ local CLOSE_REASONS = {
 }
 
 function Lobby.new(sc)
-  local self = setmetatable({ title = sc.info.name or "Cardflux Server", sc = sc, isServerLobby = true,
+  local self = setmetatable({ title = sc.info.name or "CardTable Server", sc = sc, isServerLobby = true,
     chatText = "", seenChat = 0 }, Lobby)
   self:loadSelectedGame()
   sc:on("lobbyState", function() self:loadSelectedGame() end)
@@ -582,7 +582,7 @@ function Lobby:drawHeader(x, y, w)
   end
   -- Left: server name and message of the day.
   local lw = rx - x - 16
-  ui.text(sc.info.name or "Cardflux Server", x, y + 2, { size = 22, w = lw, ellipsis = true })
+  ui.text(sc.info.name or "CardTable Server", x, y + 2, { size = 22, w = lw, ellipsis = true })
   local sub = sc.info.motd ~= "" and sc.info.motd or (sc:isCollectionMode() and "Collection mode" or "Free play")
   ui.text(sub or "", x, y + 32, { size = 12, w = lw, ellipsis = true, color = c.onSurfaceVariant })
 end

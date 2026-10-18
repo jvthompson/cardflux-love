@@ -1,5 +1,5 @@
 -- Where decks are listed, loaded and saved: the local deck library folder,
--- or a Cardflux server's per-account deck storage. Both backends use the
+-- or a CardTable server's per-account deck storage. Both backends use the
 -- same callback API so the deck dialogs don't care which one they have.
 --
 --   store.kind                       "local" | "server"

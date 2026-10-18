@@ -15,28 +15,28 @@ return function(t)
     t.it("picks a newer release carrying the asset", function()
       local release = { tag_name = "v0.2.0+7", assets = {
         { name = "other.zip", browser_download_url = "https://x/other.zip", size = 1 },
-        { name = "cardflux-windows.zip", browser_download_url = "https://x/c.zip", size = 1234 },
+        { name = "cardtable-windows.zip", browser_download_url = "https://x/c.zip", size = 1234 },
       } }
-      t.eq(U.pickRelease(release, 6, "cardflux-windows.zip"), { tag = "v0.2.0+7", url = "https://x/c.zip", size = 1234 })
-      t.isNil(U.pickRelease(release, 7, "cardflux-windows.zip"))
+      t.eq(U.pickRelease(release, 6, "cardtable-windows.zip"), { tag = "v0.2.0+7", url = "https://x/c.zip", size = 1234 })
+      t.isNil(U.pickRelease(release, 7, "cardtable-windows.zip"))
       t.isNil(U.pickRelease(release, 1, "missing.zip"))
-      t.isNil(U.pickRelease({ message = "Not Found" }, 1, "cardflux-windows.zip"))
+      t.isNil(U.pickRelease({ message = "Not Found" }, 1, "cardtable-windows.zip"))
     end)
 
     t.it("excludes only library folders inside the install folder", function()
-      local inside = U.pathsInside([[C:\Apps\Cardflux]], {
-        [[C:\Apps\Cardflux\game_library]], "C:/apps/cardflux/deck_library/", [[C:\Apps\CardfluxOther\x]], [[D:\Libraries]],
+      local inside = U.pathsInside([[C:\Apps\CardTable]], {
+        [[C:\Apps\CardTable\game_library]], "C:/apps/cardtable/deck_library/", [[C:\Apps\CardTableOther\x]], [[D:\Libraries]],
       })
       t.eq(#inside, 2)
-      t.eq(inside[1], [[C:\Apps\Cardflux\game_library]])
+      t.eq(inside[1], [[C:\Apps\CardTable\game_library]])
     end)
 
     t.it("quotes paths in the helper script", function()
       local s = U.helperScript({ installDir = [[C:\It's Here]], stagedDir = [[C:\T\staged]], excludeDirs = { [[C:\It's Here\game_library]] },
-        logPath = [[C:\T\log.txt]], exeName = "Cardflux.exe" })
+        logPath = [[C:\T\log.txt]], exeName = "CardTable.exe" })
       t.ok(s:find([[robocopy 'C:\T\staged' 'C:\It''s Here' /MIR]], 1, true))
       t.ok(s:find([[$excludeDirs = @('C:\It''s Here\game_library')]], 1, true))
-      t.ok(s:find([[Join-Path 'C:\It''s Here' 'Cardflux.exe']], 1, true))
+      t.ok(s:find([[Join-Path 'C:\It''s Here' 'CardTable.exe']], 1, true))
     end)
 
     t.it("quotes process arguments", function()

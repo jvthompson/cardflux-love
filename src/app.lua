@@ -83,7 +83,7 @@ end
 function App.showDiscordJoinPrompt(secret)
   local host, port = discord.parseJoinSecret(secret)
   if not host then return end
-  overlays.confirm("Discord Game Invite", "Join the Cardflux game at " .. host .. ":" .. port .. "?", "Join", function()
+  overlays.confirm("Discord Game Invite", "Join the CardTable game at " .. host .. ":" .. port .. "?", "Join", function()
     App.push(require("src.ui.screens.multiplayer").Join.new({ host = host, port = port, autoConnect = true }))
   end, { cancelLabel = "Dismiss" })
 end
@@ -147,10 +147,10 @@ local function drawTitleBar(w)
     end
     x = 56
   end
-  ui.text(screen and screen.title or "Cardflux", x, 0, { size = 14, weight = "medium", h = TITLE_H, valign = "middle", color = theme.fixed.white })
-  local titleEnd = x + ui.textWidth(screen and screen.title or "Cardflux", 14, "medium") + 8
+  ui.text(screen and screen.title or "CardTable", x, 0, { size = 14, weight = "medium", h = TITLE_H, valign = "middle", color = theme.fixed.white })
+  local titleEnd = x + ui.textWidth(screen and screen.title or "CardTable", 14, "medium") + 8
   local bx = w - 8 - 40
-  if ui.iconButton("close", bx, 8, { tooltip = "Close Cardflux", color = fg, id = "title:close" }) then love.event.quit() end
+  if ui.iconButton("close", bx, 8, { tooltip = "Close CardTable", color = fg, id = "title:close" }) then love.event.quit() end
   bx = bx - 48
   local maxed = love.window.isMaximized()
   if ui.iconButton(maxed and "filter_none" or "crop_square", bx, 8, { tooltip = maxed and "Restore" or "Maximize", color = fg, id = "title:max" }) then

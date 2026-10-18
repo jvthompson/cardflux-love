@@ -1,4 +1,4 @@
--- Sign in to / create an account on a Cardflux server. If the player chose
+-- Sign in to / create an account on a CardTable server. If the player chose
 -- "Remember me", the saved sign-in (token) is tried first so they go
 -- straight to the lobby; otherwise they enter their email and password.
 local ui = require("src.ui.kit.ui")
@@ -28,7 +28,7 @@ function L.new(sc)
     saved = nil
   end
   local self = setmetatable({
-    title = sc.info.name or "Cardflux Server", sc = sc,
+    title = sc.info.name or "CardTable Server", sc = sc,
     mode = "signIn", email = saved and saved.email or "", password = "", confirm = "",
     remember = saved ~= nil,
     name = A.playerName(), color = A.profile.color, avatarPath = A.profile.avatarPath,
@@ -123,7 +123,7 @@ function L:draw(x, y, w, h)
   local cx = math.floor(x + (w - colW) / 2)
   local off = ui.beginScroll("login:scroll", x, y, w, h)
   local yy = y + 32 - off
-  ui.text(sc.info.name or "Cardflux Server", cx, yy, { size = 24, w = colW, align = "center" })
+  ui.text(sc.info.name or "CardTable Server", cx, yy, { size = 24, w = colW, align = "center" })
   yy = yy + 36
   if sc.info.motd and sc.info.motd ~= "" then
     ui.text(sc.info.motd, cx, yy, { w = colW, align = "center", color = c.onSurfaceVariant })

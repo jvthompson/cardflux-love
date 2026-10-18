@@ -545,7 +545,7 @@ function Join:connect()
   self.client = GameClient.new()
   self.client.onStatus = function(status)
     if status == "server" and not self.navigated then
-      -- The address is a Cardflux server: sign in and go to its lobby.
+      -- The address is a CardTable server: sign in and go to its lobby.
       self.navigated = true
       profile.addRecentServer(host, port)
       local sc = require("src.net.server_client").adopt(self.client.conn, host, port, self.client.serverInfo)
@@ -631,9 +631,9 @@ function Join:draw(x, y, w, h)
     local reason = client.disconnectReason
     local msg = reason == "seatUnavailable"
       and "This game is already in progress and your seat couldn't be found. Make sure you're reconnecting to the same host."
-      or reason == "versionMismatch" and "That Cardflux server needs a different version of Cardflux."
-      or reason == "serverRequiresUpdate" and "That Cardflux server needs a newer version of Cardflux."
-      or reason == "serverShuttingDown" and "That Cardflux server is shutting down and isn't accepting connections."
+      or reason == "versionMismatch" and "That CardTable server needs a different version of CardTable."
+      or reason == "serverRequiresUpdate" and "That CardTable server needs a newer version of CardTable."
+      or reason == "serverShuttingDown" and "That CardTable server is shutting down and isn't accepting connections."
       or "Disconnected from host."
     ui.text(msg, cx, yy, { w = colW, align = "center", color = theme.fixed.red })
   end
@@ -653,7 +653,7 @@ local DISCONNECT_MESSAGES = {
   seatUnavailable = "This game is already in progress and your seat couldn't be found. Make sure you're reconnecting to the same host.",
 }
 
--- opts (optional; used for games on a Cardflux server, where `client` is
+-- opts (optional; used for games on a CardTable server, where `client` is
 -- server_client:gameChannel()):
 --   localGame        the server's game as cached locally (for card images)
 --   onExit(message)  called instead of going home (back to the server lobby)

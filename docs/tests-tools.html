@@ -2,12 +2,12 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Tests &amp; Tools — Cardflux Docs</title>
+<title>Tests &amp; Tools — CardTable Docs</title>
 <link rel="stylesheet" href="assets/style.css">
 </head>
 <body>
 <nav class="sidenav">
-  <a class="brand" href="index.html">Cardflux<small>Codebase Documentation</small></a>
+  <a class="brand" href="index.html">CardTable<small>Codebase Documentation</small></a>
   <div class="group-label">Application</div>
   <a href="architecture.html">Architecture &amp; App Lifecycle</a>
   <a href="ui-framework.html">UI Toolkit (kit)</a>
@@ -24,7 +24,7 @@
   <a href="net.html">Networking</a>
   <a href="platform.html">Platform Integration</a>
   <div class="group-label">Server</div>
-  <a href="server.html">Cardflux Server (Go)</a>
+  <a href="server.html">CardTable Server (Go)</a>
   <div class="group-label">Quality</div>
   <a href="tests-tools.html" class="current">Tests &amp; Tools</a>
 </nav>
@@ -60,7 +60,7 @@
 
   <h2 id="running">Running the test suite</h2>
   <p>
-    Cardflux has no external test framework — it ships a ~130-line hand-rolled runner and runs
+    CardTable has no external test framework — it ships a ~130-line hand-rolled runner and runs
     entirely inside the LÖVE executable, launched in a special mode rather than as a separate script.
     From the project root:
   </p>
@@ -83,8 +83,8 @@ lovec . --test selection      <span style="color:#8893a3">-- only tests whose fu
   </ol>
   <div class="note">
     <strong>Isolated save identity.</strong> <code>conf.lua</code>'s <code>love.conf</code> branches on the same
-    <code>TEST_MODE</code> flag: it sets <code>t.identity = "cardflux_tests"</code> (LÖVE's save-directory identity,
-    normally <code>"cardflux"</code>) and disables the window, audio, sound and joystick modules. This means test runs
+    <code>TEST_MODE</code> flag: it sets <code>t.identity = "cardtable_tests"</code> (LÖVE's save-directory identity,
+    normally <code>"cardtable"</code>) and disables the window, audio, sound and joystick modules. This means test runs
     read and write an entirely separate save folder from a real play session — tests that create settings, save
     files, scratch directories, avatars, etc. (see <a href="#data-test">data_test.lua</a> below) can never clobber
     the user's actual profile, decks or saved games, and can run headless.
@@ -330,7 +330,7 @@ lovec . --test selection      <span style="color:#8893a3">-- only tests whose fu
     <div class="role">A separate, standalone LÖVE program (its own <code>conf.lua</code>, its own entry point) — not part of the test suite and not run by <code>--test</code>.</div>
   </div>
   <p>
-    It is invoked directly as its own LÖVE project, pointed at a real, user-owned Cardflux game/deck library
+    It is invoked directly as its own LÖVE project, pointed at a real, user-owned CardTable game/deck library
     (typically the original Flutter app's data folder) rather than at fixtures:
   </p>
   <pre><code>lovec tools/compat_check &lt;libraryRoot&gt; [--all-images]</code></pre>
@@ -340,7 +340,7 @@ lovec . --test selection      <span style="color:#8893a3">-- only tests whose fu
     The unit test suite only ever exercises small, hand-built or synthetic fixtures — it never has access to (and
     should never depend on) a real user's actual game collection, which can contain arbitrarily large sets of custom
     games, decks and save files that vary machine to machine and were authored by the <em>other</em>, Flutter-based
-    Cardflux client. <code>compat_check</code> exists specifically to answer "does this Lua port read everything a
+    CardTable client. <code>compat_check</code> exists specifically to answer "does this Lua port read everything a
     real Flutter-authored library already has on disk, and does re-saving it stay faithful to the original
     bytes/schema?" — a question that is about compatibility with external, pre-existing data rather than about the
     port's own internal correctness, and that can't be captured as a small deterministic fixture. It is meant to be
@@ -392,7 +392,7 @@ lovec . --test selection      <span style="color:#8893a3">-- only tests whose fu
   </p>
 
   <div class="nextprev">
-    <a href="server.html">&larr; Cardflux Server (Go)</a>
+    <a href="server.html">&larr; CardTable Server (Go)</a>
     <a href="index.html">Home &rarr;</a>
   </div>
 </main>

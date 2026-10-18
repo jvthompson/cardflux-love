@@ -2,12 +2,12 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Data &amp; Persistence — Cardflux Docs</title>
+<title>Data &amp; Persistence — CardTable Docs</title>
 <link rel="stylesheet" href="assets/style.css">
 </head>
 <body>
 <nav class="sidenav">
-  <a class="brand" href="index.html">Cardflux<small>Codebase Documentation</small></a>
+  <a class="brand" href="index.html">CardTable<small>Codebase Documentation</small></a>
   <div class="group-label">Application</div>
   <a href="architecture.html">Architecture &amp; App Lifecycle</a>
   <a href="ui-framework.html">UI Toolkit (kit)</a>
@@ -24,7 +24,7 @@
   <a href="net.html">Networking</a>
   <a href="platform.html">Platform Integration</a>
   <div class="group-label">Server</div>
-  <a href="server.html">Cardflux Server (Go)</a>
+  <a href="server.html">CardTable Server (Go)</a>
   <div class="group-label">Quality</div>
   <a href="tests-tools.html">Tests &amp; Tools</a>
 </nav>
@@ -58,15 +58,19 @@
 
   <h2 id="layout">Save-directory layout</h2>
   <p>
-    Cardflux keeps two different kinds of state on disk, and <a href="#paths"><code>src/data/paths.lua</code></a> is the
+    CardTable keeps two different kinds of state on disk, and <a href="#paths"><code>src/data/paths.lua</code></a> is the
     single place that knows where each one lives:
   </p>
   <ul>
     <li><strong>LÖVE's sandboxed save directory</strong> (<code>love.filesystem.getSaveDirectory()</code>, identity
-      <code>"cardflux"</code> from <code>conf.lua</code>) — this is where <code>settings.json</code>, the player's
+      <code>"cardtable"</code> from <code>conf.lua</code>) — this is where <code>settings.json</code>, the player's
       avatar and (when running with <code>--identity</code>) a second, isolated profile live. It is created lazily by
       LÖVE, so <code>paths.supportDir()</code> calls <code>fs.mkdirs</code> on it before anyone writes into it by
-      absolute path.</li>
+      absolute path. <code>paths.migrateLegacyIdentity(oldIdentity)</code> is a one-time carry-over from the app's
+      previous identity (<code>"cardflux"</code>, from before the CardTable rename): if the current identity's
+      folder has no <code>settings.json</code> yet but a sibling folder named for <code>oldIdentity</code> exists,
+      it copies that folder's contents in. <code>main.lua</code> calls it once at startup, before
+      <code>src/app.lua</code> loads, and only when <code>--identity</code> wasn't overridden.</li>
     <li><strong>User-chosen library folders</strong> — the game library (<code>game_library/</code> next to the
       executable by default) and the deck library (<code>deck_library/</code>) are plain folders on the real
       filesystem, outside LÖVE's sandbox, because the user needs to drop in game definitions and share decks with a
@@ -211,7 +215,7 @@
   <h2 id="deck-store">deck_store.lua — local vs. server deck storage</h2>
   <div class="filecard">
     <div class="path">src/data/deck_store.lua</div>
-    <div class="role">A small abstraction so the deck-management UI doesn't need to know whether it's talking to the local deck-library folder or a Cardflux server account.</div>
+    <div class="role">A small abstraction so the deck-management UI doesn't need to know whether it's talking to the local deck-library folder or a CardTable server account.</div>
   </div>
   <p>
     Where <a href="#deck-library">deck_library.lua</a> is the low-level file scanner, <code>deck_store.lua</code> wraps it (plus
@@ -232,7 +236,7 @@
 
   <h2 id="image-pipeline">The image pipeline</h2>
   <p>
-    Card art can run into the hundreds of multi-megabyte files per game, so Cardflux never decodes or loads images
+    Card art can run into the hundreds of multi-megabyte files per game, so CardTable never decodes or loads images
     synchronously on the main thread. Four modules split the job:
   </p>
   <table>

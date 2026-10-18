@@ -2,12 +2,12 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>UI Toolkit (kit) — Cardflux Docs</title>
+<title>UI Toolkit (kit) — CardTable Docs</title>
 <link rel="stylesheet" href="assets/style.css">
 </head>
 <body>
 <nav class="sidenav">
-  <a class="brand" href="index.html">Cardflux<small>Codebase Documentation</small></a>
+  <a class="brand" href="index.html">CardTable<small>Codebase Documentation</small></a>
   <div class="group-label">Application</div>
   <a href="architecture.html">Architecture &amp; App Lifecycle</a>
   <a href="ui-framework.html" class="current">UI Toolkit (kit)</a>
@@ -24,7 +24,7 @@
   <a href="net.html">Networking</a>
   <a href="platform.html">Platform Integration</a>
   <div class="group-label">Server</div>
-  <a href="server.html">Cardflux Server (Go)</a>
+  <a href="server.html">CardTable Server (Go)</a>
   <div class="group-label">Quality</div>
   <a href="tests-tools.html">Tests &amp; Tools</a>
 </nav>
@@ -32,7 +32,7 @@
   <header class="page-head">
     <div class="crumb"><a href="index.html">Home</a> / Application</div>
     <h1>UI Toolkit (kit)</h1>
-    <div class="subtitle">The hand-rolled immediate-mode UI framework every screen, dialog and widget in Cardflux is built on.</div>
+    <div class="subtitle">The hand-rolled immediate-mode UI framework every screen, dialog and widget in CardTable is built on.</div>
   </header>
 
   <div class="toc">
@@ -60,7 +60,7 @@
 
   <h2 id="overview">Overview</h2>
   <p>
-    Every visible pixel in Cardflux — screens, dialogs, menus, the table itself —
+    Every visible pixel in CardTable — screens, dialogs, menus, the table itself —
     is drawn by the same small hand-written UI framework, <code>src/ui/kit/</code>.
     There is no retained widget tree: nothing is "created" once and updated later.
     Instead, every frame, screen code calls plain functions like

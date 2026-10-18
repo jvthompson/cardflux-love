@@ -2,12 +2,12 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Cardflux Codebase Documentation</title>
+<title>CardTable Codebase Documentation</title>
 <link rel="stylesheet" href="assets/style.css">
 </head>
 <body>
 <nav class="sidenav">
-  <a class="brand" href="index.html">Cardflux<small>Codebase Documentation</small></a>
+  <a class="brand" href="index.html">CardTable<small>Codebase Documentation</small></a>
   <div class="group-label">Application</div>
   <a href="architecture.html">Architecture &amp; App Lifecycle</a>
   <a href="ui-framework.html">UI Toolkit (kit)</a>
@@ -24,21 +24,21 @@
   <a href="net.html">Networking</a>
   <a href="platform.html">Platform Integration</a>
   <div class="group-label">Server</div>
-  <a href="server.html">Cardflux Server (Go)</a>
+  <a href="server.html">CardTable Server (Go)</a>
   <div class="group-label">Quality</div>
   <a href="tests-tools.html">Tests &amp; Tools</a>
 </nav>
 <main class="page">
   <header class="page-head">
     <div class="crumb">Home</div>
-    <h1>Cardflux Codebase Documentation</h1>
-    <div class="subtitle">A complete, file-by-file map of the Cardflux client and its companion lobby server — what everything is, what it does, and how it's wired together.</div>
+    <h1>CardTable Codebase Documentation</h1>
+    <div class="subtitle">A complete, file-by-file map of the CardTable client and its companion lobby server — what everything is, what it does, and how it's wired together.</div>
   </header>
 
   <div class="toc">
     <div class="toc-title">On this page</div>
     <ul>
-      <li><a href="#what-is-cardflux">What is Cardflux?</a></li>
+      <li><a href="#what-is-CardTable">What is CardTable?</a></li>
       <li><a href="#big-picture">The big picture</a></li>
       <li><a href="#how-to-read">How to read this documentation</a></li>
       <li><a href="#section-application">Application</a></li>
@@ -50,9 +50,9 @@
     </ul>
   </div>
 
-  <h2 id="what-is-cardflux">What is Cardflux?</h2>
+  <h2 id="what-is-CardTable">What is CardTable?</h2>
   <p>
-    Cardflux is a desktop <strong>virtual tabletop for card games</strong>, built with
+    CardTable is a desktop <strong>virtual tabletop for card games</strong>, built with
     <a href="https://love2d.org/" target="_blank" rel="noopener">LÖVE2D</a> and written entirely in Lua. It
     presents a game table where cards, piles, hands, zones and board widgets (counters, tokens, pack generators,
     deck-building widgets) can be dragged, flipped, stacked and shared between players — either on one machine
@@ -82,7 +82,7 @@
     game hosted on the dedicated server run the <em>identical</em> rules code, so the server can referee a game
     authoritatively without Go ever re-implementing a single game rule. See
     <a href="core.html">Core Rules Engine</a>, <a href="game.html">Game Session &amp; Controller</a> and
-    <a href="server.html">Cardflux Server (Go)</a> for the full detail.
+    <a href="server.html">CardTable Server (Go)</a> for the full detail.
   </div>
   <p>Three ways a game can be played, and what runs where:</p>
   <table>
@@ -148,7 +148,7 @@
   </div>
   <div class="filecard">
     <div class="path"><a href="ui-framework.html">ui-framework.html — UI Toolkit (kit)</a></div>
-    <div class="role">The hand-rolled immediate-mode UI framework every screen, dialog and widget in Cardflux is built on.</div>
+    <div class="role">The hand-rolled immediate-mode UI framework every screen, dialog and widget in CardTable is built on.</div>
     <ul>
       <li><a href="ui-framework.html#ui-lua">ui.lua: the immediate-mode core</a></li>
       <li><a href="ui-framework.html#theme-lua">theme.lua: colors, fonts, icons</a></li>
@@ -197,7 +197,7 @@
   </div>
   <div class="filecard">
     <div class="path"><a href="ui-server-screens.html">ui-server-screens.html — Multiplayer Lobby Screens</a></div>
-    <div class="role">Screens for connecting to and playing on a Cardflux lobby server.</div>
+    <div class="role">Screens for connecting to and playing on a CardTable lobby server.</div>
     <ul>
       <li><a href="ui-server-screens.html#common">common.lua — shared helpers</a></li>
       <li><a href="ui-server-screens.html#login">login.lua — sign in / create account</a></li>
@@ -309,7 +309,7 @@
 
   <h2 id="section-server">Server</h2>
   <div class="filecard">
-    <div class="path"><a href="server.html">server.html — Cardflux Server <span class="badge go">Go</span></a></div>
+    <div class="path"><a href="server.html">server.html — CardTable Server <span class="badge go">Go</span></a></div>
     <div class="role">The dedicated lobby server: accounts, rooms, chat, decks, trading and admin tools, backed by SQLite and an embedded copy of the client's own Lua rules engine.</div>
     <ul>
       <li><a href="server.html#why-go-embeds-a-lua-engine">Why Go embeds a Lua engine</a></li>

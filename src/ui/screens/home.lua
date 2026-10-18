@@ -21,7 +21,7 @@ local WIDE_BREAKPOINT = 760
 
 function Home.new(message)
   return setmetatable({
-    title = "Cardflux", showBack = false, message = message,
+    title = "CardTable", showBack = false, message = message,
     tab = "join", joinIp = "", joinPort = tostring(require("src.net.protocol").defaultGamePort),
   }, Home)
 end
@@ -121,7 +121,7 @@ end
 local PHASE_LABELS = {
   extracting = "Extracting update...",
   verifying = "Verifying update...",
-  launchingInstaller = "Installing — Cardflux will restart shortly...",
+  launchingInstaller = "Installing — CardTable will restart shortly...",
 }
 
 -- Download -> extract -> verify -> launch helper, then quit so the helper
@@ -130,7 +130,7 @@ local PHASE_LABELS = {
 function Home.runUpdate()
   local st = { phase = "downloading", progress = 0 }
   local d = overlays.dialog({
-    title = "Updating Cardflux",
+    title = "Updating CardTable",
     width = 420,
     dismissible = false,
     content = function(_, x, y, w)

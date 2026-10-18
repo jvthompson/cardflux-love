@@ -2,12 +2,12 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Cardflux Server (Go) — Cardflux Docs</title>
+<title>CardTable Server (Go) — CardTable Docs</title>
 <link rel="stylesheet" href="assets/style.css">
 </head>
 <body>
 <nav class="sidenav">
-  <a class="brand" href="index.html">Cardflux<small>Codebase Documentation</small></a>
+  <a class="brand" href="index.html">CardTable<small>Codebase Documentation</small></a>
   <div class="group-label">Application</div>
   <a href="architecture.html">Architecture &amp; App Lifecycle</a>
   <a href="ui-framework.html">UI Toolkit (kit)</a>
@@ -24,14 +24,14 @@
   <a href="net.html">Networking</a>
   <a href="platform.html">Platform Integration</a>
   <div class="group-label">Server</div>
-  <a href="server.html" class="current">Cardflux Server (Go)</a>
+  <a href="server.html" class="current">CardTable Server (Go)</a>
   <div class="group-label">Quality</div>
   <a href="tests-tools.html">Tests &amp; Tools</a>
 </nav>
 <main class="page">
   <header class="page-head">
     <div class="crumb"><a href="index.html">Home</a> / Server</div>
-    <h1>Cardflux Server <span class="badge go">Go</span></h1>
+    <h1>CardTable Server <span class="badge go">Go</span></h1>
     <div class="subtitle">The dedicated lobby server: accounts, rooms, chat, decks, trading and admin tools, backed by SQLite and an embedded copy of the client's own Lua rules engine.</div>
   </header>
 
@@ -62,7 +62,7 @@
 
   <h2 id="why-go-embeds-a-lua-engine">Why Go embeds a Lua engine</h2>
   <p>The single most distinctive design decision in this codebase: <strong>the Go server does not reimplement
-  Cardflux's card-game rules.</strong> Instead, it runs a byte-for-byte copy of the LÖVE client's own Lua rules code —
+  CardTable's card-game rules.</strong> Instead, it runs a byte-for-byte copy of the LÖVE client's own Lua rules code —
   <code>lib/json.lua</code>, every file in <a href="core.html">src/core/</a>, and
   <a href="game.html">src/game/session.lua</a> + <a href="game.html">src/game/host_engine.lua</a> — inside an
   embedded Lua interpreter (<a href="https://github.com/yuin/gopher-lua">gopher-lua</a>, a pure-Go Lua 5.1 VM). These
@@ -493,7 +493,7 @@
 
   <h2 id="security">Security notes</h2>
   <div class="warn">
-  Per <a href="https://github.com/jvthompson/cardflux-love/blob/main/server/README.md">server/README.md</a>: the
+  Per <a href="https://github.com/jvthompson/cardtable/blob/main/server/README.md">server/README.md</a>: the
   wire connection is <strong>plain, unencrypted TCP</strong> — the LÖVE client's bundled LuaSocket has no TLS
   support. Passwords are hashed client-side before transmission and bcrypted again server-side for storage, and
   session tokens mean a password only needs to be typed once per device, but all other traffic (chat, game state,

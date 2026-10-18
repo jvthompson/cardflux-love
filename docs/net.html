@@ -2,12 +2,12 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Networking — Cardflux Docs</title>
+<title>Networking — CardTable Docs</title>
 <link rel="stylesheet" href="assets/style.css">
 </head>
 <body>
 <nav class="sidenav">
-  <a class="brand" href="index.html">Cardflux<small>Codebase Documentation</small></a>
+  <a class="brand" href="index.html">CardTable<small>Codebase Documentation</small></a>
   <div class="group-label">Application</div>
   <a href="architecture.html">Architecture &amp; App Lifecycle</a>
   <a href="ui-framework.html">UI Toolkit (kit)</a>
@@ -24,7 +24,7 @@
   <a href="net.html" class="current">Networking</a>
   <a href="platform.html">Platform Integration</a>
   <div class="group-label">Server</div>
-  <a href="server.html">Cardflux Server (Go)</a>
+  <a href="server.html">CardTable Server (Go)</a>
   <div class="group-label">Quality</div>
   <a href="tests-tools.html">Tests &amp; Tools</a>
 </nav>
@@ -54,7 +54,7 @@
   </div>
 
   <h2 id="two-hosting-modes">Two hosting modes</h2>
-  <p>Cardflux can get a group of players into the same game in two different ways, and almost everything in this
+  <p>CardTable can get a group of players into the same game in two different ways, and almost everything in this
   folder exists to serve one or the other:</p>
   <ul>
     <li><strong>Direct peer hosting.</strong> One player's client becomes the host: <code>host_server.lua</code> binds
@@ -63,7 +63,7 @@
     whoever is hosting <em>is</em> the server for that one game, using the same <a href="game.html">Session /
     HostEngine</a> code a client would use if it were playing solo.</li>
     <li><strong>Dedicated lobby server.</strong> Players instead point <code>game_client.lua</code> at a long-running
-    <a href="server.html">Cardflux Server (Go)</a> process. The server answers the initial handshake with
+    <a href="server.html">CardTable Server (Go)</a> process. The server answers the initial handshake with
     <code>serverInfo</code> instead of <code>welcome</code>, which makes <code>game_client.lua</code> hand the
     connection off to <code>server_client.lua</code> — a richer client that understands accounts, chat, rooms, decks
     and admin requests, documented end-to-end on <a href="ui-server-screens.html">Multiplayer Lobby Screens</a>.</li>
@@ -91,7 +91,7 @@
   <div class="fn">
     <span class="sig">P.serverProtocolVersion = 1</span>
     <p>Sent as <code>payload.serverProtocol</code> in every <code>hello</code> message. A direct peer host ignores
-    this field entirely, but a Cardflux lobby server compares it against its own <code>ProtocolVersion</code>
+    this field entirely, but a CardTable lobby server compares it against its own <code>ProtocolVersion</code>
     constant (see <a href="server.html#server-go">internal/server/server.go</a>) and refuses the connection outright
     if they don't match. This is the one hard compatibility contract between the Lua client and the Go server — the
     comment right above this constant says to bump it and run <code>server/tools/sync-engine.ps1</code> whenever the
@@ -256,12 +256,12 @@
   <div class="filecard">
     <div class="path">src/net/game_client.lua</div>
     <div class="role">Port of <code>lib/networking/game_client.dart</code>. The single entry point used to join
-    <em>either</em> kind of remote: a direct peer host or a Cardflux lobby server — the caller doesn't need to know
+    <em>either</em> kind of remote: a direct peer host or a CardTable lobby server — the caller doesn't need to know
     which until the handshake resolves.</div>
   </div>
   <p>Status machine: <code>"idle" → "connecting" → "connected" | "failed" | "server"</code>, then eventually
   <code>"disconnected"</code>. The key branch is in <code>C:update()</code> once the handshake's reply arrives: if the
-  remote answers with <code>serverInfo</code> (meaning it's a Cardflux server, not a peer), the client stops treating
+  remote answers with <code>serverInfo</code> (meaning it's a CardTable server, not a peer), the client stops treating
   itself as a <code>GameClient</code> — it sets status <code>"server"</code> and the caller is expected to hand the
   now-adopted connection to <code>server_client.lua</code> (<code>S.adopt</code>) instead. If it answers with
   <code>welcome</code>, this <em>is</em> the in-game connection and stays one for the rest of the session.</p>
@@ -284,7 +284,7 @@
   <h2 id="server-client">server_client.lua — the lobby-server protocol client</h2>
   <div class="filecard">
     <div class="path">src/net/server_client.lua</div>
-    <div class="role">The full-featured client for a Cardflux lobby server connection: accounts, the lobby roster,
+    <div class="role">The full-featured client for a CardTable lobby server connection: accounts, the lobby roster,
     chat, rooms, decks/collections, trading and admin requests, all multiplexed over one TCP connection that
     <code>game_client.lua</code> handed off after the handshake.</div>
   </div>
@@ -454,7 +454,7 @@
 
   <div class="nextprev">
     <a href="platform.html">&larr; Platform Integration</a>
-    <a href="server.html">Cardflux Server (Go) &rarr;</a>
+    <a href="server.html">CardTable Server (Go) &rarr;</a>
   </div>
 </main>
 </body>

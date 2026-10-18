@@ -2,12 +2,12 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Screens — Cardflux Docs</title>
+<title>Screens — CardTable Docs</title>
 <link rel="stylesheet" href="assets/style.css">
 </head>
 <body>
 <nav class="sidenav">
-  <a class="brand" href="index.html">Cardflux<small>Codebase Documentation</small></a>
+  <a class="brand" href="index.html">CardTable<small>Codebase Documentation</small></a>
   <div class="group-label">Application</div>
   <a href="architecture.html">Architecture &amp; App Lifecycle</a>
   <a href="ui-framework.html">UI Toolkit (kit)</a>
@@ -24,7 +24,7 @@
   <a href="net.html">Networking</a>
   <a href="platform.html">Platform Integration</a>
   <div class="group-label">Server</div>
-  <a href="server.html">Cardflux Server (Go)</a>
+  <a href="server.html">CardTable Server (Go)</a>
   <div class="group-label">Quality</div>
   <a href="tests-tools.html">Tests &amp; Tools</a>
 </nav>
@@ -122,7 +122,7 @@
     <code>updater.state.tag</code> (populated by <a href="platform.html">src/platform/updater.lua</a>);
     <code>runUpdate</code> opens a non-dismissible progress dialog, calls <code>updater.apply(progressCb,
     doneCb)</code>, and on success schedules <code>love.event.quit()</code> ~0.3s later (checked in
-    <code>Home:update</code>) so the external updater helper can swap the install files once Cardflux has exited.
+    <code>Home:update</code>) so the external updater helper can swap the install files once CardTable has exited.
   </div>
   <div class="fn">
     <div class="sig">Home:drawJoinFields(cx, yy, w, recent) / Home:drawRecentServersPopup(...)</div>
@@ -300,7 +300,7 @@
     The client half of connecting: an IP/port form (with the same recent-servers dropdown pattern as
     <a href="#home">Home</a>) that, on Connect, creates a <a href="net.html#game-client">GameClient</a> and watches
     its <code>onStatus</code> callback. A status of <code>"server"</code> means the address turned out to be a full
-    Cardflux lobby server (not a direct peer-to-peer host) — the screen hands the raw connection to
+    CardTable lobby server (not a direct peer-to-peer host) — the screen hands the raw connection to
     <a href="net.html#server-client">src/net/server_client.lua</a>'s <code>adopt</code> and replaces itself with
     <a href="ui-server-screens.html">src/ui/screens/server/login.lua</a>. A status of <code>"connected"</code> with
     an assigned player id means a direct game host accepted the connection — the screen saves a reconnect token
@@ -312,7 +312,7 @@
   <p>
     The client-side table screen, driven entirely by messages from the host (<code>client.onMessage</code> routed
     into <code>ClientGame:handleMessage</code>). It is reused, via its <code>opts</code> table, both for a
-    direct peer-to-peer game and for a game running on a Cardflux server (where <code>client</code> is actually
+    direct peer-to-peer game and for a game running on a CardTable server (where <code>client</code> is actually
     <code>server_client:gameChannel()</code> — see <a href="ui-server-screens.html">ui-server-screens.html</a>'s
     <code>room.lua</code>): <code>opts.localGame</code> supplies locally-cached game art so a server game doesn't
     need every image round-tripped over the network, <code>opts.onExit</code> redirects "leave" back to the server
@@ -425,7 +425,7 @@
   </div>
   <p>
     Added to work around a DWM bug: the native Windows file dialog (see <a href="platform.html">src/platform/
-    file_dialog.lua</a>) has an unfixable z-order quirk when Cardflux's borderless, fullscreen-shaped window is
+    file_dialog.lua</a>) has an unfixable z-order quirk when CardTable's borderless, fullscreen-shaped window is
     maximized, and there was no native implementation at all on Mac. This module reimplements a minimal
     browser — up-one-level, refresh, an editable path field, and a scrollable listing (directories always shown,
     files filtered by the caller's extension list via <code>extensionSet</code>) — entirely as an

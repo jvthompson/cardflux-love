@@ -26,11 +26,11 @@ end
 if not TEST_MODE then pcall(enableDpiAwareness) end
 
 function love.conf(t)
-  t.identity = "cardflux"
+  t.identity = "cardtable"
   t.version = "11.5"
   t.console = false
 
-  t.window.title = "Cardflux"
+  t.window.title = "CardTable"
   t.window.width = 1280
   t.window.height = 720
   t.window.minwidth = 960
@@ -43,7 +43,7 @@ function love.conf(t)
 
   if TEST_MODE then
     -- Separate save directory so tests never touch real settings or data.
-    t.identity = "cardflux_tests"
+    t.identity = "cardtable_tests"
     t.window = false
     t.modules.audio = false
     t.modules.sound = false

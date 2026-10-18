@@ -1,4 +1,4 @@
--- Cardflux server client (src/net/server_client.lua): password hashing,
+-- CardTable server client (src/net/server_client.lua): password hashing,
 -- request/response matching and routing game traffic to the game channel.
 local SC = require("src.net.server_client")
 local P = require("src.net.protocol")

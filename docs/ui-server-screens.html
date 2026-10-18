@@ -2,12 +2,12 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Multiplayer Lobby Screens — Cardflux Docs</title>
+<title>Multiplayer Lobby Screens — CardTable Docs</title>
 <link rel="stylesheet" href="assets/style.css">
 </head>
 <body>
 <nav class="sidenav">
-  <a class="brand" href="index.html">Cardflux<small>Codebase Documentation</small></a>
+  <a class="brand" href="index.html">CardTable<small>Codebase Documentation</small></a>
   <div class="group-label">Application</div>
   <a href="architecture.html">Architecture &amp; App Lifecycle</a>
   <a href="ui-framework.html">UI Toolkit (kit)</a>
@@ -24,7 +24,7 @@
   <a href="net.html">Networking</a>
   <a href="platform.html">Platform Integration</a>
   <div class="group-label">Server</div>
-  <a href="server.html">Cardflux Server (Go)</a>
+  <a href="server.html">CardTable Server (Go)</a>
   <div class="group-label">Quality</div>
   <a href="tests-tools.html">Tests &amp; Tools</a>
 </nav>
@@ -32,7 +32,7 @@
   <header class="page-head">
     <div class="crumb"><a href="index.html">Home</a> / User Interface</div>
     <h1>Multiplayer Lobby Screens</h1>
-    <div class="subtitle">Screens for connecting to and playing on a Cardflux lobby server.</div>
+    <div class="subtitle">Screens for connecting to and playing on a CardTable lobby server.</div>
   </header>
 
   <div class="toc">
@@ -55,8 +55,8 @@
   <h2 id="overview">Overview &amp; screen flow</h2>
   <p>
     This directory (<code>src/ui/screens/server/</code>) holds every screen that only exists while the client is
-    connected to a <strong>Cardflux Server</strong> — the companion Go lobby server documented on
-    <a href="server.html">Cardflux Server (Go)</a>. A player reaches this stack from
+    connected to a <strong>CardTable Server</strong> — the companion Go lobby server documented on
+    <a href="server.html">CardTable Server (Go)</a>. A player reaches this stack from
     <a href="ui-screens.html">multiplayer.lua</a>'s "Join Game" flow, which opens a TCP connection and hands it to
     these screens as a <code>src/net/server_client.lua</code> instance (<code>sc</code> in nearly every file here —
     see <a href="net.html">Networking</a> for the wire protocol and connection lifecycle).
@@ -81,7 +81,7 @@ lobby.lua  --(Ask to Trade)-->  trade.lua</pre>
     <div class="role">Helpers shared by every server screen: downloading a game before use, entering/leaving rooms, a user avatar+name row, and time formatting.</div>
   </div>
   <p>
-    Rather than a base class, Cardflux shares behavior between these screens through a small module of free
+    Rather than a base class, CardTable shares behavior between these screens through a small module of free
     functions. Every other file in this directory <code>require</code>s it as <code>common</code>.
   </p>
   <div class="fn">
@@ -148,7 +148,7 @@ lobby.lua  --(Ask to Trade)-->  trade.lua</pre>
   </p>
   <p>The screen has two modes, toggled by a <code>ui.segmented</code> control when the server allows registration (<code>sc.info.registrationOpen</code>):</p>
   <ul>
-    <li><strong>Sign In</strong> (<code>L:submitSignIn</code>) — email + password, "Remember me" checkbox. Sends <code>login</code> with <code>passwordHash = SC.passwordHash(email, password)</code> — the password is hashed client-side before it ever goes on the wire (see the Security notes on <a href="server.html">Cardflux Server (Go)</a>).</li>
+    <li><strong>Sign In</strong> (<code>L:submitSignIn</code>) — email + password, "Remember me" checkbox. Sends <code>login</code> with <code>passwordHash = SC.passwordHash(email, password)</code> — the password is hashed client-side before it ever goes on the wire (see the Security notes on <a href="server.html">CardTable Server (Go)</a>).</li>
     <li><strong>Create Account</strong> (<code>L:submitCreate</code>) — validates email format, password length (≥6) and confirmation match, lets the player pick a name, color (<code>colorpicker.field</code>) and an optional avatar image (via <a href="platform.html">file_dialog.lua</a>, resized by <code>profile.resizeAvatarBytes</code> and base64-encoded for the <code>register</code> request).</li>
   </ul>
   <p>

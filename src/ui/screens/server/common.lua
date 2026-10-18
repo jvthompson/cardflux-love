@@ -1,4 +1,4 @@
--- Helpers shared by the Cardflux server screens: game downloads with a
+-- Helpers shared by the CardTable server screens: game downloads with a
 -- progress dialog, entering rooms/games, and getting back to the lobby.
 local ui = require("src.ui.kit.ui")
 local theme = require("src.ui.kit.theme")

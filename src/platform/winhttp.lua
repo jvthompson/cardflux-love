@@ -71,7 +71,7 @@ local function getOnce(url, opts)
     return nil, what .. " failed (error " .. code .. ")"
   end
 
-  local agent = toWide("Cardflux-Updater")
+  local agent = toWide("CardTable-Updater")
   local session = w.WinHttpOpen(agent, ACCESS_AUTOMATIC_PROXY, nil, nil, 0)
   if session == nil then session = w.WinHttpOpen(agent, ACCESS_DEFAULT_PROXY, nil, nil, 0) end
   if session == nil then return fail("WinHttpOpen") end

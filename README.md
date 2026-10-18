@@ -1,4 +1,4 @@
-# Cardflux
+# CardTable
 
 A desktop virtual tabletop for card games, built with [LÖVE2D](https://love2d.org/)
 and written entirely in Lua. Cards, piles, hands, zones and board widgets
@@ -23,7 +23,7 @@ run.bat console   start the app with a console window for print/log output
 ```
 
 A packaged Windows build (no LÖVE install needed) is published on the
-[Releases](https://github.com/jvthompson/cardflux-love/releases) page;
+[Releases](https://github.com/jvthompson/cardtable/releases) page;
 the app checks for and installs updates to it in place.
 
 ## Controls
@@ -45,9 +45,9 @@ economy). It's a separate git repository, checked out at `server/`.
 ## Building a release
 
 See [tools/README.md](tools/README.md) -- `tools/build.ps1` packages a
-fused Windows build into `build/Cardflux/`.
+fused Windows build into `build/CardTable/`.
 
 ## License
 
-Public domain -- see [LICENSE](LICENSE). Cardflux is a solo project; see
+Public domain -- see [LICENSE](LICENSE). CardTable is a solo project; see
 [SUPPORT-ME.md](SUPPORT-ME.md) if you'd like to support its development.

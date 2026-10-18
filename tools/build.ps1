@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-  Packages Cardflux (LOVE port) as a fused Windows build, and optionally
+  Packages CardTable (LOVE port) as a fused Windows build, and optionally
   publishes it as a GitHub Release the in-app updater picks up.
 
 .DESCRIPTION
@@ -8,10 +8,10 @@
   2. Runs the test suite (skip with -SkipTests).
   3. Zips the game sources into build\game.love.
   4. Copies love.exe, swaps its icon for assets\icon.ico, and appends
-     game.love to make build\Cardflux\Cardflux.exe.
+     game.love to make build\CardTable\CardTable.exe.
   5. Adds the LOVE runtime DLLs, the app's own DLLs (Discord SDK, libwebp),
      LICENSE, CONTROLS.md and SUPPORT-ME.md.
-  6. Zips build\Cardflux\* (flat) as build\cardflux-windows.zip -- the exact
+  6. Zips build\CardTable\* (flat) as build\cardtable-windows.zip -- the exact
      asset name src/platform/updater.lua looks for.
   7. (-Publish) commits the version bump, pushes, and creates the GitHub
      Release (tag vNAME+BUILD) with the zip attached, via the gh CLI.
@@ -29,10 +29,10 @@ param(
 $ErrorActionPreference = 'Stop'
 $root = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $buildDir = Join-Path $root 'build'
-$outDir = Join-Path $buildDir 'Cardflux'
+$outDir = Join-Path $buildDir 'CardTable'
 $versionPath = Join-Path $root 'src\version.lua'
-$exeName = 'Cardflux.exe'
-$assetName = 'cardflux-windows.zip'
+$exeName = 'CardTable.exe'
+$assetName = 'cardtable-windows.zip'
 
 function Step($msg) { Write-Host "==> $msg" -ForegroundColor Cyan }
 
@@ -123,7 +123,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Runtime.InteropServices;
 
-public static class CardfluxIconPatcher {
+public static class CardTableIconPatcher {
   const uint LOAD_LIBRARY_AS_DATAFILE = 0x2;
   static readonly IntPtr RT_ICON = (IntPtr)3;
   static readonly IntPtr RT_GROUP_ICON = (IntPtr)14;
@@ -216,7 +216,7 @@ Step "Building $exeName"
 # would drop the appended archive.
 $baseExe = Join-Path $buildDir 'love-base.exe'
 Copy-Item (Join-Path $loveDir 'love.exe') $baseExe
-[CardfluxIconPatcher]::Apply($baseExe, (Join-Path $root 'assets\icon.ico'))
+[CardTableIconPatcher]::Apply($baseExe, (Join-Path $root 'assets\icon.ico'))
 $exePath = Join-Path $outDir $exeName
 $out = [IO.File]::Create($exePath)
 try {

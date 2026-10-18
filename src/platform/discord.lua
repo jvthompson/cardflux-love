@@ -552,7 +552,7 @@ function D.sendGameInvite(friendUserId, onDone)
   local id, ud = newRequest(10, function(r) onDone(r ~= nil and r.ok) end)
   pending[id].label = "SendActivityInvite"
   local ok, err = pcall(function()
-    local content, _keep = dstr("Join my Cardflux game!")
+    local content, _keep = dstr("Join my CardTable game!")
     lib.Discord_Client_SendActivityInvite(client, friendUserId, content, cbs.result, cbs.free, ud)
   end)
   if not ok then

@@ -2,12 +2,12 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Platform Integration — Cardflux Docs</title>
+<title>Platform Integration — CardTable Docs</title>
 <link rel="stylesheet" href="assets/style.css">
 </head>
 <body>
 <nav class="sidenav">
-  <a class="brand" href="index.html">Cardflux<small>Codebase Documentation</small></a>
+  <a class="brand" href="index.html">CardTable<small>Codebase Documentation</small></a>
   <div class="group-label">Application</div>
   <a href="architecture.html">Architecture &amp; App Lifecycle</a>
   <a href="ui-framework.html">UI Toolkit (kit)</a>
@@ -24,7 +24,7 @@
   <a href="net.html">Networking</a>
   <a href="platform.html" class="current">Platform Integration</a>
   <div class="group-label">Server</div>
-  <a href="server.html">Cardflux Server (Go)</a>
+  <a href="server.html">CardTable Server (Go)</a>
   <div class="group-label">Quality</div>
   <a href="tests-tools.html">Tests &amp; Tools</a>
 </nav>
@@ -65,7 +65,7 @@
     <div class="role">Frameless window chrome: a custom title bar that still drags/snaps/double-click-maximizes like a native one, resizing from the edges, and DPI scale detection — all via SDL's window hit-test callback.</div>
   </div>
   <p>
-    Cardflux draws its own title bar (see <code>App.draw</code>'s <code>drawTitleBar</code> in
+    CardTable draws its own title bar (see <code>App.draw</code>'s <code>drawTitleBar</code> in
     <a href="architecture.html">architecture.html</a>) instead of using the OS frame, so Windows has no native
     hit-testing to tell it "this pixel is the title bar, drag the window" or "this pixel is the edge, resize it."
     SDL exposes exactly that as a hit-test callback (<code>SDL_SetWindowHitTest</code>), and this module installs
@@ -139,8 +139,8 @@
     Only a fused (packaged) Windows build checks or installs updates (<code>U.supported()</code>) — a dev run's
     "install folder" is the source tree, which isn't something the updater should ever overwrite. The repo, release
     asset name and executable name it targets come straight from <a href="architecture.html"><code>src/version.lua</code></a>:
-    <code>releaseRepo = "jvthompson/cardflux-love"</code>, <code>releaseAssetName = "cardflux-windows.zip"</code>,
-    <code>exeName = "Cardflux.exe"</code> — note this is a <em>separate</em> GitHub repo/release stream from the
+    <code>releaseRepo = "jvthompson/cardtable"</code>, <code>releaseAssetName = "cardtable-windows.zip"</code>,
+    <code>exeName = "CardTable.exe"</code> — note this is a <em>separate</em> GitHub repo/release stream from the
     original Flutter app, specifically so the LÖVE port's own build numbers (compared via the <code>+N</code> suffix
     on a tag like <code>v0.2.0+10</code>) never collide with or get shadowed by Flutter's.
   </p>

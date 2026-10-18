@@ -1,4 +1,4 @@
--- Connection to a Cardflux server (the Go app in server/). Uses the same
+-- Connection to a CardTable server (the Go app in server/). Uses the same
 -- line protocol as peer hosting; requests carry payload.rid and are answered
 -- with {type="response", payload={rid, ok, error?, message?, ...}}.
 --
@@ -27,7 +27,7 @@ S.DISCONNECT_MESSAGES = {
   loggedInElsewhere = "Your account signed in from another connection.",
   serverShutdown = "The server shut down.",
   serverShuttingDown = "The server is shutting down and isn't accepting connections.",
-  versionMismatch = "This server needs a different version of Cardflux.",
+  versionMismatch = "This server needs a different version of CardTable.",
 }
 
 -- The client hashes the password before sending it (no TLS on the wire);

@@ -11,7 +11,7 @@ local json = require("lib.json")
 local P = {}
 
 P.defaultGamePort = 51234
--- Sent in hello so a Cardflux server (server/) can answer with serverInfo;
+-- Sent in hello so a CardTable server (server/) can answer with serverInfo;
 -- peer hosts ignore it. Bump when the server protocol changes, and run
 -- server/tools/sync-engine.ps1 so the server agrees.
 P.serverProtocolVersion = 1

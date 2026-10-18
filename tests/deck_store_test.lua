@@ -1,5 +1,5 @@
 -- Deck storage backends (src/data/deck_store.lua): the local deck library
--- folder and a Cardflux server's per-account deck storage, behind the same
+-- folder and a CardTable server's per-account deck storage, behind the same
 -- callback API.
 local models = require("src.core.models")
 local paths = require("src.data.paths")

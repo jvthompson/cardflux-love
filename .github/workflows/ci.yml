@@ -7,7 +7,7 @@ on:
 
 jobs:
   test:
-    # Cardflux is Windows-only (Discord SDK, winproc/winhttp tooling, and
+    # CardTable is Windows-only (Discord SDK, winproc/winhttp tooling, and
     # src/data/fs.lua's FFI layer all assume the Windows API), so tests run
     # on a Windows runner to match the real target platform.
     runs-on: windows-latest

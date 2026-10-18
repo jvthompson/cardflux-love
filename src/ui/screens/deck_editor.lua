@@ -54,7 +54,7 @@ local function total(q)
   return n
 end
 
--- opts (optional, for a Cardflux server):
+-- opts (optional, for a CardTable server):
 --   store     a src/data/deck_store.lua store for Open/Save
 --   ownedQty  definitionId -> copies owned (collection mode): the pool shows
 --             only owned, unownable and free cards, and copies are capped

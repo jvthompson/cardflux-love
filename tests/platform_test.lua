@@ -1,6 +1,7 @@
 -- Filesystem (FFI) and uuid checks against a scratch folder in the save dir.
 local fs = require("src.data.fs")
 local uuid = require("src.core.uuid")
+local paths = require("src.data.paths")
 
 return function(t)
   t.describe("uuid", function()
@@ -34,6 +35,30 @@ return function(t)
       t.eq(paths.gamesDir(), "C:\\Somewhere\\game_library")
       t.errors(function() paths.setGamesDir("relative") end)
       if before == nil then settings.remove(key) else settings.set(key, before) end
+    end)
+  end)
+
+  t.describe("paths migration", function()
+    t.it("does nothing when there's no legacy identity folder", function()
+      t.ok(pcall(paths.migrateLegacyIdentity, "cardtable_tests_no_such_legacy_id"))
+    end)
+
+    t.it("never overwrites an identity folder that already has settings.json", function()
+      local settings = require("src.data.settings")
+      settings.set(settings.keys.playerName, settings.get(settings.keys.playerName, "unchanged"))
+      local newDir = love.filesystem.getSaveDirectory()
+      t.ok(fs.isFile(fs.join(newDir, "settings.json")))
+
+      local legacyName = "cardtable_tests_legacy_fixture"
+      local legacyDir = fs.join(fs.dirname(newDir), legacyName)
+      fs.removeTree(legacyDir)
+      fs.mkdirs(legacyDir)
+      fs.writeFile(fs.join(legacyDir, "marker.txt"), "should not be copied")
+
+      paths.migrateLegacyIdentity(legacyName)
+      t.notOk(fs.exists(fs.join(newDir, "marker.txt")))
+
+      fs.removeTree(legacyDir)
     end)
   end)
 
