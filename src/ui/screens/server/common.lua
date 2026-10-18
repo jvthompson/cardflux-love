@@ -8,13 +8,12 @@ local json = require("lib.json")
 local assetSync = require("src.net.asset_sync")
 local deckStore = require("src.data.deck_store")
 local SC = require("src.net.server_client")
+local loader = require("src.data.game_loader")
+local GamePicker = require("src.ui.screens.game_picker")
 
 local M = {}
 
 local function app() return require("src.app") end
--- Deferred: decks.lua requires this module, so requiring it back at the
--- top level would be circular.
-local function decksScreen() return require("src.ui.screens.server.decks") end
 
 local function formatBytes(n)
   if n >= 1024 * 1024 then return string.format("%.1f MB", n / (1024 * 1024)) end
@@ -73,8 +72,37 @@ function M.pickGame(sc, title, subtitle, onPick, opts)
   return setmetatable({ title = title, sc = sc, subtitle = subtitle, onPick = onPick, opts = opts }, GameChoice)
 end
 
+-- The server's games as logo tiles (as the local game pickers show them);
+-- onPick(gameInfo). opts.excludeStandardDeck leaves out the Standard
+-- 52-Card Deck. Logos come from the game's downloaded copy, if any.
+local function drawGameList(sc, id, x, y, w, h, subtitle, onPick, opts)
+  local c = theme.c
+  local pad = 24
+  x, y, w, h = x + pad, y + pad, w - 2 * pad, h - 2 * pad
+  local yy = y
+  ui.text("Choose a game", x, yy, { size = 22 })
+  yy = yy + 32
+  ui.text(subtitle, x, yy, { w = w, color = c.onSurfaceVariant })
+  yy = yy + ui.textHeight(subtitle, w) + 20
+  local tiles = {}
+  for _, g in ipairs(sc.games) do
+    if not (opts and opts.excludeStandardDeck and g.id == loader.standardDeckId) then
+      local n, sets = g.cardCount or 0, #(g.sets or {})
+      local caption = n .. (n == 1 and " card" or " cards")
+      if sets > 0 then caption = caption .. "  ·  " .. sets .. (sets == 1 and " set" or " sets") end
+      tiles[#tiles + 1] = { id = g.id, name = g.name, caption = caption,
+        folderPath = assetSync.gameFolder(sc, g.id), info = g }
+    end
+  end
+  if #tiles == 0 then
+    ui.text("This server doesn't have any games yet.", x, yy, { w = w, color = c.onSurfaceVariant })
+    return
+  end
+  GamePicker.drawGrid(id, tiles, x, yy, w, y + h - yy, pad, function(t) onPick(t.info) end)
+end
+
 function GameChoice:draw(x, y, w, h)
-  decksScreen().drawGameList(self.sc, "gc:games", x, y, w, h, self.subtitle, self.onPick, self.opts)
+  drawGameList(self.sc, "gc:games", x, y, w, h, self.subtitle, self.onPick, self.opts)
 end
 
 -- Remembers `gameId` as the game selected for Shop/Deck Editor/Collection/
