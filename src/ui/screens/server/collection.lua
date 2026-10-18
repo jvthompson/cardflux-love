@@ -44,15 +44,19 @@ function C:drawCollection(x, y, w, h)
   local game = self.game
   local owned = self.owned
   -- Free cards are always owned, in unlimited copies (not counted in total).
-  local distinct, total = 0, 0
+  -- One pass over game.cards for all three tallies (was two, plus an
+  -- allocation from util.filter just to count its result).
+  local distinct, total, collectible = 0, 0, 0
   for _, d in ipairs(game.cards) do
-    if d.isFreeCard and not d.unownable then
-      distinct = distinct + 1
-    elseif not d.unownable and (owned[d.id] or 0) > 0 then
-      distinct, total = distinct + 1, total + owned[d.id]
+    if not d.unownable then
+      collectible = collectible + 1
+      if d.isFreeCard then
+        distinct = distinct + 1
+      elseif (owned[d.id] or 0) > 0 then
+        distinct, total = distinct + 1, total + owned[d.id]
+      end
     end
   end
-  local collectible = #util.filter(game.cards, function(d) return not d.unownable end)
   ui.text("Your Cards", x, y, { size = 18 })
   ui.text(distinct .. " of " .. collectible .. " cards  ·  " .. total .. " copies", x, y + 26, { size = 13, color = c.onSurfaceVariant })
   local yy = filterBar.drawFilters("co", self.filters, game, x, y + 52, w - 150, { compact = true })

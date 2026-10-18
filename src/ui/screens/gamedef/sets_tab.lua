@@ -85,6 +85,16 @@ local function countCardsInSet(game, setId)
   return n
 end
 
+-- Tallies every set's card count in one pass over game.cards, for
+-- drawList's per-row lookup (avoids an O(sets * cards) rescan per frame).
+local function countCardsBySet(game)
+  local counts = {}
+  for _, card in ipairs(game.cards) do
+    counts[card.setId] = (counts[card.setId] or 0) + 1
+  end
+  return counts
+end
+
 -- True when some card in `set` carries a tag from rarityTags.
 local function setHasRarity(game, set, rarityTags)
   for _, card in ipairs(game.cards) do
@@ -120,9 +130,10 @@ function T:drawList(x, y, w, h)
   local lh = y + h - ly
   local off = ui.beginScroll("st:list", x, ly, w, lh)
   local ro = widgets.reorder("st:sets")
+  local counts = countCardsBySet(game)
   local yy = ly - off
   for i, set in ipairs(game.sets) do
-    local count = countCardsInSet(game, set.id)
+    local count = counts[set.id] or 0
     local rx, rw = x + 8, w - 16
     local sel = set == self.selected
     local r = ui.region("st:row:" .. keyOf(set), rx + 40, yy, rw - 40, ROW_H, { cursor = "hand" })
