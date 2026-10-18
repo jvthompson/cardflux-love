@@ -49,6 +49,7 @@ function A:refreshSettings()
       starterDeckCost = tostring(s.starterDeckCost or 3),
       allowanceAmount = tostring(s.allowanceAmount), allowancePeriod = s.allowancePeriod,
       roomIdleTimeoutMin = tostring(s.roomIdleTimeoutMin), maxRooms = tostring(s.maxRooms), chatHistory = tostring(s.chatHistory),
+      maxUploadMB = tostring(s.maxUploadMB),
     }
   end)
 end
@@ -248,7 +249,7 @@ function A:saveSettings()
     "starterDeckCost", num(f.starterDeckCost, s.starterDeckCost or 3),
     "allowanceAmount", num(f.allowanceAmount, s.allowanceAmount), "allowancePeriod", f.allowancePeriod,
     "roomIdleTimeoutMin", num(f.roomIdleTimeoutMin, s.roomIdleTimeoutMin), "maxRooms", num(f.maxRooms, s.maxRooms),
-    "chatHistory", num(f.chatHistory, s.chatHistory),
+    "chatHistory", num(f.chatHistory, s.chatHistory), "maxUploadMB", num(f.maxUploadMB, s.maxUploadMB),
   })
   self.sc:request("adminSettingsSet", json.object({ "settings", payload }), function(r)
     if r.ok then
@@ -293,7 +294,6 @@ function A:drawServer(x, y, w, h)
     or "Players can use every card in every game. Collections are kept, in case you switch back."
   ui.text(modeHelp, cx, yy, { w = colW, size = 12, color = c.onSurfaceVariant })
   yy = yy + ui.textHeight(modeHelp, colW, 12) + 16
-  local third = (colW - 24) / 3
   local quarter = (colW - 36) / 4
   f.startingTokens = ui.textField("as:start", cx, yy, quarter, f.startingTokens, { label = "Starting tokens", labelBackground = bg, filter = digits })
   f.packCost = ui.textField("as:cost", cx + quarter + 12, yy, quarter, f.packCost, { label = "Tokens per pack", labelBackground = bg, filter = digits })
@@ -312,9 +312,10 @@ function A:drawServer(x, y, w, h)
   ui.text(allowHelp, cx, yy, { w = colW, size = 12, color = c.onSurfaceVariant })
   yy = yy + ui.textHeight(allowHelp, colW, 12) + 20
   yy = yy + sectionLabel("LIMITS", cx, yy)
-  f.roomIdleTimeoutMin = ui.textField("as:idle", cx, yy, third, f.roomIdleTimeoutMin, { label = "Idle game timeout (min)", labelBackground = bg, filter = digits })
-  f.maxRooms = ui.textField("as:rooms", cx + third + 12, yy, third, f.maxRooms, { label = "Max games (0 = no limit)", labelBackground = bg, filter = digits })
-  f.chatHistory = ui.textField("as:chat", cx + 2 * (third + 12), yy, third, f.chatHistory, { label = "Chat history", labelBackground = bg, filter = digits })
+  f.roomIdleTimeoutMin = ui.textField("as:idle", cx, yy, quarter, f.roomIdleTimeoutMin, { label = "Idle game timeout (min)", labelBackground = bg, filter = digits })
+  f.maxRooms = ui.textField("as:rooms", cx + quarter + 12, yy, quarter, f.maxRooms, { label = "Max games (0 = no limit)", labelBackground = bg, filter = digits })
+  f.chatHistory = ui.textField("as:chat", cx + 2 * (quarter + 12), yy, quarter, f.chatHistory, { label = "Chat history", labelBackground = bg, filter = digits })
+  f.maxUploadMB = ui.textField("as:upload", cx + 3 * (quarter + 12), yy, quarter, f.maxUploadMB, { label = "Max upload (MB)", labelBackground = bg, filter = digits })
   yy = yy + 48 + 8
   ui.text("A game closes after nobody has been at the table for the idle timeout (0 = never).", cx, yy, { w = colW, size = 12,
     color = c.onSurfaceVariant })
