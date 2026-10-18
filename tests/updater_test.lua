@@ -50,5 +50,40 @@ return function(t)
       t.eq({ http.parseUrl("https://h:8443") }, { "h", 8443, "/" })
       t.isNil(http.parseUrl("http://h/x"))
     end)
+
+    t.it("retries a transient failure and succeeds, calling onRetry each time", function()
+      local calls, retries = 0, {}
+      local status, body = http._withRetries(function()
+        calls = calls + 1
+        if calls < 3 then return nil, "read failed" end
+        return 200, "ok"
+      end, { retryDelaySeconds = 0, onRetry = function(attempt, lastErr) retries[#retries + 1] = { attempt, lastErr } end })
+      t.eq(calls, 3)
+      t.eq(status, 200)
+      t.eq(body, "ok")
+      t.eq(retries, { { 2, "read failed" }, { 3, "read failed" } })
+    end)
+
+    t.it("gives up after retries are exhausted, returning the last error", function()
+      local calls = 0
+      local status, err = http._withRetries(function()
+        calls = calls + 1
+        return nil, "attempt " .. calls .. " failed"
+      end, { retries = 2, retryDelaySeconds = 0 })
+      t.eq(calls, 3) -- the initial attempt plus 2 retries
+      t.isNil(status)
+      t.eq(err, "attempt 3 failed")
+    end)
+
+    t.it("does not retry a deliberate abort", function()
+      local calls = 0
+      local status, err = http._withRetries(function()
+        calls = calls + 1
+        return nil, "cancelled", true
+      end, { retryDelaySeconds = 0 })
+      t.eq(calls, 1)
+      t.isNil(status)
+      t.eq(err, "cancelled")
+    end)
   end)
 end

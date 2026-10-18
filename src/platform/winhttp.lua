@@ -4,6 +4,7 @@
 -- Blocking: call it from a worker thread.
 local ffi = require("ffi")
 local fs = require("src.data.fs")
+require("love.timer")
 
 local H = {}
 
@@ -52,14 +53,11 @@ local function queryNumber(w, req, level)
   return tonumber(v[0])
 end
 
--- GET `url`. opts:
---   headers     { "Name: value", ... }
---   onChunk     function(data, received, total) -- streams the body instead
---               of collecting it (total nil when unknown)
---   timeoutMs   receive timeout (default 15000)
--- Returns status, body (nil when streamed) -- or nil, error message.
-function H.get(url, opts)
-  opts = opts or {}
+-- Returns status, body, aborted (aborted is true only when opts.onChunk
+-- itself returned false -- a deliberate cancel, which H.get below must not
+-- retry; every other nil-returning failure is a transport-level one that's
+-- worth retrying).
+local function getOnce(url, opts)
   local host, port, path = H.parseUrl(url)
   if not host then return nil, "unsupported URL: " .. tostring(url) end
   local w = winhttp()
@@ -107,7 +105,7 @@ function H.get(url, opts)
       local ok, err = opts.onChunk(chunk, received, total)
       if ok == false then
         close()
-        return nil, err or "aborted"
+        return nil, err or "aborted", true
       end
     else
       parts[#parts + 1] = chunk
@@ -118,6 +116,47 @@ function H.get(url, opts)
     return nil, "download was incomplete (" .. received .. " of " .. total .. " bytes)"
   end
   return status, (not opts.onChunk) and table.concat(parts) or nil
+end
+
+-- Calls attemptFn() (status, body, aborted) up to opts.retries+1 times,
+-- stopping early on success (status ~= nil) or a deliberate abort. Kept
+-- separate from H.get so the retry/backoff logic can be unit tested with a
+-- fake attemptFn instead of a real network call.
+local function withRetries(attemptFn, opts)
+  local attempts = (opts.retries or 2) + 1
+  local lastErr
+  for attempt = 1, attempts do
+    if attempt > 1 then
+      if opts.onRetry then opts.onRetry(attempt, lastErr) end
+      love.timer.sleep(opts.retryDelaySeconds or 1)
+    end
+    local status, body, aborted = attemptFn()
+    if status ~= nil or aborted then return status, body end
+    lastErr = body
+  end
+  return nil, lastErr
+end
+H._withRetries = withRetries
+
+-- GET `url`. opts:
+--   headers          { "Name: value", ... }
+--   onChunk          function(data, received, total) -- streams the body
+--                     instead of collecting it (total nil when unknown)
+--   onRetry          function(attempt, lastError) -- called before each
+--                     retry, so a streaming caller can discard whatever it
+--                     buffered from the failed attempt before the next one
+--                     starts
+--   retries          extra attempts after a transient transport-level
+--                     failure (default 2, i.e. 3 attempts total); not
+--                     retried: a deliberate abort (onChunk returning false)
+--                     or a completed response of any HTTP status, which is
+--                     the caller's to interpret
+--   retryDelaySeconds  pause before each retry (default 1)
+--   timeoutMs        receive timeout (default 15000)
+-- Returns status, body (nil when streamed) -- or nil, error message.
+function H.get(url, opts)
+  opts = opts or {}
+  return withRetries(function() return getOnce(url, opts) end, opts)
 end
 
 return H
