@@ -1,0 +1,36 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    # Cardflux is Windows-only (Discord SDK, winproc/winhttp tooling, and
+    # src/data/fs.lua's FFI layer all assume the Windows API), so tests run
+    # on a Windows runner to match the real target platform.
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache LOVE
+        id: cache-love
+        uses: actions/cache@v4
+        with:
+          path: love_extracted
+          key: love-11.5-win64
+
+      - name: Download and extract LOVE 11.5
+        if: steps.cache-love.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          Invoke-WebRequest -Uri "https://github.com/love2d/love/releases/download/11.5/love-11.5-win64.zip" -OutFile love.zip
+          Expand-Archive -Path love.zip -DestinationPath love_extracted
+
+      - name: Run Lua test suite
+        shell: pwsh
+        run: |
+          $lovec = Get-ChildItem -Path love_extracted -Filter lovec.exe -Recurse | Select-Object -First 1
+          & $lovec.FullName . --test
+          exit $LASTEXITCODE
