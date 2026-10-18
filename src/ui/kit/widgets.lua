@@ -185,7 +185,11 @@ Reorder.__index = Reorder
 
 function W.reorder(id)
   local st = ui.state(id)
-  st.rows = {}
+  if st.rows then
+    for k in pairs(st.rows) do st.rows[k] = nil end
+  else
+    st.rows = {}
+  end
   return setmetatable({ id = id, st = st }, Reorder)
 end
 
