@@ -178,6 +178,31 @@ return function(t)
       local empty = models.TableState.new({ gameId = "g" })
       t.eq(json.encode(models.TableState.toJson(empty)), '{"gameId":"g","players":[],"cards":[],"revision":0}')
     end)
+    t.it("cardById/widgetById cache stays correct across copy-on-write mutations", function()
+      local c1 = models.CardInstance.new({ instanceId = "c1", definitionId = "d", x = 0, y = 0, zIndex = 0, faceUp = true, zone = "table" })
+      local c2 = models.CardInstance.new({ instanceId = "c2", definitionId = "d", x = 0, y = 0, zIndex = 0, faceUp = true, zone = "table" })
+      local w1 = models.BoardWidgetInstance.new({ instanceId = "w1", kind = "simpleCounter", x = 0, y = 0, zIndex = 0 })
+      local s = models.TableState.new({ gameId = "g", cards = { c1, c2 }, widgets = { w1 } })
+      t.eq(models.TableState.cardById(s, "c1"), c1)
+      t.eq(models.TableState.widgetById(s, "w1"), w1)
+      t.isNil(models.TableState.cardById(s, "missing"))
+
+      -- table_actions.lua's pattern: a fresh .cards array (copy-on-write), same
+      -- length, with c1 replaced by a moved copy -- not mutated in place.
+      local moved = util.copyWith(c1, { x = 99 })
+      local s2 = util.copyWith(s, { cards = { moved, c2 }, revision = 1 })
+      t.eq(#s2.cards, #s.cards) -- count unchanged: a size-only staleness check would miss this
+      t.eq(models.TableState.cardById(s2, "c1"), moved)
+      t.eq(models.TableState.cardById(s2, "c1").x, 99)
+      -- the original state's own cache must stay untouched
+      t.eq(models.TableState.cardById(s, "c1"), c1)
+
+      -- an unrelated change (widgets only) leaves the .cards array identical,
+      -- so the card cache carries over rather than rebuilding.
+      local s3 = util.copyWith(s2, { widgets = {} })
+      t.eq(models.TableState.cardById(s3, "c1"), moved)
+    end)
+
     t.it("formatElapsedTime", function()
       t.eq(models.formatElapsedTime(3723000), "01:02:03")
       t.eq(models.formatElapsedTime(999), "00:00:00")
