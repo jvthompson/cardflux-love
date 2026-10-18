@@ -40,6 +40,12 @@ local function encodePs(script)
 end
 
 local function apply()
+  local tarPath = system32("tar.exe")
+  local psPath = fs.join(system32("WindowsPowerShell"), "v1.0", "powershell.exe")
+  local missing = U.missingTool(tarPath, "tar.exe", "bundled with Windows 10 version 1803 and later")
+    or U.missingTool(psPath, "PowerShell", "bundled with Windows since Vista")
+  if missing then return missing end
+
   local tempDir = fs.join(fs.tempDir(), "cardflux_update_" .. os.time())
   fs.mkdirs(tempDir)
 
@@ -73,7 +79,7 @@ local function apply()
   local stagedDir = fs.join(tempDir, "staged")
   fs.mkdirs(stagedDir)
   -- Windows' bundled bsdtar reads zip archives.
-  local code, perr = proc.run(proc.quoteArg(system32("tar.exe")) .. " -xf " .. proc.quoteArg(zipPath) .. " -C " .. proc.quoteArg(stagedDir),
+  local code, perr = proc.run(proc.quoteArg(tarPath) .. " -xf " .. proc.quoteArg(zipPath) .. " -C " .. proc.quoteArg(stagedDir),
     { wait = true, timeoutMs = 300000 })
   if code ~= 0 then return "Failed to extract update package (" .. tostring(code or perr) .. ")." end
 
@@ -98,8 +104,8 @@ local function apply()
     .. "\" -TargetPid " .. proc.currentPid()
   local wmi = "$r = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = "
     .. U.psQuote(helperCmd) .. " }; exit [int]$r.ReturnValue"
-  local rc, lerr = proc.run(proc.quoteArg(fs.join(system32("WindowsPowerShell"), "v1.0", "powershell.exe"))
-    .. " -NoProfile -NonInteractive -EncodedCommand " .. encodePs(wmi), { wait = true, timeoutMs = 60000 })
+  local rc, lerr = proc.run(proc.quoteArg(psPath) .. " -NoProfile -NonInteractive -EncodedCommand " .. encodePs(wmi),
+    { wait = true, timeoutMs = 60000 })
   if rc ~= 0 then return "Failed to launch update helper (WMI ReturnValue=" .. tostring(rc or lerr) .. ")." end
   return nil
 end

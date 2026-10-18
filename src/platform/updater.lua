@@ -65,6 +65,18 @@ end
 local function psQuote(s) return "'" .. tostring(s):gsub("'", "''") .. "'" end
 U.psQuote = psQuote
 
+-- Checked up front by update_worker.lua so a locked-down install (one of
+-- these stripped or blocked by policy) fails fast with something
+-- actionable, before wasting a download on an update it can't apply
+-- anyway. `exists` is injectable for testing; defaults to fs.isFile.
+function U.missingTool(path, friendlyName, note, exists)
+  exists = exists or fs.isFile
+  if exists(path) then return nil end
+  return friendlyName .. " (" .. path .. ") is missing from this Windows installation"
+    .. (note and (" -- " .. note) or "") .. ". Download the update manually from https://github.com/"
+    .. U.repo .. "/releases instead."
+end
+
 -- The detached helper: wait for us to exit, robocopy /MIR the staged build
 -- over the install folder (excluding the libraries), relaunch, clean up.
 function U.helperScript(o)
