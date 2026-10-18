@@ -7,25 +7,30 @@ on:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    # Cardflux is Windows-only (Discord SDK, winproc/winhttp tooling, and
+    # src/data/fs.lua's FFI layer all assume the Windows API), so tests run
+    # on a Windows runner to match the real target platform.
+    runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Cache LOVE AppImage
+      - name: Cache LOVE
         id: cache-love
         uses: actions/cache@v4
         with:
-          path: love.AppImage
-          key: love-11.5-x86_64-appimage
+          path: love_extracted
+          key: love-11.5-win64
 
-      - name: Download LOVE 11.5
+      - name: Download and extract LOVE 11.5
         if: steps.cache-love.outputs.cache-hit != 'true'
-        run: curl -L -o love.AppImage https://github.com/love2d/love/releases/download/11.5/love-11.5-x86_64.AppImage
-
-      - name: Extract LOVE AppImage
+        shell: pwsh
         run: |
-          chmod +x love.AppImage
-          ./love.AppImage --appimage-extract
+          Invoke-WebRequest -Uri "https://github.com/love2d/love/releases/download/11.5/love-11.5-win64.zip" -OutFile love.zip
+          Expand-Archive -Path love.zip -DestinationPath love_extracted
 
       - name: Run Lua test suite
-        run: ./squashfs-root/AppRun . --test
+        shell: pwsh
+        run: |
+          $lovec = Get-ChildItem -Path love_extracted -Filter lovec.exe -Recurse | Select-Object -First 1
+          & $lovec.FullName . --test
+          exit $LASTEXITCODE
