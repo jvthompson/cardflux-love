@@ -63,5 +63,24 @@ return function(t)
       t.notOk(fs.exists(root))
       t.isNil(fs.list(root))
     end)
+
+    t.it("mkdirs / write / read / list / exists work past the legacy MAX_PATH limit", function()
+      if not fs.isWindows then return end
+      love.filesystem.createDirectory("fs_long_tmp")
+      local root = fs.join(love.filesystem.getSaveDirectory(), "fs_long_tmp")
+      fs.removeTree(root)
+      local deep = root
+      for i = 1, 12 do deep = fs.join(deep, "segment_" .. i .. "_abcdefghij") end
+      t.ok(#deep > 260, "test path should exceed the legacy MAX_PATH limit: " .. #deep .. " chars")
+      t.ok(fs.mkdirs(deep))
+      t.ok(fs.writeFile(fs.join(deep, "f.txt"), "hi"))
+      t.ok(fs.exists(fs.join(deep, "f.txt")))
+      t.eq(fs.readFile(fs.join(deep, "f.txt")), "hi")
+      local items = fs.list(deep)
+      t.eq(#items, 1)
+      t.eq(items[1].name, "f.txt")
+      t.ok(fs.removeTree(root))
+      t.notOk(fs.exists(root))
+    end)
   end)
 end

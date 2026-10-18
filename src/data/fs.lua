@@ -137,6 +137,20 @@ if isWindows then
     return buf
   end
 
+  -- Prefixes a fully-qualified path with \\?\ (\\?\UNC\ for a \\server\share
+  -- path), which tells the Win32 *W functions to bypass the legacy ~260-char
+  -- MAX_PATH limit -- otherwise a deeply nested game/deck library folder
+  -- silently "doesn't exist." Only valid for an already-absolute path with
+  -- backslash separators and no "."/".." segments, which fs.normalize's
+  -- output always is for the absolute paths these calls receive; a relative
+  -- or already-prefixed path is returned unchanged.
+  local function longPath(p)
+    if p:sub(1, 4) == "\\\\?\\" then return p end
+    if p:sub(1, 2) == "\\\\" then return "\\\\?\\UNC\\" .. p:sub(3) end
+    if p:match("^%a:\\") then return "\\\\?\\" .. p end
+    return p
+  end
+
   local function fromWide(w, len)
     len = len or -1
     local n = k32.WideCharToMultiByte(CP_UTF8, 0, w, len, nil, 0, nil, nil)
@@ -149,14 +163,14 @@ if isWindows then
   impl.toWide, impl.fromWide = toWide, fromWide
 
   function impl.attrs(p)
-    local a = k32.GetFileAttributesW(toWide(fs.normalize(p)))
+    local a = k32.GetFileAttributesW(toWide(longPath(fs.normalize(p))))
     if a == INVALID_ATTRS then return nil end
     return a
   end
 
   function impl.list(dir)
     local data = ffi.new("WIN32_FIND_DATAW_CF")
-    local h = k32.FindFirstFileW(toWide(fs.join(dir, "*")), data)
+    local h = k32.FindFirstFileW(toWide(longPath(fs.join(dir, "*"))), data) -- fs.join already normalizes
     if h == INVALID_HANDLE then return nil end
     local out = {}
     repeat
@@ -173,14 +187,14 @@ if isWindows then
     return out
   end
 
-  function impl.mkdir(p) return k32.CreateDirectoryW(toWide(fs.normalize(p)), nil) ~= 0 end
-  function impl.rmdir(p) return k32.RemoveDirectoryW(toWide(fs.normalize(p))) ~= 0 end
-  function impl.remove(p) return k32.DeleteFileW(toWide(fs.normalize(p))) ~= 0 end
+  function impl.mkdir(p) return k32.CreateDirectoryW(toWide(longPath(fs.normalize(p))), nil) ~= 0 end
+  function impl.rmdir(p) return k32.RemoveDirectoryW(toWide(longPath(fs.normalize(p)))) ~= 0 end
+  function impl.remove(p) return k32.DeleteFileW(toWide(longPath(fs.normalize(p)))) ~= 0 end
   function impl.move(a, b)
     -- MOVEFILE_REPLACE_EXISTING | MOVEFILE_COPY_ALLOWED
-    return k32.MoveFileExW(toWide(fs.normalize(a)), toWide(fs.normalize(b)), 0x1 + 0x2) ~= 0
+    return k32.MoveFileExW(toWide(longPath(fs.normalize(a))), toWide(longPath(fs.normalize(b))), 0x1 + 0x2) ~= 0
   end
-  function impl.copy(a, b) return k32.CopyFileW(toWide(fs.normalize(a)), toWide(fs.normalize(b)), 0) ~= 0 end
+  function impl.copy(a, b) return k32.CopyFileW(toWide(longPath(fs.normalize(a))), toWide(longPath(fs.normalize(b))), 0) ~= 0 end
   function impl.exePath()
     local buf = ffi.new("WCHAR[1024]")
     local n = k32.GetModuleFileNameW(nil, buf, 1024)
@@ -202,7 +216,7 @@ if isWindows then
   local crt = ffi.load("msvcrt")
   wideIO = {}
   function wideIO.read(path)
-    local f = crt._wfopen(toWide(fs.normalize(path)), toWide("rb"))
+    local f = crt._wfopen(toWide(longPath(fs.normalize(path))), toWide("rb"))
     if f == nil then return nil, path .. ": No such file or directory" end
     local chunks, buf = {}, ffi.new("char[65536]")
     while true do
@@ -214,7 +228,7 @@ if isWindows then
     return table.concat(chunks)
   end
   function wideIO.write(path, data)
-    local f = crt._wfopen(toWide(fs.normalize(path)), toWide("wb"))
+    local f = crt._wfopen(toWide(longPath(fs.normalize(path))), toWide("wb"))
     if f == nil then return false, path .. ": cannot open for writing" end
     local n = tonumber(crt.fwrite(data, 1, #data, f))
     crt.fclose(f)
