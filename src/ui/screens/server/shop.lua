@@ -4,6 +4,7 @@
 local ui = require("src.ui.kit.ui")
 local theme = require("src.ui.kit.theme")
 local overlays = require("src.ui.kit.overlays")
+local widgets = require("src.ui.kit.widgets")
 local json = require("lib.json")
 local models = require("src.core.models")
 local util = require("src.core.util")
@@ -14,6 +15,7 @@ local resolver = require("src.data.image_resolver")
 local common = require("src.ui.screens.server.common")
 local GamePicker = require("src.ui.screens.game_picker")
 
+local TABS = { "Packs", "Decks" }
 local CW, CH = CR.cardWidth, CR.cardHeight
 -- Pack-summary cards match the Deck Editor's card pool: a third larger,
 -- with up to three lines of name.
@@ -25,7 +27,7 @@ local S = {}
 S.__index = S
 
 function S.new(sc, info)
-  local self = setmetatable({ title = "Card Shop", sc = sc }, S)
+  local self = setmetatable({ title = "Card Shop", sc = sc, tab = 1 }, S)
   if info then self:open(info) end
   return self
 end
@@ -196,73 +198,90 @@ function S:showPackSummary(cards, title)
   })
 end
 
--- The store: packs and starter decks as large image tiles, the same
--- treatment the game-selection grid uses.
-function S:drawShop(x, y, w, h)
+local LOW_TOKEN_HINT = "You need more tokens. Admins can grant tokens, and some servers give out a regular allowance."
+
+-- Packs tab: sets as large image tiles, the same treatment the
+-- game-selection grid uses.
+function S:drawPacks(x, y, w, h)
   local c = theme.c
   local sc = self.sc
   local game = self.game
   local tokens = sc.self and sc.self.tokens or 0
   local cost = sc.info.packCost or 1
-  local starters = self.info.starterDecks or {}
-  local starterCost = sc.info.starterDeckCost or 3
   local function plural(n) return n .. (n == 1 and " token" or " tokens") end
   ui.text("Open Packs", x, y, { size = 18 })
-  local balance = plural(tokens) .. "  ·  " .. plural(cost) .. " per pack"
-  if #starters > 0 then balance = balance .. "  ·  " .. plural(starterCost) .. " per starter deck" end
-  ui.text(balance, x, y + 26, { size = 13, color = c.onSurfaceVariant })
+  ui.text(plural(tokens) .. "  ·  " .. plural(cost) .. " per pack", x, y + 26, { size = 13, color = c.onSurfaceVariant })
   local yy = y + 56
   local sets = self.info.sets or {}
-  -- Both packs and starter decks fall back to the game's default card back
-  -- when no matching art file is found.
+  -- Falls back to the game's default card back when no matching art file
+  -- is found.
   local defaultBack = game.cardBacks[1] and game.cardBacks[1].imagePath
 
   if #sets == 0 then
     ui.text("This game has no sets, so it has no packs.", x, yy, { color = c.onSurfaceVariant })
-    yy = yy + 32
-  else
-    local tiles = {}
-    for _, set in ipairs(sets) do
-      tiles[#tiles + 1] = {
-        id = "pack:" .. set.id,
-        name = set.name,
-        caption = set.cardCount .. " cards  ·  " .. plural(cost),
-        imagePath = resolver.resolveImageAnyExt(game.folderPath, set.id) or defaultBack,
-        folderPath = game.folderPath,
-        disabled = self.buying ~= nil or tokens < cost,
-        set = set,
-      }
-    end
-    local gridH = math.min(GamePicker.gridHeight(w, #tiles), math.max(1, y + h - yy))
-    GamePicker.drawGrid("shop:packs", tiles, x, yy, w, gridH, 24, function(t) self:buyPack(t.set) end)
-    yy = yy + gridH + 24
+    return
   end
 
-  if #starters > 0 then
-    ui.text("Starter Decks", x, yy, { size = 14, color = c.onSurfaceVariant })
-    yy = yy + 28
-    local decksFolder = fs.join(game.folderPath, "decks")
-    local tiles = {}
-    for _, starter in ipairs(starters) do
-      tiles[#tiles + 1] = {
-        id = "starter:" .. starter.name,
-        name = starter.name,
-        caption = starter.cardCount .. " cards  ·  " .. plural(starterCost),
-        imagePath = resolver.resolveImageAnyExt(decksFolder, starter.name) or defaultBack,
-        folderPath = game.folderPath,
-        disabled = self.buying ~= nil or tokens < starterCost,
-        starter = starter,
-      }
-    end
-    local gridH = math.min(GamePicker.gridHeight(w, #tiles), math.max(1, y + h - yy))
-    GamePicker.drawGrid("shop:starters", tiles, x, yy, w, gridH, 24, function(t) self:buyStarter(t.starter) end)
-    yy = yy + gridH + 24
+  local tiles = {}
+  for _, set in ipairs(sets) do
+    tiles[#tiles + 1] = {
+      id = "pack:" .. set.id,
+      name = set.name,
+      caption = set.cardCount .. " cards  ·  " .. plural(cost),
+      imagePath = resolver.resolveImageAnyExt(game.folderPath, set.id) or defaultBack,
+      folderPath = game.folderPath,
+      disabled = self.buying ~= nil or tokens < cost,
+      set = set,
+    }
+  end
+  local gridH = math.min(GamePicker.gridHeight(w, #tiles), math.max(1, y + h - yy))
+  GamePicker.drawGrid("shop:packs", tiles, x, yy, w, gridH, 24, function(t) self:buyPack(t.set) end)
+  yy = yy + gridH + 24
+
+  if tokens < cost then
+    ui.text(LOW_TOKEN_HINT, x, yy, { w = w, size = 12, color = c.onSurfaceVariant })
+  end
+end
+
+-- Decks tab: starter decks as large image tiles, same treatment as Packs.
+function S:drawDecks(x, y, w, h)
+  local c = theme.c
+  local sc = self.sc
+  local game = self.game
+  local tokens = sc.self and sc.self.tokens or 0
+  local starters = self.info.starterDecks or {}
+  local starterCost = sc.info.starterDeckCost or 3
+  local function plural(n) return n .. (n == 1 and " token" or " tokens") end
+  ui.text("Starter Decks", x, y, { size = 18 })
+  ui.text(plural(tokens) .. "  ·  " .. plural(starterCost) .. " per starter deck", x, y + 26,
+    { size = 13, color = c.onSurfaceVariant })
+  local yy = y + 56
+  local defaultBack = game.cardBacks[1] and game.cardBacks[1].imagePath
+
+  if #starters == 0 then
+    ui.text("This game has no starter decks.", x, yy, { color = c.onSurfaceVariant })
+    return
   end
 
-  local cheapest = math.min(#sets > 0 and cost or math.huge, #starters > 0 and starterCost or math.huge)
-  if cheapest ~= math.huge and tokens < cheapest then
-    ui.text("You need more tokens. Admins can grant tokens, and some servers give out a regular allowance.", x, yy,
-      { w = w, size = 12, color = c.onSurfaceVariant })
+  local decksFolder = fs.join(game.folderPath, "decks")
+  local tiles = {}
+  for _, starter in ipairs(starters) do
+    tiles[#tiles + 1] = {
+      id = "starter:" .. starter.name,
+      name = starter.name,
+      caption = starter.cardCount .. " cards  ·  " .. plural(starterCost),
+      imagePath = resolver.resolveImageAnyExt(decksFolder, starter.name) or defaultBack,
+      folderPath = game.folderPath,
+      disabled = self.buying ~= nil or tokens < starterCost,
+      starter = starter,
+    }
+  end
+  local gridH = math.min(GamePicker.gridHeight(w, #tiles), math.max(1, y + h - yy))
+  GamePicker.drawGrid("shop:starters", tiles, x, yy, w, gridH, 24, function(t) self:buyStarter(t.starter) end)
+  yy = yy + gridH + 24
+
+  if tokens < starterCost then
+    ui.text(LOW_TOKEN_HINT, x, yy, { w = w, size = 12, color = c.onSurfaceVariant })
   end
 end
 
@@ -272,7 +291,12 @@ function S:draw(x, y, w, h)
     return
   end
   local pad = 24
-  self:drawShop(x + pad, y + pad, w - 2 * pad, h - 2 * pad)
+  local tab, th = widgets.tabBar("shop:tabs", x, y, w, TABS, self.tab)
+  self.tab = tab
+  local by = y + th + pad
+  local bx, bw, bh = x + pad, w - 2 * pad, y + h - by - pad
+  if self.tab == 1 then self:drawPacks(bx, by, bw, bh)
+  else self:drawDecks(bx, by, bw, bh) end
 end
 
 return S
