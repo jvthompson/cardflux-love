@@ -170,6 +170,10 @@ end
 ---------------------------------------------------------------------------
 
 function T:selectionColor() return { color.toRgba(tableSettings.selectionColor()) } end
+function T:feltColor() return { color.toRgba(tableSettings.feltColor(self.game and self.game.tableColor)) } end
+function T:playmatBorderColor()
+  return { color.toRgba(tableSettings.playmatBorderColor(self.game and self.game.playmatBorderColor)) }
+end
 
 function T:selectionTint()
   local c = self:selectionColor()
@@ -1657,7 +1661,7 @@ function T:drawGameMenu()
   end
   yy = yy + 12
   if ui.button("Settings", x + 16, yy, w - 32, 40, { variant = "outlined", icon = "settings", color = white, id = "gm:settings" }) then
-    require("src.ui.screens.settings_dialog").open({ inGame = true })
+    require("src.ui.screens.settings_dialog").open({ inGame = true, game = self.game })
   end
   yy = yy + 40 + 12
   if ui.button("Controls", x + 16, yy, w - 32, 40, { variant = "outlined", icon = "keyboard", color = white, id = "gm:controls" }) then

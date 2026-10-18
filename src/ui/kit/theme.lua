@@ -36,8 +36,6 @@ T.dark = {
 
 -- Fixed colors used regardless of theme.
 T.fixed = {
-  felt = hex("#0B6E4F"),
-  centerMarkerBorder = hex("#063D2A"),
   overlayPanel = hex("#262626"),
   titleBar = hex("#1B2430"),
   titleBarForeground = { 1, 1, 1, 0.7 },

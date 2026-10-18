@@ -413,17 +413,54 @@ return function(t)
   t.describe("table settings", function()
     t.it("selection color defaults to yellow and only saves non-defaults", function()
       local saved = settings.get(settings.keys.selectionColor)
-      tableSettings.reset()
+      tableSettings.resetSelectionColor()
       t.eq(tableSettings.selectionColor(), 0xFFFFEB3B)
-      t.ok(tableSettings.isDefault())
+      t.ok(tableSettings.isSelectionColorDefault())
       t.eq(settings.get(settings.keys.selectionColor), nil)
       tableSettings.setSelectionColor(0xFF2196F3)
       t.eq(tableSettings.selectionColor(), 0xFF2196F3)
       t.eq(settings.get(settings.keys.selectionColor), 0xFF2196F3)
-      t.notOk(tableSettings.isDefault())
-      tableSettings.reset()
+      t.notOk(tableSettings.isSelectionColorDefault())
+      tableSettings.resetSelectionColor()
       t.eq(settings.get(settings.keys.selectionColor), nil)
       if saved ~= nil then tableSettings.setSelectionColor(saved) end
+    end)
+
+    t.it("table/playmat-border color fall back to the game's own color, then the hardcoded default", function()
+      local savedFelt = settings.get(settings.keys.feltColor)
+      local savedBorder = settings.get(settings.keys.playmatBorderColor)
+      tableSettings.resetFeltColor()
+      tableSettings.resetPlaymatBorderColor()
+
+      -- No override, no game color: hardcoded defaults.
+      t.eq(tableSettings.feltColor(nil), tableSettings.defaultFeltColor)
+      t.eq(tableSettings.playmatBorderColor(nil), tableSettings.defaultPlaymatBorderColor)
+      t.ok(tableSettings.isFeltColorDefault())
+      t.ok(tableSettings.isPlaymatBorderColorDefault())
+
+      -- No override: the game's own color wins over the hardcoded default.
+      t.eq(tableSettings.feltColor("#5D1049"), 0xFF5D1049)
+      t.eq(tableSettings.playmatBorderColor("#2A0824"), 0xFF2A0824)
+
+      -- Setting to the game's own color (what the picker already shows)
+      -- is a no-op -- it must NOT pin that game's color as a personal
+      -- override that would leak into a different game.
+      tableSettings.setFeltColor(0xFF5D1049, "#5D1049")
+      t.ok(tableSettings.isFeltColorDefault())
+      t.eq(settings.get(settings.keys.feltColor), nil)
+
+      -- An explicit, different pick DOES override, regardless of game.
+      tableSettings.setFeltColor(0xFF112233, "#5D1049")
+      t.notOk(tableSettings.isFeltColorDefault())
+      t.eq(tableSettings.feltColor("#5D1049"), 0xFF112233)
+      t.eq(tableSettings.feltColor(nil), 0xFF112233) -- carries over to a game with no color of its own
+
+      tableSettings.resetFeltColor()
+      t.ok(tableSettings.isFeltColorDefault())
+      t.eq(tableSettings.feltColor("#5D1049"), 0xFF5D1049) -- reset returns to the game's color, not green
+
+      if savedFelt ~= nil then tableSettings.setFeltColor(savedFelt) end
+      if savedBorder ~= nil then tableSettings.setPlaymatBorderColor(savedBorder) end
     end)
   end)
 

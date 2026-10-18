@@ -12,6 +12,9 @@ local fs = require("src.data.fs")
 local resolver = require("src.data.image_resolver")
 local common = require("src.ui.screens.gamedef.common")
 local CR = require("src.ui.table.card_render")
+local color = require("src.core.color")
+local colorpicker = require("src.ui.kit.colorpicker")
+local tableSettings = require("src.data.table_settings")
 
 local keyOf = common.keyOf
 
@@ -245,6 +248,41 @@ function T:draw(x, y, w, h)
     yy = yy + 32
   end
   yy = yy + common.SECTION_GAP
+
+  -- Table colors: optional per-game defaults for the felt and the playmat
+  -- border. Left cleared (nil), a player's own Settings choice -- or the
+  -- app's hardcoded default -- applies instead.
+  local tch = common.sectionHeader("gs:tablecolors", "Table Colors", cx, yy, cw, {
+    info = "Optional. Leave cleared to use the app's default, or whatever a player has picked in their own Settings." })
+  yy = yy + tch + 4
+
+  ui.text("Table color", cx, yy, { size = 12, color = c.onSurfaceVariant })
+  yy = yy + 20
+  local feltArgb = (game.tableColor and color.colorFromHex(game.tableColor, tableSettings.defaultFeltColor))
+    or tableSettings.defaultFeltColor
+  local pickedFelt, fh = colorpicker.field("gs:tableColor", cx, yy, cw, feltArgb)
+  if pickedFelt ~= feltArgb then game.tableColor = "#" .. color.hexFromColor(pickedFelt) end
+  yy = yy + fh + 4
+  local clearLabel = "Clear table color"
+  if ui.button(clearLabel, cx - 12, yy, ui.buttonWidth(clearLabel), nil,
+    { variant = "text", disabled = game.tableColor == nil, id = "gs:tableColor:clear" }) then
+    game.tableColor = nil
+  end
+  yy = yy + ui.BUTTON_H + common.GAP
+
+  ui.text("Playmat border color", cx, yy, { size = 12, color = c.onSurfaceVariant })
+  yy = yy + 20
+  local borderArgb = (game.playmatBorderColor and color.colorFromHex(game.playmatBorderColor, tableSettings.defaultPlaymatBorderColor))
+    or tableSettings.defaultPlaymatBorderColor
+  local pickedBorder, bh = colorpicker.field("gs:playmatBorderColor", cx, yy, cw, borderArgb)
+  if pickedBorder ~= borderArgb then game.playmatBorderColor = "#" .. color.hexFromColor(pickedBorder) end
+  yy = yy + bh + 4
+  clearLabel = "Clear playmat border color"
+  if ui.button(clearLabel, cx - 12, yy, ui.buttonWidth(clearLabel), nil,
+    { variant = "text", disabled = game.playmatBorderColor == nil, id = "gs:playmatBorderColor:clear" }) then
+    game.playmatBorderColor = nil
+  end
+  yy = yy + ui.BUTTON_H + common.SECTION_GAP
 
   -- Tag groups.
   hh = common.sectionHeader("gs:groups", "Tag Groups", cx, yy, cw, {

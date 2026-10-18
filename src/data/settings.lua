@@ -19,6 +19,8 @@ S.keys = {
   uiScale = "ui_scale",
   recentServers = "recent_servers",
   selectionColor = "selection_color",
+  feltColor = "felt_color",
+  playmatBorderColor = "playmat_border_color",
 }
 
 local FILE = "settings.json"

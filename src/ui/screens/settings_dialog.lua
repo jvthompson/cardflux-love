@@ -78,6 +78,7 @@ function M.open(opts)
       yy = yy + ui.BUTTON_H + 16
 
       yy = yy + heading("Table", x, yy)
+      local game = opts.game
       ui.text("Selection color", x, yy, { size = 12, color = c.onSurfaceVariant })
       yy = yy + 20
       local picked, ph = colorpicker.field("settings:selectionColor", x, yy, w, tableSettings.selectionColor(),
@@ -86,8 +87,36 @@ function M.open(opts)
       yy = yy + ph + 4
       label = "Reset selection color"
       if ui.button(label, x - 12, yy, ui.buttonWidth(label), nil,
-        { variant = "text", disabled = tableSettings.isDefault(), id = "settings:selectionColor:reset" }) then
-        tableSettings.reset()
+        { variant = "text", disabled = tableSettings.isSelectionColorDefault(), id = "settings:selectionColor:reset" }) then
+        tableSettings.resetSelectionColor()
+      end
+      yy = yy + ui.BUTTON_H + 16
+
+      local feltHex = game and game.tableColor
+      ui.text("Table color", x, yy, { size = 12, color = c.onSurfaceVariant })
+      yy = yy + 20
+      local pickedFelt, fh = colorpicker.field("settings:feltColor", x, yy, w, tableSettings.feltColor(feltHex),
+        { labelBackground = c.surfaceContainerHigh })
+      tableSettings.setFeltColor(pickedFelt, feltHex)
+      yy = yy + fh + 4
+      label = "Reset table color"
+      if ui.button(label, x - 12, yy, ui.buttonWidth(label), nil,
+        { variant = "text", disabled = tableSettings.isFeltColorDefault(), id = "settings:feltColor:reset" }) then
+        tableSettings.resetFeltColor()
+      end
+      yy = yy + ui.BUTTON_H + 16
+
+      local borderHex = game and game.playmatBorderColor
+      ui.text("Playmat border color", x, yy, { size = 12, color = c.onSurfaceVariant })
+      yy = yy + 20
+      local pickedBorder, bh = colorpicker.field("settings:playmatBorderColor", x, yy, w,
+        tableSettings.playmatBorderColor(borderHex), { labelBackground = c.surfaceContainerHigh })
+      tableSettings.setPlaymatBorderColor(pickedBorder, borderHex)
+      yy = yy + bh + 4
+      label = "Reset playmat border color"
+      if ui.button(label, x - 12, yy, ui.buttonWidth(label), nil,
+        { variant = "text", disabled = tableSettings.isPlaymatBorderColorDefault(), id = "settings:playmatBorderColor:reset" }) then
+        tableSettings.resetPlaymatBorderColor()
       end
       yy = yy + ui.BUTTON_H
       return yy - y

@@ -278,7 +278,8 @@ local function drawCenterMarker(T)
       love.graphics.setStencilTest()
     end
   end
-  love.graphics.setColor(0x06 / 255, 0x3D / 255, 0x2A / 255)
+  local bc = T:playmatBorderColor()
+  love.graphics.setColor(bc[1], bc[2], bc[3])
   love.graphics.setLineWidth(4 * T.zoom)
   love.graphics.rectangle("line", x + 2 * T.zoom, y + 2 * T.zoom, w - 4 * T.zoom, h - 4 * T.zoom, r, r)
   love.graphics.setLineWidth(1)
@@ -934,7 +935,7 @@ end
 function V.draw(T, x, y, w, h)
   T.items, T.dropZones, T.handRect, T.handCardCenters = {}, {}, nil, {}
   V.layout(T, x, y, w, h)
-  ui.rect("fill", x, y, w, h, 0, theme.fixed.felt)
+  ui.rect("fill", x, y, w, h, 0, T:feltColor())
   V.drawTable(T)
   local L = T.layoutRects
   drawPlayerRow(T, T.derived.rows.topRow, true, L.top.x, L.top.y, L.top.w)

@@ -431,6 +431,8 @@ function GameDefinition.new(f)
     zones = f.zones or {},
     tagGroups = f.tagGroups or {},
     sets = f.sets or {},
+    tableColor = f.tableColor, -- optional "#RRGGBB"; nil defers to the player's/app's default
+    playmatBorderColor = f.playmatBorderColor,
     folderPath = f.folderPath, -- local only, never serialized
   }
 end
@@ -511,6 +513,8 @@ function GameDefinition.fromJson(t)
     cardBacks = cardBacks,
     zones = mapJson(t.zones, ZoneDefinition.fromJson),
     tagGroups = mapJson(t.tagGroups, TagGroup.fromJson),
+    tableColor = t.tableColor,
+    playmatBorderColor = t.playmatBorderColor,
   })
 end
 
@@ -536,6 +540,8 @@ function GameDefinition.toJson(g)
   o.cardBacks = nonEmptyList(g.cardBacks, CardBackDefinition.toJson)
   o.zones = nonEmptyList(g.zones, ZoneDefinition.toJson)
   o.tagGroups = nonEmptyList(g.tagGroups, TagGroup.toJson)
+  if g.tableColor then o.tableColor = g.tableColor end
+  if g.playmatBorderColor then o.playmatBorderColor = g.playmatBorderColor end
   return o
 end
 
