@@ -11,6 +11,7 @@ local SC = require("src.net.server_client")
 local AFM = require("src.net.admin_file_manager")
 local AGM = require("src.net.admin_game_manager")
 local common = require("src.ui.screens.server.common")
+local util = require("src.core.util")
 
 local A = {}
 A.__index = A
@@ -159,8 +160,8 @@ function A:editUser(u)
       { label = "Cancel", variant = "text" },
       { label = "Save", variant = "filled", onClick = function()
         local f = json.object()
-        local name = st.name:gsub("^%s+", ""):gsub("%s+$", "")
-        local email = st.email:gsub("^%s+", ""):gsub("%s+$", "")
+        local name = util.trim(st.name)
+        local email = util.trim(st.email)
         if name ~= u.name then f.name = name end
         if email:lower() ~= u.email:lower() then f.email = email end
         if st.isAdmin ~= u.isAdmin then f.isAdmin = st.isAdmin end
@@ -170,8 +171,9 @@ function A:editUser(u)
         local grant = tonumber(st.grant)
         if grant and grant ~= 0 then f.tokensAdd = grant end
         if st.password ~= "" then
-          if #st.password < 6 then
-            overlays.toast("Use a password of at least 6 characters.")
+          local pwErr = SC.passwordError(st.password)
+          if pwErr then
+            overlays.toast(pwErr)
             return true
           end
           -- Hashed with the email the account will have after this save.

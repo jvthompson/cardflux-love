@@ -37,6 +37,16 @@ function S.passwordHash(email, password)
   return love.data.encode("string", "hex", love.data.hash("sha256", raw))
 end
 
+S.MIN_PASSWORD_LENGTH = 6
+
+-- Returns an error message if the password's too short to submit, or nil.
+-- `noun` lets the caller say "new password" where that reads better.
+function S.passwordError(password, noun)
+  if #password < S.MIN_PASSWORD_LENGTH then
+    return "Use a " .. (noun or "password") .. " of at least " .. S.MIN_PASSWORD_LENGTH .. " characters."
+  end
+end
+
 ---------------------------------------------------------------------------
 -- Saved sign-ins, per server ("host:port" -> { token, email }). Only kept
 -- when the player ticks "Remember me"; otherwise every sign-in asks for

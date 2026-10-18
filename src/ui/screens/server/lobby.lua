@@ -13,6 +13,7 @@ local fileDialog = require("src.platform.file_dialog")
 local SC = require("src.net.server_client")
 local common = require("src.ui.screens.server.common")
 local loader = require("src.data.game_loader")
+local util = require("src.core.util")
 
 local Lobby = {}
 Lobby.__index = Lobby
@@ -315,7 +316,7 @@ function Lobby:openProfile()
       { label = "Cancel", variant = "text" },
       { label = "Save", variant = "filled", onClick = function()
         local payload = json.object()
-        local name = st.name:gsub("^%s+", ""):gsub("%s+$", "")
+        local name = util.trim(st.name)
         if name ~= me.name then payload.name = name end
         if st.color ~= me.color then payload.color = st.color end
         if st.avatarChanged then
@@ -331,8 +332,9 @@ function Lobby:openProfile()
           end
         end
         if st.password ~= "" or st.current ~= "" then
-          if #st.password < 6 then
-            st.error = "Use a new password of at least 6 characters."
+          local pwErr = SC.passwordError(st.password, "new password")
+          if pwErr then
+            st.error = pwErr
             return true
           end
           if st.password ~= st.confirm then

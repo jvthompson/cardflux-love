@@ -11,13 +11,14 @@ local fs = require("src.data.fs")
 local profile = require("src.data.profile")
 local fileDialog = require("src.platform.file_dialog")
 local SC = require("src.net.server_client")
+local util = require("src.core.util")
 
 local L = {}
 L.__index = L
 
 local function app() return require("src.app") end
 
-local function trim(s) return (s or ""):gsub("^%s+", ""):gsub("%s+$", "") end
+local trim = util.trim
 
 function L.new(sc)
   local A = app()
@@ -85,8 +86,9 @@ function L:submitCreate()
     self.error = "Enter a valid email address."
     return
   end
-  if #self.password < 6 then
-    self.error = "Use a password of at least 6 characters."
+  local pwErr = SC.passwordError(self.password)
+  if pwErr then
+    self.error = pwErr
     return
   end
   if self.password ~= self.confirm then
