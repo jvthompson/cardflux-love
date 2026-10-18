@@ -57,9 +57,20 @@ Hotkeys act on the card under the cursor and fire once per key press (holding a 
 | F2 | Toggle zone/hand backgrounds between player-color tint and black | This session only |
 | F12 | Cycle through the game's playmats | |
 | L | Open/close the Game Log (with a Save Log button) | |
+| C | Open/close the chat panel (server games only) | |
 | Ctrl + R | Open/close the Rulebook viewer (if the game has a rulebook.md), with a collapsible table-of-contents sidebar. Also works in the Deck Editor. | |
 | Esc | Clear the selection; with nothing selected, open/close the Game Menu (save game, settings, controls, kick a player, leave/end game) | |
 | Ctrl (while dropping a token) | Duplicate the token instead of moving it | Token widgets |
+
+### Chat commands
+
+Typed into any chat box (lobby, room, or the in-game chat panel) on a CardTable server.
+
+| Command | Effect |
+|---------|--------|
+| /flip | Flips a coin and posts "flipped: Heads" or "flipped: Tails" |
+| /roll dX | Rolls a die with X sides (e.g. `/roll d6`, `/roll d20`) and posts "rolled dX: &lt;result&gt;" |
+| /clear | Lobby chat only, server admins only: clears the lobby chat for everyone |
 
 ### Right-click menus
 

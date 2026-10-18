@@ -78,6 +78,14 @@ return function(t)
       t.eq(sc.self.tokens, 7)
     end)
 
+    t.it("empties the lobby chat on chatCleared", function()
+      local sc, conn = client()
+      sc.chat = { { name = "A", text = "hi" } }
+      conn.inbox = { { type = "chatCleared", payload = {} } }
+      sc:update()
+      t.eq(#sc.chat, 0)
+    end)
+
     t.it("clears the current room when it closes", function()
       local sc, conn = client()
       sc.roomId = "r1"

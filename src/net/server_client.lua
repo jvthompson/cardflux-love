@@ -287,6 +287,8 @@ function S:handle(m)
     list[#list + 1] = p.line
     if #list > 200 then table.remove(list, 1) end
     self:emit("chat", p.line, p.roomId)
+  elseif t == "chatCleared" then
+    self.chat = {}
   elseif t == "toast" then
     require("src.ui.kit.overlays").toast(p.message)
   elseif t == "tradeInvite" then

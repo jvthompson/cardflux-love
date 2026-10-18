@@ -158,6 +158,7 @@ function M.gameScreen(sc, game, spectating)
   -- Spectators watch under the same id the server filters for them.
   return MP.ClientGame.new(ch, spectating and ("spectator:" .. sc.self.id) or sc.self.id, {
     localGame = game,
+    sc = sc,
     spectator = spectating,
     collectionMode = room and room.collectionMode,
     deckStore = deckStore.serverStore(sc),

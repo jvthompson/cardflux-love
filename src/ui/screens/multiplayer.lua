@@ -764,6 +764,7 @@ function ClientGame:handleMessage(m)
         isMirrored = false,
         localAvatarPath = app().profile.avatarPath,
         avatarKeys = avatarKeys(self.avatarBytes),
+        sc = self.opts.sc,
         leaveButtonLabel = "Leave Game",
         leaveConfirmationMessage = self.opts.leaveMessage
           or "Leave the game? If the host is still hosting, you can rejoin in the same seat later.",

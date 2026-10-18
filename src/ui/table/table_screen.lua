@@ -9,7 +9,9 @@
 -- Server games (src/ui/screens/server/) also pass:
 --       deckStore (src/data/deck_store.lua) for Load Deck / Save Deck,
 --       collectionMode (hides the Pack Generator and Card Library),
---       spectator (watch only: no drags, menus or card hotkeys)
+--       spectator (watch only: no drags, menus or card hotkeys),
+--       sc (src/net/server_client.lua) for the in-game chat panel (C key);
+--       LAN host/join and practice games don't pass it, so chat stays off
 local ui = require("src.ui.kit.ui")
 local theme = require("src.ui.kit.theme")
 local overlays = require("src.ui.kit.overlays")
@@ -31,6 +33,7 @@ local tableSettings = require("src.data.table_settings")
 local CR = require("src.ui.table.card_render")
 local V = require("src.ui.table.table_view")
 local selection = require("src.ui.table.selection")
+local json = require("lib.json")
 
 local T = {}
 T.__index = T
@@ -56,6 +59,7 @@ function T.new(opts)
   self.tabDown, self.spaceDown, self.altDown = false, false, false
   self.gameMenuOpen, self.logOpen, self.libraryOpen = false, false, false
   self.rulebookOpen = false
+  self.chatOpen, self.chatAnim, self.chatText, self.seenChat = false, 0, "", 0
   self.rulebook = require("src.ui.screens.rulebook_viewer").new(self.game)
   self.lastPreviewAt = 0
   self.playmats, self.playmatIndex = {}, 0
@@ -582,7 +586,8 @@ function T:keypressed(key, _, isrepeat)
     elseif key == "f2" then self.colorTintEnabled = not self.colorTintEnabled
     elseif key == "f12" then self:cyclePlaymat()
     elseif key == "l" then self:toggleLog()
-    elseif key == "r" and ctrlDown() then self:toggleRulebook() end
+    elseif key == "r" and ctrlDown() then self:toggleRulebook()
+    elseif key == "c" and self.sc then self:toggleChat() end
     return
   end
   if key == "q" then self:rotateHovered(false)
@@ -597,8 +602,13 @@ function T:keypressed(key, _, isrepeat)
   elseif key == "f12" then self:cyclePlaymat()
   elseif key == "l" then self:toggleLog()
   elseif key == "r" and ctrlDown() then self:toggleRulebook()
+  elseif key == "c" and self.sc then self:toggleChat()
   elseif DRAW_KEYS[key] then self:drawNFromHovered(DRAW_KEYS[key])
   end
+end
+
+function T:toggleChat()
+  self.chatOpen = not self.chatOpen
 end
 
 -- Keys are only "ours" while no dialog, menu or text field has them.
@@ -607,8 +617,12 @@ function T:keysAvailable()
     and not self.rulebookOpen
 end
 
+local CHAT_ANIM_RATE = 14
+
 function T:update(dt)
   self.session:update()
+  local chatTarget = self.chatOpen and 1 or 0
+  self.chatAnim = self.chatAnim + (chatTarget - self.chatAnim) * (1 - math.exp(-CHAT_ANIM_RATE * dt))
   local available = self:keysAvailable()
   local tab = available and love.keyboard.isDown("tab") and not (self.drag and self.drag.started)
   if self.tabDown and not tab then
@@ -1710,6 +1724,58 @@ function T:drawLog()
   end
 end
 
+local CHAT_W = 340
+
+local function chatTimeLabel(at) return os.date("%H:%M", at) end
+
+-- Docked to the right edge, sliding in/out with self.chatAnim (see
+-- toggleChat/update). Only drawn while self.sc is set (server games).
+function T:drawChat()
+  local sc = self.sc
+  local sw, sh = ui.screenSize()
+  local top = overlays.contentTop
+  local x, y, w, h = sw - CHAT_W * self.chatAnim, top, CHAT_W, sh - top
+  ui.cover(x, y, w, h)
+  ui.rect("fill", x, y, w, h, 0, PANEL)
+  ui.text("Chat", x + 16, y + 16, { weight = "bold", color = WHITE })
+  local inputH = 48
+  local ly, lh = y + 48, h - 48 - inputH - 24
+  local off = ui.beginScroll("table:chat", x + 8, ly, w - 16, lh)
+  local cy = ly - off
+  local textW = w - 32
+  for _, line in ipairs(sc.roomChat) do
+    local head = chatTimeLabel(line.at) .. "  " .. line.name
+    ui.text(head, x + 16, cy, { size = 12, weight = "bold", color = { 1, 1, 1, 0.54 }, w = textW, ellipsis = true })
+    cy = cy + 18
+    ui.text(line.text, x + 16, cy, { w = textW, color = WHITE })
+    cy = cy + ui.textHeight(line.text, textW) + 10
+  end
+  local contentH = cy + off - ly
+  ui.endScroll("table:chat", contentH)
+  if #sc.roomChat ~= self.seenChat then
+    self.seenChat = #sc.roomChat
+    ui.scrollToEnd("table:chat")
+  end
+  if #sc.roomChat == 0 then
+    ui.text("Say hello!", x, ly, { w = w, h = lh, align = "center", valign = "middle", color = { 1, 1, 1, 0.54 } })
+  end
+  -- textField always draws with theme.c's colors; swap to the dark palette
+  -- (same trick as drawLibrary) so typed text is readable on this dark panel.
+  local savedTheme = theme.c
+  theme.c = theme.dark
+  local text, _, submitted = ui.textField("table:chatinput", x + 12, y + h - inputH - 12, w - 24 - 44, self.chatText,
+    { label = "Message", labelBackground = PANEL, maxLength = 500 })
+  theme.c = savedTheme
+  self.chatText = text
+  local send = ui.iconButton("send", x + w - 12 - 40, y + h - inputH - 12 + 4, { id = "table:chatsend", color = WHITE,
+    tooltip = "Send", disabled = text:match("^%s*$") ~= nil })
+  if (submitted or send) and not text:match("^%s*$") then
+    sc:send("chatSend", json.object({ "text", text, "roomId", sc.roomId }))
+    self.chatText = ""
+    ui.focusField("table:chatinput")
+  end
+end
+
 -- A grid of card tiles (search results / card library) inside a panel, laid
 -- out like the Deck Editor's card pool: cards a third larger (GRID_SCALE)
 -- with up to GRID_NAME_LINES lines of name.
@@ -1855,6 +1921,7 @@ function T:draw(x, y, w, h)
   if self.logOpen then ui.overlay(function() self:drawLog() end) end
   if self.rulebookOpen then ui.overlay(function() self.rulebook:draw(function() self:toggleRulebook() end) end) end
   if self.gameMenuOpen then ui.overlay(function() self:drawGameMenu() end) end
+  if self.sc and self.chatAnim > 0.001 then ui.overlay(function() self:drawChat() end) end
   ui.overlay(function() self:drawDragFeedback() end)
 end
 
