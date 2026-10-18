@@ -57,7 +57,7 @@ function T.new(opts)
   self.bordersHidden = false
   self.colorTintEnabled = true
   self.tabDown, self.spaceDown, self.altDown = false, false, false
-  self.gameMenuOpen, self.logOpen, self.libraryOpen = false, false, false
+  self.gameMenuOpen, self.logOpen, self.logAnim, self.libraryOpen = false, false, 0, false
   self.rulebookOpen = false
   self.chatOpen, self.chatAnim, self.chatText, self.seenChat = false, 0, "", 0
   self.rulebook = require("src.ui.screens.rulebook_viewer").new(self.game)
@@ -622,11 +622,14 @@ function T:keysAvailable()
 end
 
 local CHAT_ANIM_RATE = 14
+local LOG_ANIM_RATE = 14
 
 function T:update(dt)
   self.session:update()
   local chatTarget = self.chatOpen and 1 or 0
   self.chatAnim = self.chatAnim + (chatTarget - self.chatAnim) * (1 - math.exp(-CHAT_ANIM_RATE * dt))
+  local logTarget = self.logOpen and 1 or 0
+  self.logAnim = self.logAnim + (logTarget - self.logAnim) * (1 - math.exp(-LOG_ANIM_RATE * dt))
   local available = self:keysAvailable()
   local tab = available and love.keyboard.isDown("tab") and not (self.drag and self.drag.started)
   if self.tabDown and not tab then
@@ -1686,13 +1689,23 @@ function T:drawGameMenu()
   end
 end
 
+local LOG_W = 340
+
+-- Docked to the left edge, sliding in/out with self.logAnim (see
+-- toggleLog/update).
 function T:drawLog()
   local entries = self.state.log
   local hasSave = self.game.folderPath ~= nil
-  local x, y, w, h = panel.draw("log", 480, 560, "Game Log", function() self:toggleLog() end)
-  local listH = h - (hasSave and 73 or 0)
+  local _, sh = ui.screenSize()
+  local top = overlays.contentTop
+  local x, y, w, h = LOG_W * (self.logAnim - 1), top, LOG_W, sh - top
+  ui.cover(x, y, w, h)
+  ui.rect("fill", x, y, w, h, 0, PANEL)
+  ui.text("Game Log", x + 16, y + 16, { weight = "bold", color = WHITE })
+  local listTop = y + 48
+  local listH = h - 48 - (hasSave and 73 or 0)
   if #entries == 0 then
-    ui.text("No actions yet.", x, y, { w = w, h = listH, align = "center", valign = "middle", color = { 1, 1, 1, 0.54 } })
+    ui.text("No actions yet.", x, listTop, { w = w, h = listH, align = "center", valign = "middle", color = { 1, 1, 1, 0.54 } })
   else
     local f = theme.font(14)
     local textW = w - 32
@@ -1708,10 +1721,10 @@ function T:drawLog()
       ui.scrollTo("log:list", math.max(0, total - listH))
       self.logScrollToEnd = false
     end
-    local off = ui.beginScroll("log:list", x, y, w, listH)
-    local yy = y + 8 - off
+    local off = ui.beginScroll("log:list", x, listTop, w, listH)
+    local yy = listTop + 8 - off
     for i, e in ipairs(entries) do
-      if yy + heights[i] > y and yy < y + listH then
+      if yy + heights[i] > listTop and yy < listTop + listH then
         ui.text("[" .. models.formatElapsedTime(e.elapsedMs) .. "] ", x + 16, yy + 2, { font = f, color = { 1, 1, 1, 0.38 } })
         ui.text(e.message, x + 16 + prefixW, yy + 2, { font = f, w = textW - prefixW, color = WHITE })
       end
@@ -1720,9 +1733,9 @@ function T:drawLog()
     ui.endScroll("log:list", total)
   end
   if hasSave then
-    ui.divider(x, y + listH, w, { 1, 1, 1, 0.24 })
+    ui.divider(x, listTop + listH, w, { 1, 1, 1, 0.24 })
     local bw = ui.buttonWidth("Save Log", { icon = "save_alt" })
-    if ui.button("Save Log", x + 16, y + listH + 16, bw, 40, { variant = "outlined", icon = "save_alt", color = WHITE, id = "log:save" }) then
+    if ui.button("Save Log", x + 16, listTop + listH + 16, bw, 40, { variant = "outlined", icon = "save_alt", color = WHITE, id = "log:save" }) then
       self:saveLog()
     end
   end
@@ -1917,17 +1930,19 @@ function T:draw(x, y, w, h)
   if self.tableRect then self:processInput() end
   self.libraryHoverDef = nil
   local chatSqueeze = (self.sc and CHAT_W * self.chatAnim) or 0
-  V.draw(self, x, y, w - chatSqueeze, h)
+  local logSqueeze = LOG_W * self.logAnim
+  V.draw(self, x + logSqueeze, y, w - logSqueeze - chatSqueeze, h)
   self.prevItems = self.items
   -- Overlays, in Flutter's stacking order.
   if self:mySearchOpen() then ui.overlay(function() self:drawSearch() end) end
   if self.libraryOpen then ui.overlay(function() self:drawLibrary() end) end
-  ui.overlay(function() self:drawPreview() end)
-  if self.logOpen then ui.overlay(function() self:drawLog() end) end
+  if self.logAnim > 0.001 then ui.overlay(function() self:drawLog() end) end
   if self.rulebookOpen then ui.overlay(function() self.rulebook:draw(function() self:toggleRulebook() end) end) end
   if self.gameMenuOpen then ui.overlay(function() self:drawGameMenu() end) end
   if self.sc and self.chatAnim > 0.001 then ui.overlay(function() self:drawChat() end) end
   ui.overlay(function() self:drawDragFeedback() end)
+  -- Card preview (Space) must render above everything, including chat.
+  ui.overlay(function() self:drawPreview() end)
 end
 
 function T:mySearchOpen()
