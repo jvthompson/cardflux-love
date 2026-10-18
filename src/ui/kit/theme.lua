@@ -48,6 +48,7 @@ T.fixed = {
   blueAccent = hex("#448AFF"),
   red = hex("#F44336"),
   green = hex("#4CAF50"),
+  greenDark = hex("#43A047"),
   redAccent = hex("#FF5252"),
   cardBackBlue = hex("#1565C0"),
   missingBack = hex("#B71C1C"),

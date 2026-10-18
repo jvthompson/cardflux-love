@@ -236,9 +236,9 @@ function E:drawPool(x, y, w, h)
       ui.text(tostring(n), cx + PW / 2 - 16, ty - 6, { size = 11, weight = "bold", w = 22, h = 22, align = "center", valign = "middle", color = theme.fixed.white })
     end
     if unused then
-      love.graphics.setColor(theme.fixed.green)
+      love.graphics.setColor(theme.fixed.greenDark)
       love.graphics.circle("fill", cx - PW / 2 - 6 + 11, ty - 6 + 11, 11)
-      ui.text(tostring(unused), cx - PW / 2 - 6, ty - 6, { size = 11, weight = "bold", w = 22, h = 22, align = "center", valign = "middle", color = theme.fixed.white })
+      ui.text(tostring(unused), cx - PW / 2 - 6, ty - 6, { size = 11, weight = "bold", w = 22, h = 22, align = "center", valign = "middle", color = theme.fixed.black })
     end
     local label = limit and (def.cardTitle .. " (" .. self:copiesInDeck(def.id) .. "/" .. limit .. ")") or def.cardTitle
     ui.text(label, tx, ty + PH + 6, { size = 11, w = tileW, align = "center", maxLines = NAME_LINES })
