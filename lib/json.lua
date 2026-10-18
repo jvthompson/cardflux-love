@@ -192,6 +192,11 @@ end
 
 local decodeValue
 
+-- A deeply nested payload (e.g. from an untrusted peer or server client)
+-- would otherwise recurse until it blows the Lua call stack; reject it with
+-- a normal decode error well before that point instead.
+local MAX_DEPTH = 64
+
 local function decodeString(str, pos)
   -- pos is at the opening quote
   local buf = {}
@@ -228,10 +233,12 @@ local function decodeString(str, pos)
   end
 end
 
-decodeValue = function(str, pos)
+decodeValue = function(str, pos, depth)
+  depth = depth or 1
   pos = skipWs(str, pos)
   local c = str:sub(pos, pos)
   if c == "{" then
+    if depth > MAX_DEPTH then decodeError(str, pos, "too deeply nested") end
     local obj = setmetatable({}, newObjectMeta())
     pos = skipWs(str, pos + 1)
     if str:sub(pos, pos) == "}" then return obj, pos + 1 end
@@ -243,7 +250,7 @@ decodeValue = function(str, pos)
       pos = skipWs(str, pos)
       if str:sub(pos, pos) ~= ":" then decodeError(str, pos, "expected ':'") end
       local val
-      val, pos = decodeValue(str, pos + 1)
+      val, pos = decodeValue(str, pos + 1, depth + 1)
       if val ~= json.null then obj[key] = val end
       pos = skipWs(str, pos)
       local d = str:sub(pos, pos)
@@ -252,13 +259,14 @@ decodeValue = function(str, pos)
       pos = pos + 1
     end
   elseif c == "[" then
+    if depth > MAX_DEPTH then decodeError(str, pos, "too deeply nested") end
     local arr = setmetatable({}, ARRAY_MT)
     pos = skipWs(str, pos + 1)
     if str:sub(pos, pos) == "]" then return arr, pos + 1 end
     local n = 0
     while true do
       local val
-      val, pos = decodeValue(str, pos)
+      val, pos = decodeValue(str, pos, depth + 1)
       n = n + 1
       arr[n] = val
       pos = skipWs(str, pos)
