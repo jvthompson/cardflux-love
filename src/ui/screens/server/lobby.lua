@@ -528,14 +528,12 @@ function Lobby:drawHeader(x, y, w)
   local me = sc.self
   -- Right side: actions then the profile button.
   local rx = x + w
-  local pw = math.min(220, ui.textWidth(me.name, 14, "medium") + 36 + 24)
-  rx = rx - pw
-  local r = ui.region("lb:profile", rx, y, pw, 48, { cursor = "hand", tooltip = "Edit your profile" })
-  if r.hovered then ui.rect("fill", rx, y, pw, 48, 24, theme.alpha(c.onSurface, 0.06)) end
   local key = sc:avatarKey(me.avatarHash)
-  widgets.avatar(rx + 8, y + 8, 32, me.color, key and { key = key } or nil, false)
-  ui.text(me.name, rx + 48, y, { h = 48, valign = "middle", weight = "medium", w = pw - 56, ellipsis = true })
-  if r.clicked then self:openProfile() end
+  local clicked
+  rx, clicked = widgets.headerPill("lb:profile", rx, y, me.name, "Edit your profile", function(ix, iy)
+    widgets.avatar(ix, iy, 32, me.color, key and { key = key } or nil, false)
+  end)
+  if clicked then self:openProfile() end
   local function action(label, icon, id)
     local bw = ui.buttonWidth(label, { icon = icon })
     rx = rx - bw - 8
@@ -547,17 +545,11 @@ function Lobby:drawHeader(x, y, w)
   local gameLabel = gameInfo and gameInfo.name or "Choose Game"
   local back = sc.selectedGame and sc.selectedGame.cardBacks[1]
   local hasThumb = back and back.imagePath
-  local gpw = math.min(220, ui.textWidth(gameLabel, 14, "medium") + (hasThumb and 36 or 16) + 24)
-  rx = rx - gpw - 8
-  local gr = ui.region("lb:game", rx, y, gpw, 48, { cursor = "hand", tooltip = "Choose which game to play" })
-  if gr.hovered then ui.rect("fill", rx, y, gpw, 48, 24, theme.alpha(c.onSurface, 0.06)) end
-  local gtx = rx + 8
-  if hasThumb then
-    widgets.avatar(rx + 8, y + 8, 32, 0xFF000000, { path = back.imagePath }, false)
-    gtx = rx + 48
-  end
-  ui.text(gameLabel, gtx, y, { h = 48, valign = "middle", weight = "medium", w = rx + gpw - 8 - gtx, ellipsis = true })
-  if gr.clicked then self:chooseGame() end
+  rx = rx - 8
+  rx, clicked = widgets.headerPill("lb:game", rx, y, gameLabel, "Choose which game to play", hasThumb and function(ix, iy)
+    widgets.avatar(ix, iy, 32, 0xFF000000, { path = back.imagePath }, false)
+  end or nil)
+  if clicked then self:chooseGame() end
   -- The Standard 52-Card Deck can't be shopped for, edited, or collected --
   -- only Create Game can use it -- so those three buttons disappear while
   -- it's the selected game.

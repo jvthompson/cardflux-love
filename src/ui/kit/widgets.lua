@@ -32,6 +32,26 @@ function W.avatar(x, y, size, argb, source, showBorder)
   end
 end
 
+-- A rounded pill-shaped header button, right-anchored: an optional leading
+-- glyph (drawIcon(ix, iy), e.g. an avatar or card-back thumbnail) and a
+-- label, 48px tall. Used by the lobby header's profile/selected-game
+-- buttons. Returns the pill's left edge (so callers can stack more pills
+-- to its left) and whether it was clicked.
+function W.headerPill(id, rightEdge, y, label, tooltip, drawIcon)
+  local c = theme.c
+  local pw = math.min(220, ui.textWidth(label, 14, "medium") + (drawIcon and 36 or 16) + 24)
+  local rx = rightEdge - pw
+  local r = ui.region(id, rx, y, pw, 48, { cursor = "hand", tooltip = tooltip })
+  if r.hovered then ui.rect("fill", rx, y, pw, 48, 24, theme.alpha(c.onSurface, 0.06)) end
+  local tx = rx + 8
+  if drawIcon then
+    drawIcon(rx + 8, y + 8)
+    tx = rx + 48
+  end
+  ui.text(label, tx, y, { h = 48, valign = "middle", weight = "medium", w = rx + pw - 8 - tx, ellipsis = true })
+  return rx, r.clicked
+end
+
 -- Orange (warning) / blue (info) message banner; returns height.
 function W.banner(text, x, y, w, kind, onClick)
   local col = kind == "info" and theme.fixed.blue or theme.fixed.orange
