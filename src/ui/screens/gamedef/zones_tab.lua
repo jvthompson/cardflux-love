@@ -11,6 +11,7 @@ local models = require("src.core.models")
 local util = require("src.core.util")
 local uuid = require("src.core.uuid")
 local common = require("src.ui.screens.gamedef.common")
+local listDetail = require("src.ui.kit.list_detail")
 
 local keyOf = common.keyOf
 
@@ -279,26 +280,9 @@ function T:drawDetail(zone, x, y, w, h)
 end
 
 function T:draw(x, y, w, h)
-  local c = theme.c
   local game = self.editor.game
   self.pendingRemove = nil
-  if self.selected and not util.contains(game.zones, self.selected) then self.selected = nil end
-  if not self.selected then self.selected = game.zones[1] end
-
-  local lw = math.min(LIST_W, math.floor(w * 0.4))
-  ui.pushClip(x, y, lw, h)
-  self:drawList(x, y, lw, h)
-  ui.popClip()
-  ui.rect("fill", x + lw, y, 1, h, 0, c.outlineVariant)
-  local dx = x + lw + 1
-  ui.pushClip(dx, y, w - lw - 1, h)
-  if self.selected then
-    self:drawDetail(self.selected, dx, y, w - lw - 1, h)
-  else
-    ui.text("Add a zone to get started", dx, y, { w = w - lw - 1, h = h, align = "center", valign = "middle",
-      color = c.onSurfaceVariant })
-  end
-  ui.popClip()
+  listDetail.draw(self, x, y, w, h, game.zones, LIST_W, T.drawList, T.drawDetail, "Add a zone to get started")
   if self.pendingRemove then
     local i
     for j, z in ipairs(game.zones) do if z == self.pendingRemove then i = j end end
