@@ -35,10 +35,7 @@ end
 A.nextZIndex = nextZIndex
 
 local function findById(state, id)
-  for _, c in ipairs(state.cards) do
-    if c.instanceId == id then return c end
-  end
-  return nil
+  return models.TableState.cardById(state, id)
 end
 
 local function mapCards(state, fn)
