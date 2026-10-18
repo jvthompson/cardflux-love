@@ -108,8 +108,8 @@ function H:handleHello(conn, msg)
     local ok, bytes = pcall(love.data.decode, "string", "base64", p.avatar)
     if ok then self.avatars[id] = bytes end
   end
-  local now = love.timer.getTime()
-  self.clients[id] = { conn = conn, name = name, color = col, lastActivity = now, lastPing = now }
+  conn:startHeartbeat(love.timer.getTime())
+  self.clients[id] = { conn = conn, name = name, color = col }
   local found = false
   for _, x in ipairs(self.joinOrder) do if x == id then found = true end end
   if not found then self.joinOrder[#self.joinOrder + 1] = id end
@@ -163,7 +163,6 @@ function H:update()
     local c = self.clients[id]
     if c then
       local msgs, gotData = c.conn:poll()
-      if gotData then c.lastActivity = now end
       for _, m in ipairs(msgs) do
         if m.type == "ping" then
           c.conn:send("pong")
@@ -171,12 +170,10 @@ function H:update()
           self.onIncoming(id, m)
         end
       end
-      if c.conn.closed then
+      local hb = c.conn:heartbeat(now, gotData)
+      if hb == "timeout" then
         self:handleDisconnect(id)
-      elseif now - c.lastActivity > P.heartbeatTimeout then
-        self:handleDisconnect(id)
-      elseif now - c.lastPing >= P.heartbeatInterval then
-        c.lastPing = now
+      elseif hb == "ping" then
         c.conn:send("ping")
       end
     end

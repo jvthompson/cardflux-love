@@ -20,6 +20,8 @@ return function(t)
     end
     function c:close() self.closed = true end
     function c:closeAfterFlush() self.closed = true end
+    c.startHeartbeat = P.Connection.startHeartbeat
+    c.heartbeat = P.Connection.heartbeat
     return c
   end
 
@@ -149,14 +151,14 @@ return function(t)
       local h = host()
       h:handleHello(fakeConn(), { payload = { name = "Alice" } })
       local id = h.joinOrder[1]
-      h.clients[id].lastActivity = love.timer.getTime() - 100
+      h.clients[id].conn.lastActivity = love.timer.getTime() - 100
       local seen
       h.onIncoming = function(pid, m) seen = { pid = pid, type = m.type } end
       h.clients[id].conn.inbox = { { type = "cardMove", payload = { x = 1 } } }
       h:update()
       t.eq(seen.pid, id)
       t.eq(seen.type, "cardMove")
-      t.near(h.clients[id].lastActivity, love.timer.getTime(), 1)
+      t.near(h.clients[id].conn.lastActivity, love.timer.getTime(), 1)
     end)
 
     t.it("disconnects a client whose connection closed", function()
@@ -176,7 +178,7 @@ return function(t)
       local h = host()
       h:handleHello(fakeConn(), { payload = { name = "Alice" } })
       local id = h.joinOrder[1]
-      h.clients[id].lastActivity = love.timer.getTime() - (P.heartbeatTimeout + 1)
+      h.clients[id].conn.lastActivity = love.timer.getTime() - (P.heartbeatTimeout + 1)
       h:update()
       t.isNil(h.clients[id])
     end)
@@ -187,7 +189,7 @@ return function(t)
       local id = h.joinOrder[1]
       local conn = h.clients[id].conn
       conn.sent = {}
-      h.clients[id].lastPing = love.timer.getTime() - (P.heartbeatInterval + 1)
+      conn.lastPing = love.timer.getTime() - (P.heartbeatInterval + 1)
       h:update()
       t.eq(conn.sent[#conn.sent].type, "ping")
     end)

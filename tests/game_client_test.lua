@@ -15,6 +15,8 @@ return function(t)
       return msgs, #msgs > 0
     end
     function c:close() self.closed = true end
+    c.startHeartbeat = P.Connection.startHeartbeat
+    c.heartbeat = P.Connection.heartbeat
     return c
   end
 
@@ -23,8 +25,7 @@ return function(t)
     local c = C.new()
     local conn = fakeConn()
     c.conn = conn
-    local now = love.timer.getTime()
-    c.lastActivity, c.lastPing = now, now
+    conn:startHeartbeat(love.timer.getTime())
     return c, conn
   end
 
@@ -127,7 +128,7 @@ return function(t)
   t.describe("heartbeat", function()
     t.it("sends a ping once the heartbeat interval has elapsed", function()
       local c, conn = connected()
-      c.lastPing = love.timer.getTime() - (P.heartbeatInterval + 1)
+      conn.lastPing = love.timer.getTime() - (P.heartbeatInterval + 1)
       c:update()
       t.eq(conn.sent[#conn.sent].type, "ping")
     end)
@@ -136,7 +137,7 @@ return function(t)
       local c, conn = connected()
       local statuses = {}
       c.onStatus = function(s) statuses[#statuses + 1] = s end
-      c.lastActivity = love.timer.getTime() - (P.heartbeatTimeout + 1)
+      conn.lastActivity = love.timer.getTime() - (P.heartbeatTimeout + 1)
       c:update()
       t.eq(c.status, "disconnected")
       t.ok(conn.closed)

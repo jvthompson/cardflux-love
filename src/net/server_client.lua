@@ -110,8 +110,7 @@ function S.adopt(conn, host, port, info)
     avatarRequested = {}, avatarKeys = {},
     listeners = {},
   }, S)
-  local now = love.timer.getTime()
-  self.lastActivity, self.lastPing = now, now
+  self.conn:startHeartbeat(love.timer.getTime())
   P.register(self)
   return self
 end
@@ -322,7 +321,6 @@ function S:update()
   if self.status ~= "connected" then return end
   local now = love.timer.getTime()
   local msgs, gotData = self.conn:poll()
-  if gotData then self.lastActivity = now end
   for _, m in ipairs(msgs) do
     if m.type == "ping" then
       self:send("pong")
@@ -330,10 +328,10 @@ function S:update()
       self:handle(m)
     end
   end
-  if self.conn.closed or now - self.lastActivity > P.heartbeatTimeout then
+  local hb = self.conn:heartbeat(now, gotData)
+  if hb == "timeout" then
     self:handleDisconnect()
-  elseif now - self.lastPing >= P.heartbeatInterval then
-    self.lastPing = now
+  elseif hb == "ping" then
     self:send("ping")
   end
 end

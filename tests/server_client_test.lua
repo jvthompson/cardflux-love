@@ -14,6 +14,8 @@ return function(t)
       return msgs, #msgs > 0
     end
     function c:close() self.closed = true end
+    c.startHeartbeat = P.Connection.startHeartbeat
+    c.heartbeat = P.Connection.heartbeat
     return c
   end
 

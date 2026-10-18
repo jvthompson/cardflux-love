@@ -108,6 +108,24 @@ function Connection:close()
   pcall(self.sock.close, self.sock)
 end
 
+-- Call once a connection is live, before the first :heartbeat(now).
+function Connection:startHeartbeat(now)
+  self.lastActivity, self.lastPing = now, now
+end
+
+-- Call every tick after :poll(), passing whether that poll returned any
+-- bytes. Returns "timeout" once the peer's gone quiet too long (caller
+-- should disconnect) or "ping" once it's time to send one; nil otherwise.
+function Connection:heartbeat(now, gotData)
+  if gotData then self.lastActivity = now end
+  if self.closed or now - self.lastActivity > P.heartbeatTimeout then
+    return "timeout"
+  elseif now - self.lastPing >= P.heartbeatInterval then
+    self.lastPing = now
+    return "ping"
+  end
+end
+
 -- Sends what's buffered (best effort, briefly blocking) then closes; used
 -- for a final "disconnect" message before dropping a peer.
 function Connection:closeAfterFlush()

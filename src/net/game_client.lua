@@ -39,8 +39,7 @@ function C:update()
       return
     end
     self.conn = a
-    local now = love.timer.getTime()
-    self.lastActivity, self.lastPing = now, now
+    self.conn:startHeartbeat(love.timer.getTime())
     local h = self.hello
     local payload = json.object({ "name", h.name, "color", h.color })
     if h.avatarBytes then payload.avatar = love.data.encode("string", "base64", h.avatarBytes) end
@@ -51,7 +50,6 @@ function C:update()
   if not self.conn then return end
   local now = love.timer.getTime()
   local msgs, gotData = self.conn:poll()
-  if gotData then self.lastActivity = now end
   for _, m in ipairs(msgs) do
     if m.type == "ping" then
       self:send("pong")
@@ -76,10 +74,10 @@ function C:update()
       if self.onMessage then self.onMessage(m) end
     end
   end
-  if self.conn.closed or now - self.lastActivity > P.heartbeatTimeout then
+  local hb = self.conn:heartbeat(now, gotData)
+  if hb == "timeout" then
     self:handleDisconnect()
-  elseif now - self.lastPing >= P.heartbeatInterval then
-    self.lastPing = now
+  elseif hb == "ping" then
     self:send("ping")
   end
 end
