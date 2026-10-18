@@ -4,6 +4,7 @@
 -- available next to the executable or on the library path.
 local ffi = require("ffi")
 local fs = require("src.data.fs")
+local proc = require("src.platform.winproc")
 
 require("love.image")
 require("love.filesystem")
@@ -219,7 +220,8 @@ foreach ($p in [System.IO.File]::ReadAllLines($args[0], [System.Text.Encoding]::
 ]]
   local scriptFile = listFile:gsub("%.txt$", ".ps1")
   fs.writeFile(scriptFile, "\239\187\191" .. script)
-  os.execute('powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' .. scriptFile .. '" "' .. listFile .. '" >NUL 2>&1')
+  proc.run("powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File " .. proc.quoteArg(scriptFile) .. " " .. proc.quoteArg(listFile),
+    { wait = true, timeoutMs = 60000 })
   fs.remove(scriptFile)
   fs.remove(listFile)
 end
