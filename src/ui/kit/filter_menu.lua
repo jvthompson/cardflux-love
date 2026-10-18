@@ -23,6 +23,33 @@ end
 
 function M.triggerWidth(label) return ui.textWidth(label, 14, "medium") + 48 end
 
+-- Shared chrome for both popups below: anchors a pw x ph panel under the
+-- trigger at (x, y, triggerW, 40), clamped on-screen, themed to the trigger
+-- button's palette (overlays draw after the theme that opened them may have
+-- changed), and closed on an outside click. `draw(px, py, c)` renders the
+-- popup's own contents onto that panel.
+local function openPopup(st, x, y, triggerW, pw, ph, draw)
+  local pal = theme.c
+  local px, py = x, y + 44
+  ui.overlay(function()
+    local saved = theme.c
+    theme.c = pal
+    local c = theme.c
+    local sw, sh = ui.screenSize()
+    if px + pw > sw - 8 then px = math.max(8, sw - 8 - pw) end
+    if py + ph > sh - 8 then py = math.max(8, sh - 8 - ph) end
+    ui.cover(-1e9, -1e9, 2e9, 2e9)
+    ui.shadow(px, py, pw, ph, 4, 2)
+    ui.rect("fill", px, py, pw, ph, 4, c.surfaceContainer)
+    draw(px, py, c)
+    if (ui.mousePressed(1) or ui.mousePressed(2)) and not ui.hoverIgnoringLayer(px, py, pw, ph)
+      and not ui.hoverIgnoringLayer(x, y, triggerW, 40) then
+      st.open = false
+    end
+    theme.c = saved
+  end)
+end
+
 -- options = { {id=, name=}, ... }; selected / excluded are sets {id=true}
 -- and are mutated in place. excluded nil = no exclude column.
 -- Returns the button width.
@@ -36,7 +63,6 @@ function M.multiSelect(id, x, y, label, options, selected, excluded)
   if clicked then st.open = not st.open end
   if not st.open then return w end
 
-  local pal = theme.c
   local columns = math.max(1, math.ceil(#options / MAX_PER_COLUMN))
   local colW = 0
   for _, o in ipairs(options) do colW = math.max(colW, ui.textWidth(o.name, 14)) end
@@ -44,17 +70,7 @@ function M.multiSelect(id, x, y, label, options, selected, excluded)
   local rows = math.min(#options, MAX_PER_COLUMN)
   local pw = math.max(220, columns * colW + (columns - 1) * 16 + 16)
   local ph = 8 + ROW_H + 9 + rows * ROW_H + 8
-  local px, py = x, y + 44
-  ui.overlay(function()
-    local saved = theme.c
-    theme.c = pal
-    local c = theme.c
-    local sw, sh = ui.screenSize()
-    if px + pw > sw - 8 then px = math.max(8, sw - 8 - pw) end
-    if py + ph > sh - 8 then py = math.max(8, sh - 8 - ph) end
-    ui.cover(-1e9, -1e9, 2e9, 2e9)
-    ui.shadow(px, py, pw, ph, 4, 2)
-    ui.rect("fill", px, py, pw, ph, 4, c.surfaceContainer)
+  openPopup(st, x, y, w, pw, ph, function(px, py, c)
     local allSelected = #options > 0 and count == #options
     local yy = py + 8
     local r = ui.region(id .. ":all", px, yy, pw, ROW_H, { cursor = "hand" })
@@ -100,11 +116,6 @@ function M.multiSelect(id, x, y, label, options, selected, excluded)
         end
       end
     end
-    if (ui.mousePressed(1) or ui.mousePressed(2)) and not ui.hoverIgnoringLayer(px, py, pw, ph)
-      and not ui.hoverIgnoringLayer(x, y, w, 40) then
-      st.open = false
-    end
-    theme.c = saved
   end)
   return w
 end
@@ -123,20 +134,12 @@ function M.sortMenu(id, x, y, options, selectedId)
   local w, clicked = triggerButton(id, x, y, label, st.open)
   if clicked then st.open = not st.open end
   if st.open then
-    local pal = theme.c
     local all = { { id = nil, name = "Default order" } }
     for _, o in ipairs(options) do all[#all + 1] = o end
     local pw = 200
     for _, o in ipairs(all) do pw = math.max(pw, ui.textWidth(o.name, 14) + 64) end
     local ph = 16 + #all * ROW_H + 9
-    local px, py = x, y + 44
-    ui.overlay(function()
-      local saved = theme.c
-      theme.c = pal
-      local c = theme.c
-      ui.cover(-1e9, -1e9, 2e9, 2e9)
-      ui.shadow(px, py, pw, ph, 4, 2)
-      ui.rect("fill", px, py, pw, ph, 4, c.surfaceContainer)
+    openPopup(st, x, y, w, pw, ph, function(px, py, c)
       local yy = py + 8
       for i, o in ipairs(all) do
         local r = ui.region(id .. ":s" .. i, px, yy, pw, ROW_H, { cursor = "hand" })
@@ -153,11 +156,6 @@ function M.sortMenu(id, x, y, options, selectedId)
           yy = yy + 9
         end
       end
-      if (ui.mousePressed(1) or ui.mousePressed(2)) and not ui.hoverIgnoringLayer(px, py, pw, ph)
-        and not ui.hoverIgnoringLayer(x, y, w, 40) then
-        st.open = false
-      end
-      theme.c = saved
     end)
   end
   return selectedId, w
