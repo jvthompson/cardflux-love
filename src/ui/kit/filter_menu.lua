@@ -75,9 +75,9 @@ function M.multiSelect(id, x, y, label, options, selected, excluded)
     local yy = py + 8
     local r = ui.region(id .. ":all", px, yy, pw, ROW_H, { cursor = "hand" })
     if r.hovered then ui.rect("fill", px, yy, pw, ROW_H, 0, theme.alpha(c.onSurface, 0.08)) end
-    ui.checkbox(id .. ":allcb", px + 16, yy + 9, allSelected)
+    local allCb = ui.checkbox(id .. ":allcb", px + 16, yy + 9, allSelected)
     ui.text(allSelected and "Deselect All" or "Select All", px + 48, yy, { h = ROW_H, valign = "middle", color = c.onSurface })
-    if r.clicked then
+    if r.clicked or allCb ~= allSelected then
       for _, o in ipairs(options) do selected[o.id] = (not allSelected) or nil end
     end
     yy = yy + ROW_H + 4
@@ -90,9 +90,10 @@ function M.multiSelect(id, x, y, label, options, selected, excluded)
       local rowW = colW - (excluded and 40 or 0)
       local rr = ui.region(id .. ":o" .. i, ox, oy, rowW, ROW_H, { cursor = "hand" })
       if rr.hovered then ui.rect("fill", ox, oy, rowW, ROW_H, 0, theme.alpha(c.onSurface, 0.08)) end
-      ui.checkbox(id .. ":cb" .. i, ox + 8, oy + 9, selected[o.id] == true)
+      local wasSelected = selected[o.id] == true
+      local cb = ui.checkbox(id .. ":cb" .. i, ox + 8, oy + 9, wasSelected)
       ui.text(o.name, ox + 40, oy, { h = ROW_H, valign = "middle", color = c.onSurface })
-      if rr.clicked then
+      if rr.clicked or cb ~= wasSelected then
         if selected[o.id] then
           selected[o.id] = nil
         else
