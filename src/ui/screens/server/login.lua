@@ -102,7 +102,11 @@ function L:submitCreate()
   if self.avatarPath then
     local bytes = fs.readFile(self.avatarPath)
     local png = bytes and profile.resizeAvatarBytes(bytes)
-    if png then payload.avatar = love.data.encode("string", "base64", png) end
+    if not png then
+      self.error = "Could not use that image."
+      return
+    end
+    payload.avatar = love.data.encode("string", "base64", png)
   end
   self.error, self.busy = nil, "Creating your account..."
   self.sc:request("register", payload, function(r)
