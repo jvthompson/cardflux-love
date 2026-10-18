@@ -820,18 +820,31 @@ function TableState.playerById(s, id)
   return nil
 end
 
+-- table_actions.lua treats TableState as copy-on-write: any actual change to
+-- .cards/.widgets builds a fresh array (util.copyWith shallow-copies every
+-- field, cache included, onto the new state). So unlike GameDefinition's
+-- size check above, staleness here is keyed on the array's identity, not
+-- its length -- a move/flip keeps the same card count, and a stale index
+-- would otherwise look "still valid" by size and hand back the pre-mutation
+-- card.
 function TableState.cardById(s, id)
-  for _, c in ipairs(s.cards) do
-    if c.instanceId == id then return c end
+  if s._cardIndexFor ~= s.cards then
+    local idx = {}
+    for _, c in ipairs(s.cards) do idx[c.instanceId] = c end
+    s._cardIndex = idx
+    s._cardIndexFor = s.cards
   end
-  return nil
+  return s._cardIndex[id]
 end
 
 function TableState.widgetById(s, id)
-  for _, w in ipairs(s.widgets) do
-    if w.instanceId == id then return w end
+  if s._widgetIndexFor ~= s.widgets then
+    local idx = {}
+    for _, w in ipairs(s.widgets) do idx[w.instanceId] = w end
+    s._widgetIndex = idx
+    s._widgetIndexFor = s.widgets
   end
-  return nil
+  return s._widgetIndex[id]
 end
 
 ---------------------------------------------------------------------------
