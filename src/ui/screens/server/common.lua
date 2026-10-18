@@ -7,10 +7,14 @@ local widgets = require("src.ui.kit.widgets")
 local json = require("lib.json")
 local assetSync = require("src.net.asset_sync")
 local deckStore = require("src.data.deck_store")
+local SC = require("src.net.server_client")
 
 local M = {}
 
 local function app() return require("src.app") end
+-- Deferred: decks.lua requires this module, so requiring it back at the
+-- top level would be circular.
+local function decksScreen() return require("src.ui.screens.server.decks") end
 
 local function formatBytes(n)
   if n >= 1024 * 1024 then return string.format("%.1f MB", n / (1024 * 1024)) end
@@ -52,6 +56,61 @@ function M.withGame(sc, gameId, onReady)
     end
   end)
   local _ = cached
+end
+
+---------------------------------------------------------------------------
+-- Game selection
+---------------------------------------------------------------------------
+
+-- A one-off "choose a game" screen: the tile grid Create Game, Trade and
+-- (when nothing's picked yet) the lobby's Choose Game button all show.
+-- onPick(gameInfo); the caller is responsible for popping this screen.
+-- opts.excludeStandardDeck leaves out the Standard 52-Card Deck.
+local GameChoice = {}
+GameChoice.__index = GameChoice
+
+function M.pickGame(sc, title, subtitle, onPick, opts)
+  return setmetatable({ title = title, sc = sc, subtitle = subtitle, onPick = onPick, opts = opts }, GameChoice)
+end
+
+function GameChoice:draw(x, y, w, h)
+  decksScreen().drawGameList(self.sc, "gc:games", x, y, w, h, self.subtitle, self.onPick, self.opts)
+end
+
+-- Remembers `gameId` as the game selected for Shop/Deck Editor/Collection/
+-- Create Game on this server: for this session (sc.selectedGameId, and
+-- sc.selectedGame once it's loaded) and across reconnects (settings, keyed
+-- by server). Loading is memoized by assetSync, so this doesn't repeat the
+-- download/load when Shop/Deck Editor/Collection ask for the same game.
+function M.selectGame(sc, gameId)
+  sc.selectedGameId = gameId
+  SC.saveLastGameId(sc.key, gameId)
+  M.withGame(sc, gameId, function(game) sc.selectedGame = game end)
+end
+
+-- onInfo(gameInfo) with the game currently selected on this server, asking
+-- (and remembering the answer) first if nothing's selected yet. opts is
+-- forwarded to the fallback picker -- pass { excludeStandardDeck = true }
+-- from callers (Shop, Deck Editor, Collection) that can't do anything with
+-- the Standard 52-Card Deck, so a fresh "nothing selected yet" prompt
+-- can't land them on it either (the lobby header hides those buttons once
+-- it *is* the selection, but that's reached a different way: picked
+-- directly through the header's own Choose Game button).
+function M.withSelectedGame(sc, title, onInfo, opts)
+  local info = sc.selectedGameId and sc:gameById(sc.selectedGameId)
+  if info then
+    onInfo(info)
+    return
+  end
+  if #sc.games == 0 then
+    overlays.alert("No Games", "This server doesn't have any games yet. An admin can add game folders to the server's games directory.")
+    return
+  end
+  app().push(M.pickGame(sc, title, "Pick the game you want to play, shop, and manage decks for.", function(g)
+    app().pop()
+    M.selectGame(sc, g.id)
+    onInfo(g)
+  end, opts))
 end
 
 -- Pops every screen above the server lobby (then toasts `message`).

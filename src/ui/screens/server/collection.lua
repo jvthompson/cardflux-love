@@ -8,7 +8,6 @@ local json = require("lib.json")
 local util = require("src.core.util")
 local CR = require("src.ui.table.card_render")
 local common = require("src.ui.screens.server.common")
-local decksScreen = require("src.ui.screens.server.decks")
 
 local CW, CH = CR.cardWidth, CR.cardHeight
 -- The collection grid matches the Deck Editor's card pool: cards a third
@@ -20,17 +19,13 @@ local NAME_LINES = 3
 local C = {}
 C.__index = C
 
-function C.new(sc)
-  return setmetatable({ title = "Collection", sc = sc }, C)
+function C.new(sc, info)
+  local self = setmetatable({ title = "Collection", sc = sc }, C)
+  if info then self:open(info) end
+  return self
 end
 
-function C:onBack()
-  if self.game then
-    self.game, self.owned, self.title = nil, nil, "Collection"
-  else
-    require("src.app").pop()
-  end
-end
+function C:onBack() require("src.app").pop() end
 
 function C:open(info)
   local sc = self.sc
@@ -114,8 +109,7 @@ end
 
 function C:draw(x, y, w, h)
   if not self.game then
-    decksScreen.drawGameList(self.sc, "co:games", x, y, w, h, "See which cards you own for each game.",
-      function(g) self:open(g) end, { excludeStandardDeck = true })
+    ui.spinner(x + w / 2, y + h / 2, 18)
     return
   end
   local pad = 24

@@ -12,7 +12,6 @@ local CR = require("src.ui.table.card_render")
 local fs = require("src.data.fs")
 local resolver = require("src.data.image_resolver")
 local common = require("src.ui.screens.server.common")
-local decksScreen = require("src.ui.screens.server.decks")
 local GamePicker = require("src.ui.screens.game_picker")
 
 local CW, CH = CR.cardWidth, CR.cardHeight
@@ -25,17 +24,13 @@ local NAME_LINES = 3
 local S = {}
 S.__index = S
 
-function S.new(sc)
-  return setmetatable({ title = "Card Shop", sc = sc }, S)
+function S.new(sc, info)
+  local self = setmetatable({ title = "Card Shop", sc = sc }, S)
+  if info then self:open(info) end
+  return self
 end
 
-function S:onBack()
-  if self.game then
-    self.game, self.info, self.owned, self.title = nil, nil, nil, "Card Shop"
-  else
-    require("src.app").pop()
-  end
-end
+function S:onBack() require("src.app").pop() end
 
 function S:open(info)
   local sc = self.sc
@@ -273,8 +268,7 @@ end
 
 function S:draw(x, y, w, h)
   if not self.game then
-    decksScreen.drawGameList(self.sc, "shop:games", x, y, w, h, "Open packs and buy starter decks for a game.",
-      function(g) self:open(g) end, { excludeStandardDeck = true })
+    ui.spinner(x + w / 2, y + h / 2, 18)
     return
   end
   local pad = 24

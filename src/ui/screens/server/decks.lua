@@ -45,12 +45,9 @@ function D.drawGameList(sc, id, x, y, w, h, subtitle, onPick, opts)
   GamePicker.drawGrid(id, tiles, x, yy, w, y + h - yy, pad, function(t) onPick(t.info) end)
 end
 
-function D.new(sc)
-  return setmetatable({ title = "Deck Editor", sc = sc }, D)
-end
-
-function D:open(info)
-  local sc = self.sc
+-- Opens the server's Deck Editor for `info` (one of sc.games), pushing the
+-- real Editor screen once the game is loaded.
+function D.open(sc, info)
   common.withGame(sc, info.id, function(game)
     local store = deckStore.serverStore(sc)
     local Editor = require("src.ui.screens.deck_editor").Editor
@@ -66,13 +63,6 @@ function D:open(info)
       app().push(Editor.new(game, { store = store, ownedQty = r.cards or {} }))
     end)
   end)
-end
-
-function D:draw(x, y, w, h)
-  local sub = self.sc:isCollectionMode()
-    and "Decks are saved on the server. In collection mode you can only use cards you own."
-    or "Decks are saved on the server, so they're available wherever you sign in."
-  D.drawGameList(self.sc, "sd:games", x, y, w, h, sub, function(g) self:open(g) end, { excludeStandardDeck = true })
 end
 
 return D

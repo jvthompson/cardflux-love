@@ -76,6 +76,26 @@ function S.clearSession(key)
 end
 
 ---------------------------------------------------------------------------
+-- The game last picked for Shop/Deck Editor/Collection/Create Game, per
+-- server ("host:port" -> gameId), so the lobby's Choose Game button starts
+-- preselected again after a reconnect.
+---------------------------------------------------------------------------
+
+local LAST_GAME_KEY = "last_selected_game"
+
+function S.lastGameId(key)
+  local all = settings.get(LAST_GAME_KEY)
+  return type(all) == "table" and all[key] or nil
+end
+
+function S.saveLastGameId(key, gameId)
+  local all = settings.get(LAST_GAME_KEY)
+  if type(all) ~= "table" then all = json.object() end
+  all[key] = gameId
+  settings.set(LAST_GAME_KEY, all)
+end
+
+---------------------------------------------------------------------------
 -- Construction
 ---------------------------------------------------------------------------
 

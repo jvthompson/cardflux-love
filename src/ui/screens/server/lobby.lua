@@ -12,6 +12,7 @@ local profile = require("src.data.profile")
 local fileDialog = require("src.platform.file_dialog")
 local SC = require("src.net.server_client")
 local common = require("src.ui.screens.server.common")
+local loader = require("src.data.game_loader")
 
 local Lobby = {}
 Lobby.__index = Lobby
@@ -28,6 +29,8 @@ local CLOSE_REASONS = {
 function Lobby.new(sc)
   local self = setmetatable({ title = sc.info.name or "Cardflux Server", sc = sc, isServerLobby = true,
     chatText = "", seenChat = 0 }, Lobby)
+  self:loadSelectedGame()
+  sc:on("lobbyState", function() self:loadSelectedGame() end)
   sc:on("disconnected", function() app().popToHome(sc:disconnectMessage()) end)
   sc:on("roomClosed", function(_, reason, mine)
     if mine then
@@ -69,30 +72,32 @@ end
 -- Dialogs
 ---------------------------------------------------------------------------
 
--- Create Game, step 1: a screen of game tiles (as the local pickers show).
-local GameChoice = {}
-GameChoice.__index = GameChoice
-
-function GameChoice.new(sc, onPick)
-  return setmetatable({ title = "Create Game", sc = sc, onPick = onPick }, GameChoice)
+-- The game currently selected for Shop/Deck Editor/Collection/Create Game
+-- on this server, restored from what was last picked here (if any and
+-- still valid) once the server's game list arrives.
+function Lobby:loadSelectedGame()
+  local sc = self.sc
+  if sc.selectedGameId or #sc.games == 0 then return end
+  local remembered = SC.lastGameId(sc.key)
+  if remembered and sc:gameById(remembered) then common.selectGame(sc, remembered) end
 end
 
-function GameChoice:draw(x, y, w, h)
-  require("src.ui.screens.server.decks").drawGameList(self.sc, "cg:games", x, y, w, h,
-    "Pick the game to play.", self.onPick)
-end
-
-function Lobby:openCreateGame()
+-- The header's Choose Game button: always lets the player pick (or
+-- switch) the selected game.
+function Lobby:chooseGame()
   local sc = self.sc
   if #sc.games == 0 then
     overlays.alert("No Games", "This server doesn't have any games yet. An admin can add game folders to the server's games directory.")
     return
   end
-  app().push(GameChoice.new(sc, function(g)
-    -- Back to the lobby first: leaving the room later pops one screen.
+  app().push(common.pickGame(sc, "Choose a Game", "Pick the game you want to play, shop, and manage decks for.", function(g)
     app().pop()
-    self:openCreateGameDialog(g)
+    common.selectGame(sc, g.id)
   end))
+end
+
+function Lobby:openCreateGame()
+  common.withSelectedGame(self.sc, "Create Game", function(info) self:openCreateGameDialog(info) end)
 end
 
 -- Create Game, step 2: name and player count for the chosen game.
@@ -154,7 +159,7 @@ function Lobby:askToTrade(u)
     overlays.alert("No Games", "This server doesn't have any games yet.")
     return
   end
-  app().push(GameChoice.new(sc, function(g)
+  app().push(common.pickGame(sc, "Ask to Trade", "Pick the game to trade in.", function(g)
     app().pop()
     self:sendTradeRequest(u, g)
   end))
@@ -534,17 +539,44 @@ function Lobby:drawHeader(x, y, w)
     rx = rx - bw - 8
     return ui.button(label, rx, y + 4, bw, 40, { variant = "text", icon = icon, id = id })
   end
+  -- The selected game: name (and, once loaded, its default card back) --
+  -- same treatment as the profile button, immediately to its left.
+  local gameInfo = sc.selectedGameId and sc:gameById(sc.selectedGameId)
+  local gameLabel = gameInfo and gameInfo.name or "Choose Game"
+  local back = sc.selectedGame and sc.selectedGame.cardBacks[1]
+  local hasThumb = back and back.imagePath
+  local gpw = math.min(220, ui.textWidth(gameLabel, 14, "medium") + (hasThumb and 36 or 16) + 24)
+  rx = rx - gpw - 8
+  local gr = ui.region("lb:game", rx, y, gpw, 48, { cursor = "hand", tooltip = "Choose which game to play" })
+  if gr.hovered then ui.rect("fill", rx, y, gpw, 48, 24, theme.alpha(c.onSurface, 0.06)) end
+  local gtx = rx + 8
+  if hasThumb then
+    widgets.avatar(rx + 8, y + 8, 32, 0xFF000000, { path = back.imagePath }, false)
+    gtx = rx + 48
+  end
+  ui.text(gameLabel, gtx, y, { h = 48, valign = "middle", weight = "medium", w = rx + gpw - 8 - gtx, ellipsis = true })
+  if gr.clicked then self:chooseGame() end
+  -- The Standard 52-Card Deck can't be shopped for, edited, or collected --
+  -- only Create Game can use it -- so those three buttons disappear while
+  -- it's the selected game.
+  local isStandardDeck = sc.selectedGameId == loader.standardDeckId
   if sc:isAdmin() and action("Admin", "shield", "lb:admin") then
     app().push(require("src.ui.screens.server.admin").new(sc))
   end
-  if sc:isCollectionMode() and action("Collection", "layers", "lb:coll") then
-    app().push(require("src.ui.screens.server.collection").new(sc))
+  if not isStandardDeck and sc:isCollectionMode() and action("Collection", "layers", "lb:coll") then
+    common.withSelectedGame(sc, "Collection", function(info)
+      app().push(require("src.ui.screens.server.collection").new(sc, info))
+    end, { excludeStandardDeck = true })
   end
-  if action("Deck Editor", "build", "lb:decks") then
-    app().push(require("src.ui.screens.server.decks").new(sc))
+  if not isStandardDeck and action("Deck Editor", "build", "lb:decks") then
+    common.withSelectedGame(sc, "Deck Editor", function(info)
+      require("src.ui.screens.server.decks").open(sc, info)
+    end, { excludeStandardDeck = true })
   end
-  if sc:isCollectionMode() and action("Card Shop", "card_giftcard", "lb:shop") then
-    app().push(require("src.ui.screens.server.shop").new(sc))
+  if not isStandardDeck and sc:isCollectionMode() and action("Card Shop", "card_giftcard", "lb:shop") then
+    common.withSelectedGame(sc, "Card Shop", function(info)
+      app().push(require("src.ui.screens.server.shop").new(sc, info))
+    end, { excludeStandardDeck = true })
   end
   if sc:isCollectionMode() then
     local t = tostring(me.tokens or 0) .. " tokens"
