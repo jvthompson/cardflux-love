@@ -10,13 +10,10 @@ local json = require("lib.json")
 local models = require("src.core.models")
 local util = require("src.core.util")
 local CR = require("src.ui.table.card_render")
+local poolGrid = require("src.ui.table.card_pool_grid")
 local common = require("src.ui.screens.server.common")
 
-local CW, CH = CR.cardWidth, CR.cardHeight
--- Same pool tile size as the Collection screen / Deck Editor.
-local POOL_SCALE = 4 / 3
-local PW, PH = CW * POOL_SCALE, CH * POOL_SCALE
-local NAME_LINES = 3
+local PW, PH, POOL_SCALE, NAME_LINES = poolGrid.PW, poolGrid.PH, poolGrid.SCALE, poolGrid.NAME_LINES
 -- Smaller thumbnails inside the want-boxes.
 local WANT_SCALE = 0.6
 local DRAG_THRESHOLD = 4
@@ -173,34 +170,24 @@ function T:drawGrid(scope, x, y, w, h, filters, owned, draggable)
     ui.text("No cards to show here.", x, yy + 24, { w = w, align = "center", color = c.onSurfaceVariant })
   end
   local gh = y + h - yy
-  local nameH = NAME_LINES * theme.font(11):getHeight()
-  local maxExtent, rowH, gap = PW + 24, PH + 6 + nameH + 4, 12
-  local cols = math.max(1, math.ceil((w + gap) / (maxExtent + gap)))
-  local tileW = (w - (cols - 1) * gap) / cols
-  local off = ui.beginScroll("tr:grid:" .. scope, x, yy, w, gh)
-  for i, def in ipairs(visible) do
-    local col, row = (i - 1) % cols, math.floor((i - 1) / cols)
-    local tx, ty = x + col * (tileW + gap), yy + 12 + row * (rowH + gap) - off
-    if ty + rowH > yy and ty < yy + gh then
-      local n = owned[def.id] or 0
-      local cx = tx + tileW / 2
-      local r = ui.region("tr:card:" .. scope .. ":" .. def.id, cx - PW / 2, ty, PW, PH + 6 + nameH,
-        { cursor = draggable and "hand" or nil })
-      CR.draw({ def = def, faceUp = true, cx = cx, cy = ty + PH / 2, scale = POOL_SCALE,
-        angle = CR.orientationTurns(def.orientation) * 2 * math.pi, cardBacks = game.cardBacks })
-      love.graphics.setColor(0, 0, 0, 0.87)
-      love.graphics.circle("fill", cx + PW / 2 + 6 - 11, ty - 6 + 11, 11)
-      ui.text(def.isFreeCard and "∞" or ("×" .. n), cx + PW / 2 - 16, ty - 6, { size = 11, weight = "bold", w = 22, h = 22,
-        align = "center", valign = "middle", color = theme.fixed.white })
-      ui.text(def.cardTitle, tx, ty + PH + 6, { size = 11, w = tileW, align = "center", maxLines = NAME_LINES })
-      if r.hovered then self.hovered = def end
-      if draggable and r.pressed and not self.pressing and not self.dragging then
-        local mx, my = ui.mouse()
-        self.pressing = { cardId = def.id, pressX = mx, pressY = my, cx = cx, cy = ty + PH / 2 }
-      end
+  local nameH = poolGrid.nameH()
+  poolGrid.draw("tr:grid:" .. scope, visible, x, yy, w, gh, 0, function(def, i, tx, ty, tileW, cx)
+    local n = owned[def.id] or 0
+    local r = ui.region("tr:card:" .. scope .. ":" .. def.id, cx - PW / 2, ty, PW, PH + 6 + nameH,
+      { cursor = draggable and "hand" or nil })
+    CR.draw({ def = def, faceUp = true, cx = cx, cy = ty + PH / 2, scale = POOL_SCALE,
+      angle = CR.orientationTurns(def.orientation) * 2 * math.pi, cardBacks = game.cardBacks })
+    love.graphics.setColor(0, 0, 0, 0.87)
+    love.graphics.circle("fill", cx + PW / 2 + 6 - 11, ty - 6 + 11, 11)
+    ui.text(def.isFreeCard and "∞" or ("×" .. n), cx + PW / 2 - 16, ty - 6, { size = 11, weight = "bold", w = 22, h = 22,
+      align = "center", valign = "middle", color = theme.fixed.white })
+    ui.text(def.cardTitle, tx, ty + PH + 6, { size = 11, w = tileW, align = "center", maxLines = NAME_LINES })
+    if r.hovered then self.hovered = def end
+    if draggable and r.pressed and not self.pressing and not self.dragging then
+      local mx, my = ui.mouse()
+      self.pressing = { cardId = def.id, pressX = mx, pressY = my, cx = cx, cy = ty + PH / 2 }
     end
-  end
-  ui.endScroll("tr:grid:" .. scope, 24 + math.ceil(#visible / cols) * (rowH + gap) - gap)
+  end)
 end
 
 function T:drawPreview()

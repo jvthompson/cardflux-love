@@ -10,14 +10,11 @@ local filterBar = require("src.ui.kit.card_filter_bar")
 local models = require("src.core.models")
 local util = require("src.core.util")
 local CR = require("src.ui.table.card_render")
+local poolGrid = require("src.ui.table.card_pool_grid")
 local GamePicker = require("src.ui.screens.game_picker")
 local deckLibraryDialog = require("src.ui.screens.deck_library_dialog")
 
-local CW, CH = CR.cardWidth, CR.cardHeight
--- The card pool draws cards a third larger, with up to three lines of name.
-local POOL_SCALE = 4 / 3
-local PW, PH = CW * POOL_SCALE, CH * POOL_SCALE
-local NAME_LINES = 3
+local PW, PH, POOL_SCALE, NAME_LINES = poolGrid.PW, poolGrid.PH, poolGrid.SCALE, poolGrid.NAME_LINES
 
 local function app() return require("src.app") end
 
@@ -222,44 +219,33 @@ function E:drawPool(x, y, w, h)
     ui.text("Your collection has no cards matching these filters. Open packs from the server lobby's Collection screen.",
       gx + 24, gy, { w = gw - 48, h = math.min(gh, 200), align = "center", valign = "middle", color = theme.c.onSurfaceVariant })
   end
-  local nameH = NAME_LINES * theme.font(11):getHeight()
-  local maxExtent, rowH, gap = PW + 24, PH + 6 + nameH + 4, 12
-  local inner = gw - 24
-  local cols = math.max(1, math.ceil((inner + gap) / (maxExtent + gap)))
-  local tileW = (inner - (cols - 1) * gap) / cols
+  local nameH = poolGrid.nameH()
   local active = self:active()
-  local off = ui.beginScroll("de:pool", gx, gy, gw, gh)
-  for i, def in ipairs(visible) do
-    local col, row = (i - 1) % cols, math.floor((i - 1) / cols)
-    local tx, ty = gx + 12 + col * (tileW + gap), gy + 12 + row * (rowH + gap) - off
-    if ty + rowH > gy and ty < gy + gh then
-      local cx = tx + tileW / 2
-      local r = ui.region("de:card:" .. def.id, cx - PW / 2, ty, PW, PH + 6 + nameH, { cursor = "hand" })
-      -- Collection mode: a green badge (top left) counts the owned copies not
-      -- yet in the deck, and the card dims once they're all used.
-      local limit = self:ownedLimit(def.id)
-      local unused = limit and math.max(0, limit - self:copiesInDeck(def.id))
-      CR.draw({ def = def, faceUp = true, cx = cx, cy = ty + PH / 2, scale = POOL_SCALE, alpha = unused == 0 and 0.35 or 1,
-        angle = CR.orientationTurns(def.orientation) * 2 * math.pi, cardBacks = game.cardBacks })
-      local n = active.qty[def.id] or (self.ownedQty and 0)
-      if n then
-        love.graphics.setColor(0, 0, 0, 0.87)
-        love.graphics.circle("fill", cx + PW / 2 + 6 - 11, ty - 6 + 11, 11)
-        ui.text(tostring(n), cx + PW / 2 - 16, ty - 6, { size = 11, weight = "bold", w = 22, h = 22, align = "center", valign = "middle", color = theme.fixed.white })
-      end
-      if unused then
-        love.graphics.setColor(theme.fixed.green)
-        love.graphics.circle("fill", cx - PW / 2 - 6 + 11, ty - 6 + 11, 11)
-        ui.text(tostring(unused), cx - PW / 2 - 6, ty - 6, { size = 11, weight = "bold", w = 22, h = 22, align = "center", valign = "middle", color = theme.fixed.white })
-      end
-      local label = limit and (def.cardTitle .. " (" .. self:copiesInDeck(def.id) .. "/" .. limit .. ")") or def.cardTitle
-      ui.text(label, tx, ty + PH + 6, { size = 11, w = tileW, align = "center", maxLines = NAME_LINES })
-      if r.hovered then self.hoveredId = def.id end
-      if r.clicked then self:addCopy(def.id) end
-      if r.rightClicked then self:removeCopy(def.id) end
+  poolGrid.draw("de:pool", visible, gx, gy, gw, gh, 12, function(def, i, tx, ty, tileW, cx)
+    local r = ui.region("de:card:" .. def.id, cx - PW / 2, ty, PW, PH + 6 + nameH, { cursor = "hand" })
+    -- Collection mode: a green badge (top left) counts the owned copies not
+    -- yet in the deck, and the card dims once they're all used.
+    local limit = self:ownedLimit(def.id)
+    local unused = limit and math.max(0, limit - self:copiesInDeck(def.id))
+    CR.draw({ def = def, faceUp = true, cx = cx, cy = ty + PH / 2, scale = POOL_SCALE, alpha = unused == 0 and 0.35 or 1,
+      angle = CR.orientationTurns(def.orientation) * 2 * math.pi, cardBacks = game.cardBacks })
+    local n = active.qty[def.id] or (self.ownedQty and 0)
+    if n then
+      love.graphics.setColor(0, 0, 0, 0.87)
+      love.graphics.circle("fill", cx + PW / 2 + 6 - 11, ty - 6 + 11, 11)
+      ui.text(tostring(n), cx + PW / 2 - 16, ty - 6, { size = 11, weight = "bold", w = 22, h = 22, align = "center", valign = "middle", color = theme.fixed.white })
     end
-  end
-  ui.endScroll("de:pool", 24 + math.ceil(#visible / cols) * (rowH + gap) - gap)
+    if unused then
+      love.graphics.setColor(theme.fixed.green)
+      love.graphics.circle("fill", cx - PW / 2 - 6 + 11, ty - 6 + 11, 11)
+      ui.text(tostring(unused), cx - PW / 2 - 6, ty - 6, { size = 11, weight = "bold", w = 22, h = 22, align = "center", valign = "middle", color = theme.fixed.white })
+    end
+    local label = limit and (def.cardTitle .. " (" .. self:copiesInDeck(def.id) .. "/" .. limit .. ")") or def.cardTitle
+    ui.text(label, tx, ty + PH + 6, { size = 11, w = tileW, align = "center", maxLines = NAME_LINES })
+    if r.hovered then self.hoveredId = def.id end
+    if r.clicked then self:addCopy(def.id) end
+    if r.rightClicked then self:removeCopy(def.id) end
+  end)
 end
 
 function E:drawDeckPanel(x, y, w, h)
