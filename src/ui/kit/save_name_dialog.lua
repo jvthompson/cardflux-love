@@ -100,7 +100,6 @@ function D.open(spec)
     },
   })
   -- The confirm step relabels the primary action.
-  dialog.actions[2].label = "Save"
   local base = dialog.content
   dialog.content = function(d, x, y, w)
     d.actions[2].label = st.confirming and "Overwrite" or "Save"

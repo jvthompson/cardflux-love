@@ -23,7 +23,6 @@ end
 -- Makes sure a server game is downloaded and current, showing a progress
 -- dialog while files download. onReady(game) runs once it is loaded.
 function M.withGame(sc, gameId, onReady)
-  local cached = assetSync.cachedGame(sc, gameId)
   local info = sc:gameById(gameId)
   local st = { done = 0, total = 0, bytes = 0, reused = 0, checking = true }
   local dialog
@@ -54,7 +53,6 @@ function M.withGame(sc, gameId, onReady)
       })
     end
   end)
-  local _ = cached
 end
 
 ---------------------------------------------------------------------------

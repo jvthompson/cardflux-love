@@ -4,7 +4,6 @@
 local ui = require("src.ui.kit.ui")
 local theme = require("src.ui.kit.theme")
 local overlays = require("src.ui.kit.overlays")
-local widgets = require("src.ui.kit.widgets")
 local json = require("lib.json")
 local common = require("src.ui.screens.server.common")
 
@@ -57,7 +56,7 @@ function R:start()
   end)
 end
 
-function R:drawSeats(room, x, y, w, h)
+function R:drawSeats(room, x, y, w)
   local c = theme.c
   local sc = self.sc
   local isOwner = room.ownerId == sc.self.id and not sc.spectating
@@ -113,7 +112,6 @@ function R:drawSeats(room, x, y, w, h)
     ui.text((sc.spectating and "Watching. " or "") .. "Waiting for " .. (owner or "the creator") .. " to start the game...", x + 36, yy,
       { h = 28, valign = "middle", w = w - 36, color = c.onSurfaceVariant })
   end
-  local _ = h
 end
 
 function R:drawChat(x, y, w, h)
@@ -160,10 +158,9 @@ function R:draw(x, y, w, h)
   local seatsW = math.min(560, w - 3 * pad - chatW)
   local sx = x + pad + math.max(0, (w - 3 * pad - chatW - seatsW) / 2)
   local off = ui.beginScroll("rm:seats", x, y, sx + seatsW + pad - x, h)
-  self:drawSeats(room, sx, y + pad - off, seatsW, h - 2 * pad)
+  self:drawSeats(room, sx, y + pad - off, seatsW)
   ui.endScroll("rm:seats", 68 + room.maxPlayers * 56 + 120 + 2 * pad)
   self:drawChat(x + w - pad - chatW, y + pad, chatW, h - 2 * pad)
-  local _ = widgets
 end
 
 return R

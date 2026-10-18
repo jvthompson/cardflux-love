@@ -5,7 +5,6 @@ local ui = require("src.ui.kit.ui")
 local theme = require("src.ui.kit.theme")
 local overlays = require("src.ui.kit.overlays")
 local saveNameDialog = require("src.ui.kit.save_name_dialog")
-local json = require("lib.json")
 local models = require("src.core.models")
 local util = require("src.core.util")
 local uuid = require("src.core.uuid")
@@ -598,7 +597,6 @@ function Join:drawRecentServers(recent, x, y, w)
 end
 
 function Join:draw(x, y, w, h)
-  local c = theme.c
   local colW = math.min(360, w - 48)
   local cx, yy = centeredColumn(x, y, w, h, colW, 48 + 12 + 48 + 24 + 48)
   local client = self.client
@@ -639,7 +637,6 @@ function Join:draw(x, y, w, h)
       or "Disconnected from host."
     ui.text(msg, cx, yy, { w = colW, align = "center", color = theme.fixed.red })
   end
-  local _ = c
 end
 
 ---------------------------------------------------------------------------
@@ -816,5 +813,4 @@ end
 
 function ClientGame:keypressed(...) if self.table then self.table:keypressed(...) end end
 
-local _ = json
 return M

@@ -3,7 +3,6 @@
 -- straight to the lobby; otherwise they enter their email and password.
 local ui = require("src.ui.kit.ui")
 local theme = require("src.ui.kit.theme")
-local overlays = require("src.ui.kit.overlays")
 local widgets = require("src.ui.kit.widgets")
 local colorpicker = require("src.ui.kit.colorpicker")
 local json = require("lib.json")
@@ -219,7 +218,6 @@ function L:draw(x, y, w, h)
     yy = yy + ui.textHeight(note, colW, 12) + 24
   end
   ui.endScroll("login:scroll", yy + off - y)
-  local _ = overlays
 end
 
 return L

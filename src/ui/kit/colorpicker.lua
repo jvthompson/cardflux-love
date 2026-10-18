@@ -49,7 +49,6 @@ function P.openPickerDialog(initial, onPicked)
     content = function(d, x, y, w)
       local boxH = 200
       -- Saturation/value square: hue base color with white->color and black overlay.
-      local hr, hg, hb = color.hsvToRgb(st.h, 1, 1)
       local steps = 24
       for i = 0, steps - 1 do
         local s0 = i / steps
@@ -60,7 +59,6 @@ function P.openPickerDialog(initial, onPicked)
           love.graphics.rectangle("fill", x + i * w / steps, y + j * boxH / steps, w / steps + 1, boxH / steps + 1)
         end
       end
-      local _ = hr + hg + hb
       local sq = ui.region("cp:sv", x, y, w, boxH, { cursor = "crosshair" })
       if sq.held then
         local mx, my = ui.mouse()
