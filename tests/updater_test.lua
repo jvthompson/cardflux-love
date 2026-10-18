@@ -75,6 +75,18 @@ return function(t)
       t.eq(err, "attempt 3 failed")
     end)
 
+    t.it("flags a missing system tool with an actionable, repo-specific message", function()
+      local msg = U.missingTool([[C:\Windows\System32\tar.exe]], "tar.exe", "needs Windows 10 1803+", function() return false end)
+      t.ok(msg:find("tar.exe", 1, true))
+      t.ok(msg:find([[C:\Windows\System32\tar.exe]], 1, true))
+      t.ok(msg:find("needs Windows 10 1803+", 1, true))
+      t.ok(msg:find("https://github.com/" .. U.repo .. "/releases", 1, true))
+    end)
+
+    t.it("returns nil when the tool is present", function()
+      t.isNil(U.missingTool([[C:\Windows\System32\tar.exe]], "tar.exe", nil, function() return true end))
+    end)
+
     t.it("does not retry a deliberate abort", function()
       local calls = 0
       local status, err = http._withRetries(function()
