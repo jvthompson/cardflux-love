@@ -289,9 +289,11 @@ end
 function Session:flipCard(instanceId, actingPlayerId)
   self.state = A.flipCard(self.state, instanceId)
   local card = self:findCard(instanceId)
-  local direction = (card and card.faceUp) and "face up" or "face down"
-  local name = self:titleOf(card)
-  self:log(actingPlayerId, name and ('flipped "' .. name .. '" ' .. direction .. ".") or ("flipped a card " .. direction .. "."))
+  if card and card.zone ~= "hand" then
+    local direction = card.faceUp and "face up" or "face down"
+    local name = self:isPubliclyVisible(card) and self:titleOf(card) or nil
+    self:log(actingPlayerId, name and ('flipped "' .. name .. '" ' .. direction .. ".") or ("flipped a card " .. direction .. "."))
+  end
   self:notify()
 end
 

@@ -144,7 +144,10 @@ return function(t)
         H.card({ id = "p", definitionId = "a", zIndex = 3 }),
         H.card({ id = "q", definitionId = "b", zIndex = 4, stackParentId = "p" }),
       })
+      local logCountBeforeHandFlip = #s.state.log
       s:flipCard("x", "p1")
+      t.eq(#s.state.log, logCountBeforeHandFlip)
+      s:flipCard("p", "p1")
       t.eq(lastLog(s), 'Alice flipped "Ace" face up.')
       s:drawCard("p", "p1", 1)
       t.eq(lastLog(s), "Alice drew a card.")

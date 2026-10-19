@@ -566,7 +566,7 @@ function T:keypressed(key, _, isrepeat)
   if key == "escape" then
     if isrepeat then return end
     -- A selection (or a box being dragged) is cleared before Esc opens the menu.
-    if not self.gameMenuOpen and not self.logOpen and (self.boxSelect or self.selCount > 0) then
+    if not self.gameMenuOpen and (self.boxSelect or self.selCount > 0) then
       self.boxSelect = nil
       self:clearSelection()
       return
@@ -575,10 +575,6 @@ function T:keypressed(key, _, isrepeat)
     return
   end
   if self.gameMenuOpen then return end
-  if self.logOpen then
-    if key == "l" and not isrepeat then self:toggleLog() end
-    return
-  end
   if self.rulebookOpen then
     if key == "r" and ctrlDown() and not isrepeat then self:toggleRulebook() end
     return
@@ -617,7 +613,7 @@ end
 
 -- Keys are only "ours" while no dialog, menu or text field has them.
 function T:keysAvailable()
-  return not overlays.anyOpen() and not ui.focus and not self.gameMenuOpen and not self.logOpen
+  return not overlays.anyOpen() and not ui.focus and not self.gameMenuOpen
     and not self.rulebookOpen
 end
 
