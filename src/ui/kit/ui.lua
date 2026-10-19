@@ -722,7 +722,11 @@ function ui.beginScroll(id, x, y, w, h)
   return math.floor(s.y)
 end
 
-function ui.endScroll(id, contentHeight)
+-- opts (optional): thumbColor (default theme.c.onSurface), thumbAlpha /
+-- thumbAlphaHover (defaults 0.25 / 0.45) -- a view whose own background
+-- makes the default thumb hard to see (e.g. the rulebook's always-dark
+-- panel) can brighten just its own scrollbar without affecting others.
+function ui.endScroll(id, contentHeight, opts)
   local s = scrollState[id]
   ui.popClip()
   s.contentH = contentHeight
@@ -745,7 +749,9 @@ function ui.endScroll(id, contentHeight)
       s.target = math.max(0, math.min(maxY, (ny - s.yy) / math.max(1, trackH - thumbH) * maxY))
       s.y = s.target
     end
-    setColor(theme.c.onSurface, (r.hovered or r.held) and 0.45 or 0.25)
+    local hot = r.hovered or r.held
+    local alpha = hot and (opts and opts.thumbAlphaHover or 0.45) or (opts and opts.thumbAlpha or 0.25)
+    setColor((opts and opts.thumbColor) or theme.c.onSurface, alpha)
     love.graphics.rectangle("fill", bx, thumbY, 6, thumbH, 3, 3)
   end
 end

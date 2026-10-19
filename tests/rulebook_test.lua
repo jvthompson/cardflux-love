@@ -1,6 +1,7 @@
--- Rulebook viewer: Markdown parsing/heading structure, loading a game's
--- rulebook.md (or lack of one), and per-game scroll persistence. Actual
--- rendering (controls_dialog.drawBlocks, panel chrome) needs a live
+-- Rulebook viewer: Markdown parsing/heading structure, PDF-vs-Markdown
+-- format detection, PDF page layout math, loading a game's rulebook (or
+-- lack of one), and per-game scroll persistence. Actual rendering
+-- (controls_dialog.drawBlocks, PDFium decoding, panel chrome) needs a live
 -- love.graphics context and isn't exercised here - see the manual Ctrl+R
 -- spot-check instead.
 local fs = require("src.data.fs")
@@ -73,6 +74,35 @@ return function(t)
       rulebookSettings.setScroll(id, 420)
       t.eq(rulebookSettings.getScroll(id), 420)
       rulebookSettings.setScroll(id, 0) -- leave it as found
+    end)
+
+    t.it("prefers rulebook.pdf over rulebook.md when both are present", function()
+      local dir = tempDir("pdf_precedence")
+      fs.writeFile(fs.join(dir, "rulebook.md"), "# Game\n")
+      fs.writeFile(fs.join(dir, "rulebook.pdf"), "not a real pdf, just present")
+      local rv = rulebookViewer.new(models.GameDefinition.new({ id = "rb_test_pdf_precedence", name = "X", folderPath = dir }))
+      rv:ensureLoaded()
+      t.ok(rv.hasContent)
+      t.eq(rv.kind, "pdf")
+    end)
+
+    t.it("falls back to rulebook.md when there's no PDF", function()
+      local dir = tempDir("md_only")
+      fs.writeFile(fs.join(dir, "rulebook.md"), "# Game\n")
+      local rv = rulebookViewer.new(models.GameDefinition.new({ id = "rb_test_md_only", name = "X", folderPath = dir }))
+      rv:ensureLoaded()
+      t.ok(rv.hasContent)
+      t.eq(rv.kind, "md")
+    end)
+
+    t.it("computes PDF page layout: every page scaled to the full column width, stacked with a gap", function()
+      local layout = rulebookViewer._computePdfLayout({ { 600, 800 }, { 300, 300 } }, 400, 10)
+      t.eq(#layout.pages, 2)
+      t.eq(layout.pages[1].y, 0)
+      t.near(layout.pages[1].h, 400 * 800 / 600)
+      t.near(layout.pages[2].y, layout.pages[1].h + 10)
+      t.near(layout.pages[2].h, 400 * 300 / 300)
+      t.near(layout.contentHeight, layout.pages[2].y + layout.pages[2].h)
     end)
   end)
 end

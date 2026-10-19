@@ -10,6 +10,11 @@ local M = {}
 local PANEL = theme.fixed.overlayPanel
 local WHITE = theme.fixed.white
 
+-- Height of the title row returned content is offset below; exposed so a
+-- caller can work out the content rect's size before calling M.draw (e.g.
+-- to size a panel from its desired content size).
+M.TITLE_BAR_H = 65
+
 -- leading (optional): { icon, tooltip, onClick } - a small icon button
 -- drawn before the title, e.g. a sidebar toggle.
 -- Returns contentX, contentY, contentW, contentH (below the title bar).
@@ -35,7 +40,7 @@ function M.draw(id, w, h, title, onClose, trailing, leading)
   end
   if ui.iconButton("close", x + w - 48, y + 12, { color = WHITE, tooltip = "Close", id = id .. ":close" }) then onClose() end
   ui.divider(x, y + 64, w, { 1, 1, 1, 0.24 })
-  return x, y + 65, w, h - 65
+  return x, y + M.TITLE_BAR_H, w, h - M.TITLE_BAR_H
 end
 
 return M

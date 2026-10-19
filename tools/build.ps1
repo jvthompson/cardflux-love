@@ -376,7 +376,7 @@ foreach ($dll in @('love.dll', 'lua51.dll', 'SDL2.dll', 'OpenAL32.dll', 'mpg123.
   Copy-Item (Join-Path $loveDir $dll) $outDir
 }
 Copy-Item (Join-Path $loveDir 'license.txt') (Join-Path $outDir 'LOVE-license.txt')
-foreach ($f in @('discord_partner_sdk.dll', 'libwebp-7.dll', 'libsharpyuv-0.dll', 'LICENSE', 'CONTROLS.md', 'SUPPORT-ME.md')) {
+foreach ($f in @('discord_partner_sdk.dll', 'libwebp-7.dll', 'libsharpyuv-0.dll', 'pdfium.dll', 'LICENSE', 'CONTROLS.md', 'SUPPORT-ME.md')) {
   $p = Join-Path $root $f
   if (-not (Test-Path $p)) { throw "Missing $f in the project folder." }
   Copy-Item $p $outDir
