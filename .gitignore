@@ -8,3 +8,4 @@
 
 # Local game library (user data, not source)
 /game_library/
+*.af~lock~

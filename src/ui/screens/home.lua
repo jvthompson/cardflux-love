@@ -19,6 +19,19 @@ Home.__index = Home
 -- Below this content width there isn't room for both columns side by side.
 local WIDE_BREAKPOINT = 760
 
+local LOGO_MAX_W = 220
+local logoImages = {} -- isDark -> Image, loaded once per variant (false = load failed, don't retry)
+
+local function getLogo()
+  local isDark = theme.isDark
+  if logoImages[isDark] == nil then
+    local path = isDark and "assets/logo.png" or "assets/logo_light.png"
+    local ok, img = pcall(love.graphics.newImage, path)
+    logoImages[isDark] = ok and img or false
+  end
+  return logoImages[isDark] or nil
+end
+
 function Home.new(message)
   return setmetatable({
     title = "CardTable", showBack = false, message = message,
@@ -216,27 +229,33 @@ function Home:drawRecentServersPopup(recent, x, y, w)
 end
 
 -- Fixed height Home:drawJoinFields uses, so callers can lay out around it
--- without re-deriving the same sum: a 56px reconnect banner + its "or join
+-- without re-deriving the same sum: a 76px reconnect banner + its "or join
 -- another" divider when there's a recent server, then the ip/port fields
 -- and the Connect button.
+local RECONNECT_BANNER_H = 76
+
 function Home.joinFieldsHeight(hasRecent)
-  return (hasRecent and (56 + 16 + 16 + 16) or 0) + 60 + 72 + 48
+  return (hasRecent and (RECONNECT_BANNER_H + 16 + 16 + 16) or 0) + 60 + 72 + 48
 end
 
 function Home:drawJoinFields(cx, yy, w, recent)
   local c = theme.c
   if #recent > 0 then
     local last = recent[1]
-    ui.rect("fill", cx, yy, w, 56, 14, c.primaryContainer)
+    local bh = RECONNECT_BANNER_H
+    local r = ui.region("home:reconnect", cx, yy, w, bh, { cursor = "hand" })
+    ui.rect("fill", cx, yy, w, bh, 14, c.primaryContainer)
+    if r.hovered then ui.rect("fill", cx, yy, w, bh, 14, theme.alpha(c.onPrimaryContainer, 0.08)) end
     ui.icon("history", cx + 14, yy + 8, 20, c.onPrimaryContainer)
     ui.text("LAST PLAYED", cx + 46, yy + 10, { size = 10.5, weight = "bold", color = theme.alpha(c.onPrimaryContainer, 0.7) })
-    ui.text(last.host .. " : " .. last.port, cx + 46, yy + 26, { size = 14.5, weight = "medium", w = w - 46 - 110,
+    ui.text(last.host .. " : " .. last.port, cx, yy + 26, { size = 14.5, weight = "medium", w = w, align = "center",
       ellipsis = true, color = c.onPrimaryContainer })
-    local bw = ui.buttonWidth("Reconnect")
-    if ui.button("Reconnect", cx + w - 14 - bw, yy + 8, bw, 40, { id = "home:reconnect" }) then
+    ui.text("CLICK TO RECONNECT", cx, yy + 52, { size = 10.5, weight = "bold", w = w, align = "center",
+      color = theme.alpha(c.onPrimaryContainer, 0.7) })
+    if r.clicked then
       self:connect(last.host, last.port)
     end
-    yy = yy + 56 + 16
+    yy = yy + bh + 16
     ui.text("OR JOIN ANOTHER SERVER", cx, yy, { size = 10.5, weight = "bold", w = w, align = "center", color = c.onSurfaceVariant })
     yy = yy + 16 + 16
   end
@@ -382,6 +401,17 @@ function Home:draw(x, y, w, h)
 
   local recent = profile.getRecentServers()
 
+  -- Logo, centered above everything else.
+  local logo = getLogo()
+  local logoW, logoH, logoAspect = 0, 0, 0
+  if logo then
+    local lw, lh = logo:getDimensions()
+    logoAspect = lh / lw
+    logoW = math.min(LOGO_MAX_W, bannerW)
+    logoH = logoW * logoAspect
+  end
+  local logoBlockH = logo and (logoH + 24) or 0
+
   -- Measure the column first so it can be vertically centered.
   local bannerH = 0
   local upd = updater.state
@@ -395,9 +425,15 @@ function Home:draw(x, y, w, h)
   else
     contentH = (64 + 10 + 20) + 20 + 40 + 16 + Home.joinFieldsHeight(#recent > 0) + 24 + 40 + 40
   end
-  local total = bannerH + contentH
+  local total = logoBlockH + bannerH + contentH
   local bx0 = math.floor(x + (w - bannerW) / 2)
   local yy = math.floor(y + math.max(16, (h - total) / 2))
+
+  if logo then
+    love.graphics.setColor(1, 1, 1)
+    love.graphics.draw(logo, x + (w - logoW) / 2, yy, 0, logoW / logo:getWidth(), logoW / logo:getWidth())
+    yy = yy + logoH + 24
+  end
 
   if updateText then
     yy = yy + widgets.banner(updateText, bx0, yy, bannerW, "info", function() Home.confirmUpdate() end) + 24
