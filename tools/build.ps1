@@ -122,11 +122,13 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Runtime.InteropServices;
+using System.Text;
 
 public static class CardTableIconPatcher {
   const uint LOAD_LIBRARY_AS_DATAFILE = 0x2;
   static readonly IntPtr RT_ICON = (IntPtr)3;
   static readonly IntPtr RT_GROUP_ICON = (IntPtr)14;
+  static readonly IntPtr RT_VERSION = (IntPtr)16;
 
   [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
   static extern IntPtr LoadLibraryEx(string file, IntPtr reserved, uint flags);
@@ -148,12 +150,12 @@ public static class CardTableIconPatcher {
 
   class Res { public IntPtr Type; public bool IsId; public IntPtr Id; public string Name; public ushort Lang; }
 
-  static List<Res> Existing(string exe) {
+  static List<Res> Existing(string exe, IntPtr[] types) {
     var list = new List<Res>();
     IntPtr module = LoadLibraryEx(exe, IntPtr.Zero, LOAD_LIBRARY_AS_DATAFILE);
     if (module == IntPtr.Zero) throw new Exception("LoadLibraryEx failed: " + Marshal.GetLastWin32Error());
     try {
-      foreach (IntPtr type in new[] { RT_GROUP_ICON, RT_ICON }) {
+      foreach (IntPtr type in types) {
         EnumResourceNames(module, type, (m, t, name, p) => {
           bool isId = ((ulong)name.ToInt64() >> 16) == 0;
           string str = isId ? null : Marshal.PtrToStringUni(name);
@@ -171,7 +173,7 @@ public static class CardTableIconPatcher {
   public static void Apply(string exe, string ico) {
     byte[] b = File.ReadAllBytes(ico);
     int count = BitConverter.ToUInt16(b, 4);
-    var existing = Existing(exe);
+    var existing = Existing(exe, new[] { RT_GROUP_ICON, RT_ICON });
     ushort lang = 0x0409;
     foreach (var r in existing) if (r.Type == RT_GROUP_ICON) { lang = r.Lang; break; }
 
@@ -208,15 +210,156 @@ public static class CardTableIconPatcher {
       if (!EndUpdateResource(h, !ok) && ok) throw new Exception("EndUpdateResource failed: " + Marshal.GetLastWin32Error());
     }
   }
+
+  // --- Version resource ---------------------------------------------------
+  // Builds one VS_VERSIONINFO-style node (shared shape for VS_VERSION_INFO,
+  // StringFileInfo, StringTable, String, VarFileInfo and Var). `value` is the
+  // raw Value payload (or null); `children` are already-built child nodes.
+  // The returned array's length always equals the node's own wLength -- a
+  // parent pads BETWEEN children (never after the last one) when nesting.
+  static byte[] BuildVersionNode(ushort wType, string key, byte[] value, ushort wValueLengthField, byte[][] children) {
+    using (var ms = new MemoryStream())
+    using (var w = new BinaryWriter(ms)) {
+      w.Write((ushort)0); // wLength placeholder, patched below
+      w.Write(wValueLengthField);
+      w.Write(wType);
+      foreach (char c in key) w.Write((ushort)c);
+      w.Write((ushort)0); // key NUL terminator
+      while (ms.Position % 4 != 0) w.Write((byte)0);
+
+      if (value != null && value.Length > 0) {
+        w.Write(value);
+        if (children != null && children.Length > 0)
+          while (ms.Position % 4 != 0) w.Write((byte)0);
+      }
+
+      if (children != null) {
+        for (int i = 0; i < children.Length; i++) {
+          w.Write(children[i]);
+          if (i < children.Length - 1)
+            while (ms.Position % 4 != 0) w.Write((byte)0);
+        }
+      }
+
+      w.Flush();
+      byte[] bytes = ms.ToArray();
+      ushort len = (ushort)bytes.Length;
+      bytes[0] = (byte)(len & 0xFF);
+      bytes[1] = (byte)(len >> 8);
+      return bytes;
+    }
+  }
+
+  static byte[] BuildFixedFileInfo(ushort major, ushort minor, ushort patch, ushort build) {
+    using (var ms = new MemoryStream())
+    using (var w = new BinaryWriter(ms)) {
+      uint verMS = ((uint)major << 16) | minor;
+      uint verLS = ((uint)patch << 16) | build;
+      w.Write((uint)0xFEEF04BD); // dwSignature
+      w.Write((uint)0x00010000); // dwStrucVersion (1.0)
+      w.Write(verMS);            // dwFileVersionMS
+      w.Write(verLS);            // dwFileVersionLS
+      w.Write(verMS);            // dwProductVersionMS
+      w.Write(verLS);            // dwProductVersionLS
+      w.Write((uint)0x3F);       // dwFileFlagsMask
+      w.Write((uint)0x0);        // dwFileFlags
+      w.Write((uint)0x00040004); // dwFileOS = VOS_NT_WINDOWS32
+      w.Write((uint)0x1);        // dwFileType = VFT_APP
+      w.Write((uint)0x0);        // dwFileSubtype
+      w.Write((uint)0x0);        // dwFileDateMS
+      w.Write((uint)0x0);        // dwFileDateLS
+      return ms.ToArray();       // 52 bytes
+    }
+  }
+
+  static byte[] BuildVersionResource(
+      string fileDescription, string productName, string fileVersion, string productVersion,
+      string internalName, string originalFilename,
+      ushort verMajor, ushort verMinor, ushort verPatch, ushort verBuild,
+      ushort langId) {
+
+    ushort codepage = 0x04B0; // 1200 decimal = Unicode
+    byte[] fixedInfo = BuildFixedFileInfo(verMajor, verMinor, verPatch, verBuild);
+
+    Func<string, string, byte[]> buildString = (key, val) => {
+      byte[] valBytes = Encoding.Unicode.GetBytes(val + "\0");
+      ushort wValueLength = (ushort)(val.Length + 1); // WCHARs including NUL
+      return BuildVersionNode(1, key, valBytes, wValueLength, null);
+    };
+
+    var strings = new[] {
+      buildString("FileDescription", fileDescription),
+      buildString("FileVersion", fileVersion),
+      buildString("InternalName", internalName),
+      buildString("OriginalFilename", originalFilename),
+      buildString("ProductName", productName),
+      buildString("ProductVersion", productVersion),
+    };
+
+    string tableKey = langId.ToString("X4") + codepage.ToString("X4"); // e.g. "040904B0"
+    byte[] stringTable = BuildVersionNode(1, tableKey, null, 0, strings);
+    byte[] stringFileInfo = BuildVersionNode(1, "StringFileInfo", null, 0, new[] { stringTable });
+
+    byte[] translation = new byte[4];
+    translation[0] = (byte)(langId & 0xFF);
+    translation[1] = (byte)(langId >> 8);
+    translation[2] = (byte)(codepage & 0xFF);
+    translation[3] = (byte)(codepage >> 8);
+    byte[] varEntry = BuildVersionNode(0, "Translation", translation, 4, null);
+    byte[] varFileInfo = BuildVersionNode(1, "VarFileInfo", null, 0, new[] { varEntry });
+
+    return BuildVersionNode(0, "VS_VERSION_INFO", fixedInfo, (ushort)fixedInfo.Length,
+        new[] { stringFileInfo, varFileInfo });
+  }
+
+  public static void ApplyVersion(string exe,
+      string fileDescription, string productName, string fileVersion, string productVersion,
+      string internalName, string originalFilename,
+      ushort verMajor, ushort verMinor, ushort verPatch, ushort verBuild) {
+
+    var existing = Existing(exe, new[] { RT_VERSION });
+    ushort lang = 0x0409;
+    foreach (var r in existing) if (r.Type == RT_VERSION) { lang = r.Lang; break; }
+
+    byte[] blob = BuildVersionResource(fileDescription, productName, fileVersion, productVersion,
+        internalName, originalFilename, verMajor, verMinor, verPatch, verBuild, lang);
+
+    IntPtr h = BeginUpdateResource(exe, false);
+    if (h == IntPtr.Zero) throw new Exception("BeginUpdateResource failed: " + Marshal.GetLastWin32Error());
+    bool ok = false;
+    try {
+      foreach (var r in existing) {
+        bool done = r.IsId ? UpdateResourceId(h, r.Type, r.Id, r.Lang, null, 0)
+                           : UpdateResourceStr(h, r.Type, r.Name, r.Lang, null, 0);
+        if (!done) throw new Exception("Removing an old version resource failed: " + Marshal.GetLastWin32Error());
+      }
+      if (!UpdateResourceId(h, RT_VERSION, (IntPtr)1, lang, blob, (uint)blob.Length))
+        throw new Exception("Adding the version resource failed: " + Marshal.GetLastWin32Error());
+      ok = true;
+    } finally {
+      if (!EndUpdateResource(h, !ok) && ok) throw new Exception("EndUpdateResource failed: " + Marshal.GetLastWin32Error());
+    }
+  }
 }
 '@
 
 Step "Building $exeName"
-# The icon must be patched before game.love is appended: rewriting resources
-# would drop the appended archive.
+# The icon and version resource must be patched before game.love is
+# appended: rewriting resources would drop the appended archive.
 $baseExe = Join-Path $buildDir 'love-base.exe'
 Copy-Item (Join-Path $loveDir 'love.exe') $baseExe
 [CardTableIconPatcher]::Apply($baseExe, (Join-Path $root 'assets\icon.ico'))
+
+$verTag = "$($v.Name)+$($v.Build)"
+$verParts = $v.Name.Split('.')
+[CardTableIconPatcher]::ApplyVersion(
+  $baseExe,
+  'CardTable', 'CardTable',
+  $verTag, $verTag,
+  $exeName, $exeName,
+  [uint16]$verParts[0], [uint16]$verParts[1], [uint16]$verParts[2], [uint16]$v.Build
+)
+
 $exePath = Join-Path $outDir $exeName
 $out = [IO.File]::Create($exePath)
 try {
