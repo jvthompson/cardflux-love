@@ -17,16 +17,45 @@ local D = {}
 
 -- zones: the ZoneDefinitions being filled; onDeckChosen(deck)
 -- opts.store: a src/data/deck_store.lua store (default: the local folder).
+-- opts.ownedQty: collection mode (definitionId -> copies owned). When set,
+-- the game's built-in starter decks (bought from the Card Shop instead) are
+-- hidden, and decks the collection can't fully build are greyed out.
 function D.open(game, zones, onDeckChosen, opts)
   local store = opts and opts.store
+  local ownedQty = opts and opts.ownedQty
   local remote = store and store.kind == "server"
   local st = { directoryPath = remote and store.label or paths.decksDir(), busy = true }
+
+  -- Every card the deck needs, owned in full? Unownable/free cards are
+  -- always available; copies are tallied across every subdeck.
+  local function isAffordable(deck)
+    if not ownedQty then return true end
+    local needed = {}
+    for _, s in ipairs(deck.subdecks) do
+      for _, e in ipairs(s.entries) do needed[e.definitionId] = (needed[e.definitionId] or 0) + e.quantity end
+    end
+    for id, qty in pairs(needed) do
+      local def = models.GameDefinition.cardById(game, id)
+      if not (def and (def.unownable or def.isFreeCard)) and (ownedQty[id] or 0) < qty then return false end
+    end
+    return true
+  end
+
+  local function filterScan(scan)
+    if not ownedQty then return scan end
+    local entries = {}
+    for _, e in ipairs(scan.entries) do
+      if not (e.isBuiltIn and e.deck.isStarter) then entries[#entries + 1] = e end
+    end
+    return { entries = entries, incompatible = scan.incompatible }
+  end
 
   local function refresh()
     st.busy = true
     st.folderError = nil
     if remote then
       store:list(game, function(scan, err)
+        scan = filterScan(scan)
         st.scan = scan
         if err then
           st.folderError = err
@@ -43,6 +72,7 @@ function D.open(game, zones, onDeckChosen, opts)
       st.scan = { entries = {}, incompatible = {} }
       st.folderError = "Could not read that folder: " .. tostring(scan)
     else
+      scan = filterScan(scan)
       st.scan = scan
       if #scan.entries == 0 and #scan.incompatible == 0 then
         st.folderError = "No decks found for " .. game.name .. " in that folder."
@@ -140,7 +170,8 @@ function D.open(game, zones, onDeckChosen, opts)
   local SCALE, NAME_LINES, GAP = 4 / 3, 3, 12
   local PW, PH = CR.cardWidth * SCALE, CR.cardHeight * SCALE
   local nameH = NAME_LINES * theme.font(11):getHeight()
-  local TILE_H = 4 + PH + 4 + nameH + 2 + 28
+  -- One extra caption line in collection mode, for "Missing cards".
+  local TILE_H = 4 + PH + 4 + nameH + 2 + 28 + (ownedQty and 13 or 0)
 
   dialog = overlays.dialog({
     width = 760,
@@ -176,24 +207,29 @@ function D.open(game, zones, onDeckChosen, opts)
           local tx, ty = x + col * (TILE_W + GAP), yy + 4 + row * (TILE_H + GAP) - off
           local isIncompat = i > #entries
           local entry = isIncompat and incompatible[i - #entries] or entries[i]
+          local short = not isIncompat and not isAffordable(entry.deck)
+          local dim = isIncompat and 0.35 or (short and 0.45 or 1)
           local r = ui.region("dl:tile" .. i, tx, ty, TILE_W, TILE_H, { cursor = "hand",
-            tooltip = isIncompat and "Old format -- rebuild in the Deck Editor" or nil })
+            tooltip = isIncompat and "Old format -- rebuild in the Deck Editor"
+              or short and "You don't have all the cards in your collection to build this deck." or nil })
           if r.hovered then ui.rect("fill", tx, ty, TILE_W, TILE_H, 6, theme.alpha(c.onSurface, 0.06)) end
           if not isIncompat and st.chosenName == entry.displayName then
             ui.rect("line", tx + 1, ty + 1, TILE_W - 2, TILE_H - 2, 6, c.primary, 2)
           end
           love.graphics.push("all")
           CR.draw({ def = nil, faceUp = false, cx = tx + TILE_W / 2, cy = ty + 4 + PH / 2, scale = SCALE,
-            cardBacks = game.cardBacks, alpha = isIncompat and 0.35 or 1 })
+            cardBacks = game.cardBacks, alpha = dim })
           love.graphics.pop()
           local ny = ty + 4 + PH + 4
-          ui.text(entry.displayName, tx, ny, { size = 11, w = TILE_W, align = "center", maxLines = NAME_LINES })
+          ui.text(entry.displayName, tx, ny, { size = 11, w = TILE_W, align = "center", maxLines = NAME_LINES,
+            color = short and c.onSurfaceVariant or nil })
           ny = ny + math.min(nameH, ui.textHeight(entry.displayName, TILE_W, 11)) + 2
           if isIncompat then
             ui.text("Old format", tx, ny, { size = 10, w = TILE_W, align = "center", color = theme.fixed.red })
           else
             ui.text(decks.cardCount(entry) .. " card(s)", tx, ny, { size = 10, w = TILE_W, align = "center", color = c.onSurfaceVariant })
             if entry.isBuiltIn then ui.text(entry.deck.isStarter and "Built-in · Starter" or "Built-in", tx, ny + 13, { size = 10, w = TILE_W, align = "center", color = c.primary }) end
+            if short then ui.text("Missing cards", tx, ny + (entry.isBuiltIn and 26 or 13), { size = 10, w = TILE_W, align = "center", color = theme.fixed.red }) end
           end
           if r.clicked then
             if isIncompat then

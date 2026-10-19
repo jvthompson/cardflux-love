@@ -199,7 +199,7 @@ end
 
 function E:openDeck()
   -- The same deck-tile dialog as at the table, for local and server decks.
-  deckLibraryDialog.open(self.game, {}, function(deck) self:loadDeck(deck) end, { store = self.store })
+  deckLibraryDialog.open(self.game, {}, function(deck) self:loadDeck(deck) end, { store = self.store, ownedQty = self.ownedQty })
 end
 
 -- The pool: every card, or (collection mode) the ones owned, unownable or free.
