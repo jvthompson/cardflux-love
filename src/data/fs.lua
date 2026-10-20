@@ -351,6 +351,28 @@ function fs.copyTree(from, to)
   return impl.copy(from, to)
 end
 
+-- Every file under `dir`, recursively: { {path=<absolute local path>,
+-- rel=<path relative to dir, "/"-joined regardless of OS>}, ... }. Skips
+-- directories themselves (callers that need empty subfolders recreated
+-- remotely must handle that separately -- nothing here reports them).
+local function walkFiles(dir, rel, out)
+  for _, e in ipairs(fs.list(dir) or {}) do
+    local full = fs.join(dir, e.name)
+    local r = rel == "" and e.name or (rel .. "/" .. e.name)
+    if e.isDir then
+      walkFiles(full, r, out)
+    else
+      out[#out + 1] = { path = full, rel = r }
+    end
+  end
+end
+
+function fs.listFilesRecursive(dir)
+  local out = {}
+  walkFiles(dir, "", out)
+  return out
+end
+
 function fs.exePath() return impl.exePath() end
 function fs.tempDir() return impl.tempDir() end
 

@@ -49,12 +49,15 @@ local function listEntries(dir, exts, foldersOnly)
   return dirs
 end
 
--- opts: title, folder (bool), filters ({ {name=, extensions={...}}, ... }), initialDir
+-- opts: title, folder (bool), multiple (bool, file-pick only), filters
+-- ({ {name=, extensions={...}}, ... }), initialDir. In multiple mode,
+-- onResult receives an array of absolute paths (never an empty one --
+-- the confirm action is disabled at zero selected) or nil if cancelled.
 local function open(opts, onResult)
   local exts = extensionSet(not opts.folder and opts.filters or nil)
   local st = {
     dir = (opts.initialDir and fs.isDir(opts.initialDir)) and opts.initialDir or defaultDir(),
-    pathText = nil, error = nil, entries = {},
+    pathText = nil, error = nil, entries = {}, selected = {},
   }
   local done = false
   local function finish(path)
@@ -69,11 +72,11 @@ local function open(opts, onResult)
       overlays.toast("Can't open that folder.", 2)
       return
     end
-    st.dir, st.entries, st.error, st.pathText = dir, items, nil, nil
+    st.dir, st.entries, st.error, st.pathText, st.selected = dir, items, nil, nil, {}
   end
   navigate(st.dir)
 
-  return overlays.dialog({
+  local dialog = overlays.dialog({
     title = opts.title or (opts.folder and "Choose a Folder" or "Choose a File"),
     width = DIALOG_W,
     onDismiss = function() finish(nil) end,
@@ -104,17 +107,24 @@ local function open(opts, onResult)
       local listTop = yy
       local off = ui.beginScroll("filepicker:list", x, listTop, w, LIST_H)
       local ry = listTop - off
+      local multi = opts.multiple and not opts.folder
       for i, e in ipairs(st.entries) do
         local r = ui.region("filepicker:item" .. i, x, ry, w, ROW_H, { cursor = "hand" })
         if r.hovered then ui.rect("fill", x, ry, w, ROW_H, 0, theme.alpha(c.onSurface, 0.08)) end
-        ui.icon(e.isDir and "folder" or "insert_drive_file", x + 8, ry + (ROW_H - 20) / 2, 20, c.onSurfaceVariant)
-        ui.text(e.name, x + 40, ry, { h = ROW_H, valign = "middle", w = w - 56, ellipsis = true })
-        if r.clicked then
-          if e.isDir then
-            navigate(fs.join(st.dir, e.name))
-          else
-            finish(fs.join(st.dir, e.name))
-          end
+        local iconX = x + 8
+        if multi and not e.isDir then
+          local full = fs.join(st.dir, e.name)
+          local wasSelected = st.selected[full] == true
+          local cb = ui.checkbox("filepicker:cb" .. i, x + 8, ry + (ROW_H - 18) / 2, wasSelected)
+          if r.clicked or cb ~= wasSelected then st.selected[full] = (not wasSelected) or nil end
+          iconX = x + 40
+        end
+        ui.icon(e.isDir and "folder" or "insert_drive_file", iconX, ry + (ROW_H - 20) / 2, 20, c.onSurfaceVariant)
+        ui.text(e.name, iconX + 32, ry, { h = ROW_H, valign = "middle", w = x + w - (iconX + 32) - 16, ellipsis = true })
+        if r.clicked and e.isDir then
+          navigate(fs.join(st.dir, e.name))
+        elseif r.clicked and not multi then
+          finish(fs.join(st.dir, e.name))
         end
         ry = ry + ROW_H
       end
@@ -125,10 +135,28 @@ local function open(opts, onResult)
     actions = opts.folder and {
       { label = "Cancel", variant = "text", onClick = function() finish(nil) end },
       { label = "Select This Folder", variant = "filled", onClick = function() finish(st.dir) end },
+    } or (opts.multiple and {
+      { label = "Cancel", variant = "text", onClick = function() finish(nil) end },
+      { label = "Select", variant = "filled", disabled = function() return next(st.selected) == nil end, onClick = function()
+        local paths = {}
+        for p in pairs(st.selected) do paths[#paths + 1] = p end
+        table.sort(paths)
+        finish(paths)
+      end },
     } or {
       { label = "Cancel", variant = "text", onClick = function() finish(nil) end },
-    },
+    }),
   })
+  if opts.multiple and not opts.folder then
+    local base = dialog.content
+    dialog.content = function(d, x, y, w)
+      local count = 0
+      for _ in pairs(st.selected) do count = count + 1 end
+      d.actions[2].label = count > 0 and ("Select " .. count .. " File" .. (count == 1 and "" or "s")) or "Select"
+      return base(d, x, y, w)
+    end
+  end
+  return dialog
 end
 
 function M.openFile(opts, onResult)

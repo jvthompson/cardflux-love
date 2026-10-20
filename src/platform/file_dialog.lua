@@ -22,8 +22,10 @@ end
 D.imageFilters = { { name = "Image", extensions = { "jpg", "jpeg", "png", "webp" } } }
 D.jsonFilters = { { name = "JSON", extensions = { "json" } } }
 
--- opts: title, filters ({ {name=, extensions={"png",...}} }), initialDir.
--- onResult(path) fires once: an absolute path, or nil if cancelled.
+-- opts: title, filters ({ {name=, extensions={"png",...}} }), initialDir,
+-- multiple (bool). onResult(path) fires once: an absolute path, or nil if
+-- cancelled -- or, with opts.multiple, an array of absolute paths (never
+-- empty) instead of a single path.
 function D.openFile(opts, onResult)
   require("src.ui.screens.file_picker_dialog").openFile(opts, onResult)
 end

@@ -493,24 +493,152 @@ function A:navigateFiles(path)
   self:refreshFiles()
 end
 
-function A:uploadFile()
+local function remoteDirname(path)
+  return path:match("^(.*)/[^/]+$") or ""
+end
+
+-- Uploads `plan` ({ {localPath=, destPath=}, ... }) one file at a time,
+-- showing a small progress dialog in place of the file/folder picker.
+function A:runUploadQueue(plan)
   local sc, gameId = self.sc, self.filesGameId
-  fileDialog.openFile({ title = "Choose a file to upload" }, function(localPath)
-    if not localPath or self.uploadName then return end
-    local name = fs.basename(localPath)
-    local dest = self.filesPath == "" and name or (self.filesPath .. "/" .. name)
-    self.uploadName, self.uploadBytes, self.uploadTotal = name, 0, 0
-    AFM.upload(sc, gameId, dest, localPath, function(bytes, total)
-      self.uploadBytes, self.uploadTotal = bytes, total
-    end, function(err)
-      self.uploadName = nil
-      if err then
-        overlays.alert("Upload Failed", err)
+  local st = { total = #plan, index = 0, bytes = 0, fileTotal = 0, name = "", errors = {} }
+  local dialog = overlays.dialog({
+    title = "Uploading Files", width = 420, dismissible = false,
+    content = function(_, x, y, w)
+      ui.progressBar(x, y + 4, w, 4, st.fileTotal > 0 and st.bytes / st.fileTotal or nil)
+      local status = string.format('Uploading "%s" (%d of %d)...', st.name, st.index, st.total)
+      ui.text(status, x, y + 20, { w = w, ellipsis = true, size = 12, color = theme.c.onSurfaceVariant })
+      return 20 + ui.textHeight(status, w, 12)
+    end,
+    actions = {},
+  })
+  local function advance()
+    st.index = st.index + 1
+    local item = plan[st.index]
+    if not item then
+      dialog:close()
+      self.uploadBusy = false
+      if #st.errors > 0 then
+        overlays.alert("Some Uploads Failed", table.concat(st.errors, "\n"))
       else
-        overlays.toast('Uploaded "' .. name .. '".')
-        if gameId == self.filesGameId then self:refreshFiles() end
+        overlays.toast("Uploaded " .. st.total .. (st.total == 1 and " file." or " files."))
+      end
+      if gameId == self.filesGameId then self:refreshFiles() end
+      return
+    end
+    st.name, st.bytes, st.fileTotal = item.destPath, 0, 0
+    AFM.upload(sc, gameId, item.destPath, item.localPath, function(bytes, total)
+      st.bytes, st.fileTotal = bytes, total
+    end, function(err)
+      if err then st.errors[#st.errors + 1] = item.destPath .. ": " .. err end
+      advance()
+    end)
+  end
+  advance()
+end
+
+-- Lists every directory `plan` will write into, checks each for files that
+-- would be overwritten, and asks for one consolidated confirmation covering
+-- the whole batch before any upload starts. Proceeds straight to the
+-- upload queue when nothing would be overwritten.
+function A:beginUpload(plan)
+  if #plan == 0 then return end
+  self.uploadBusy = true
+  local sc, gameId = self.sc, self.filesGameId
+  local dirs, seen = {}, {}
+  for _, item in ipairs(plan) do
+    local dir = remoteDirname(item.destPath)
+    if not seen[dir] then
+      seen[dir] = true
+      dirs[#dirs + 1] = dir
+    end
+  end
+
+  local function confirmAndRun(conflicts)
+    if #conflicts == 0 then
+      self:runUploadQueue(plan)
+      return
+    end
+    local count = #conflicts
+    overlays.dialog({
+      title = "Overwrite Existing Files?", width = 460,
+      content = function(_, x, y, w)
+        local c = theme.c
+        local hint = count .. " file" .. (count == 1 and "" or "s") .. " already " ..
+          (count == 1 and "exists" or "exist") .. " on the server and will be overwritten:"
+        ui.text(hint, x, y, { w = w, size = 12, color = c.onSurfaceVariant })
+        local listTop = y + ui.textHeight(hint, w, 12) + 12
+        local listH = math.min(240, count * 28)
+        local off = ui.beginScroll("af:conflicts", x, listTop, w, listH)
+        local ry = listTop - off
+        for _, p in ipairs(conflicts) do
+          ui.text(p, x, ry, { w = w, ellipsis = true, size = 12 })
+          ry = ry + 28
+        end
+        ui.endScroll("af:conflicts", count * 28)
+        return (listTop - y) + listH
+      end,
+      actions = {
+        { label = "Cancel", variant = "text", onClick = function() self.uploadBusy = false end },
+        { label = "Overwrite " .. count .. " File" .. (count == 1 and "" or "s"), variant = "filled",
+          onClick = function() self:runUploadQueue(plan) end },
+      },
+    })
+  end
+
+  local existing, pending = {}, #dirs
+  if pending == 0 then
+    confirmAndRun({})
+    return
+  end
+  for _, dir in ipairs(dirs) do
+    AFM.list(sc, gameId, dir, function(r)
+      if r.ok then
+        for _, e in ipairs(r.entries) do
+          if not e.isDir then existing[dir == "" and e.name or (dir .. "/" .. e.name)] = true end
+        end
+      end
+      pending = pending - 1
+      if pending == 0 then
+        local conflicts = {}
+        for _, item in ipairs(plan) do
+          if existing[item.destPath] then conflicts[#conflicts + 1] = item.destPath end
+        end
+        confirmAndRun(conflicts)
       end
     end)
+  end
+end
+
+function A:uploadFiles()
+  if self.uploadBusy then return end
+  local destDir = self.filesPath
+  fileDialog.openFile({ title = "Choose files to upload", multiple = true }, function(localPaths)
+    if not localPaths then return end
+    local plan = {}
+    for _, localPath in ipairs(localPaths) do
+      local name = fs.basename(localPath)
+      plan[#plan + 1] = { localPath = localPath, destPath = destDir == "" and name or (destDir .. "/" .. name) }
+    end
+    self:beginUpload(plan)
+  end)
+end
+
+function A:uploadFolder()
+  if self.uploadBusy then return end
+  local destDir = self.filesPath
+  fileDialog.pickFolder({ title = "Choose a folder to upload" }, function(folderPath)
+    if not folderPath then return end
+    local base = destDir == "" and fs.basename(folderPath) or (destDir .. "/" .. fs.basename(folderPath))
+    local plan = {}
+    for _, e in ipairs(fs.listFilesRecursive(folderPath)) do
+      plan[#plan + 1] = { localPath = e.path, destPath = base .. "/" .. e.rel }
+    end
+    if #plan == 0 then
+      overlays.toast("That folder has no files to upload.")
+      return
+    end
+    self:beginUpload(plan)
   end)
 end
 
@@ -581,19 +709,19 @@ function A:drawFiles(x, y, w, h)
     self.filesPath = ""
     self:refreshFiles()
   end
-  local busy = self.uploadName ~= nil
-  local label = busy and "Uploading..." or "Upload"
-  local bw = ui.buttonWidth(label, { icon = "upload_file" })
-  if ui.button(label, cx + colW - bw, yy, bw, 48, { variant = "outlined", icon = "upload_file", id = "af:upload", disabled = busy }) then
-    self:uploadFile()
+  local busy = self.uploadBusy or false
+  local filesLabel, folderLabel = "Upload Files", "Upload Folder"
+  local filesW = ui.buttonWidth(filesLabel, { icon = "upload_file" })
+  local folderW = ui.buttonWidth(folderLabel, { icon = "upload_file" })
+  local folderX = cx + colW - folderW
+  local filesX = folderX - 12 - filesW
+  if ui.button(filesLabel, filesX, yy, filesW, 48, { variant = "outlined", icon = "upload_file", id = "af:uploadfiles", disabled = busy }) then
+    self:uploadFiles()
   end
-  yy = yy + 48 + 8
-  if busy then
-    local pct = self.uploadTotal > 0 and string.format(" (%d%%)", math.floor(self.uploadBytes / self.uploadTotal * 100 + 0.5)) or ""
-    ui.text('Uploading "' .. self.uploadName .. '"' .. pct .. "...", cx, yy, { size = 12, color = c.onSurfaceVariant })
-    yy = yy + 20
+  if ui.button(folderLabel, folderX, yy, folderW, 48, { variant = "outlined", icon = "upload_file", id = "af:uploadfolder", disabled = busy }) then
+    self:uploadFolder()
   end
-  yy = yy + 8
+  yy = yy + 48 + 16
 
   if ui.iconButton("arrow_upward", cx, yy, { tooltip = "Up one level", id = "af:up", disabled = self.filesPath == "" }) then
     self:navigateFiles(self.filesPath:match("^(.*)/[^/]+$") or "")
