@@ -276,22 +276,37 @@ function D.open(game, zones, onDeckChosen, opts)
   return dialog
 end
 
+-- A checkbox toggling deck.isStarter directly, for promptSaveDeck's footer.
+-- Starter decks are a built-in-deck concept (bought with tokens on a
+-- collection-mode server instead of built by a player), so it's only
+-- offered when the caller isn't a collection-mode deck editor.
+local function starterFooter(deck)
+  return function(x, y, w)
+    deck.isStarter = ui.checkbox("savename:starter", x + 2, y + 7, deck.isStarter,
+      { label = "Starter Deck (built-in; players get it free or buy it in collection mode)" })
+  end
+end
+
 -- Save Deck dialog (save_deck_dialog.dart promptSaveDeckToLibrary).
 -- opts.store: a deck_store store; a server store lists its decks first and
 -- offers to keep a local copy too.
+-- opts.showStarter: offer the "Starter Deck" checkbox (see starterFooter).
 function D.promptSaveDeck(game, deck, onSaved, opts)
   local store = opts and opts.store
-  if store and store.kind == "server" then return D.promptSaveServerDeck(game, deck, onSaved, store) end
+  local showStarter = opts and opts.showStarter
+  if store and store.kind == "server" then return D.promptSaveServerDeck(game, deck, onSaved, store, showStarter) end
   local root = paths.decksDir()
   local scan = decks.loadDecksForGame(root, game)
   saveNameDialog.open({
-    title = "Save Deck", fieldLabel = "Deck Name", emptyNameMessage = "Enter a deck name.",
+    title = "Save Deck", width = 816, fieldLabel = "Deck Name", emptyNameMessage = "Enter a deck name.",
     existing = util.map(scan.entries, function(e) return { name = e.displayName, trailing = decks.cardCount(e) .. " card(s)" } end),
     existingHint = "Existing decks -- tap to reuse a name",
     emptyListText = "No decks found for " .. game.name .. ".",
     exists = function(name) return decks.deckExists(root, game.id, name) end,
     overwriteTitle = "Overwrite Deck?",
     overwriteMessage = function(name) return 'A deck named "' .. name .. '" already exists in the library. Overwrite it?' end,
+    footerH = showStarter and 40 or nil,
+    footer = showStarter and starterFooter(deck) or nil,
     onSave = function(name)
       local path, err = decks.writeDeck(root, game.id, name, deck)
       if path then
@@ -304,7 +319,7 @@ function D.promptSaveDeck(game, deck, onSaved, opts)
   })
 end
 
-function D.promptSaveServerDeck(game, deck, onSaved, store)
+function D.promptSaveServerDeck(game, deck, onSaved, store, showStarter)
   store:list(game, function(scan, err)
     if err then
       overlays.toast("Could not load your decks: " .. err)
@@ -318,16 +333,17 @@ function D.promptSaveServerDeck(game, deck, onSaved, store)
       end
     end
     saveNameDialog.open({
-      title = "Save Deck to " .. store.label, fieldLabel = "Deck Name", emptyNameMessage = "Enter a deck name.",
+      title = "Save Deck to " .. store.label, width = 816, fieldLabel = "Deck Name", emptyNameMessage = "Enter a deck name.",
       existing = mine,
       existingHint = "Your decks on this server -- tap to reuse a name",
       emptyListText = "No decks saved on this server for " .. game.name .. ".",
       exists = function(name) return names[name:lower()] == true end,
       overwriteTitle = "Overwrite Deck?",
       overwriteMessage = function(name) return 'You already have a deck named "' .. name .. '" on this server. Overwrite it?' end,
-      footerH = 32,
-      footer = function(x, y)
+      footerH = showStarter and 72 or 32,
+      footer = function(x, y, w)
         store.alsoLocal = ui.checkbox("savename:local", x + 2, y + 7, store.alsoLocal, { label = "Also save a copy to my local deck library" })
+        if showStarter then starterFooter(deck)(x, y + 40, w) end
       end,
       onSave = function(name)
         store:write(game, name, deck, function(ok, werr)

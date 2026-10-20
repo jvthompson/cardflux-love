@@ -60,7 +60,7 @@ end
 --             only owned, unownable and free cards, and copies are capped
 function E.new(game, opts)
   opts = opts or {}
-  local self = setmetatable({ title = "Deck Editor", game = game, store = opts.store, ownedQty = opts.ownedQty }, E)
+  local self = setmetatable({ title = "Deck Editor", game = game, store = opts.store, ownedQty = opts.ownedQty, isStarter = false }, E)
   self.slots = buildSlots(game)
   self.quantitiesBySlot = {}
   for _, s in ipairs(self.slots) do self.quantitiesBySlot[s.deckType] = newQuantities() end
@@ -134,7 +134,7 @@ function E:buildDeckConfig()
     subdecks[#subdecks + 1] = models.SubDeck.new(s.deckType,
       util.map(q.order, function(id) return models.DeckEntry.new(id, q.qty[id]) end))
   end
-  return models.DeckConfig.new(self.game.id, subdecks)
+  return models.DeckConfig.new(self.game.id, subdecks, self.isStarter)
 end
 
 function E:saveDeck()
@@ -146,7 +146,11 @@ function E:saveDeck()
     overlays.toast("Add at least one card to: " .. table.concat(missing, ", ") .. " before saving.")
     return
   end
-  deckLibraryDialog.promptSaveDeck(self.game, self:buildDeckConfig(), nil, { store = self.store })
+  local deck = self:buildDeckConfig()
+  -- Starter decks are a collection-mode-server concept (bought with tokens
+  -- instead of built), so the checkbox makes no sense when ownedQty is set.
+  deckLibraryDialog.promptSaveDeck(self.game, deck, function() self.isStarter = deck.isStarter end,
+    { store = self.store, showStarter = not self.ownedQty })
 end
 
 -- Replaces every slot with the deck's entries, skipping cards this game
@@ -166,6 +170,7 @@ function E:loadDeck(deck)
     end
     self.quantitiesBySlot[s.deckType] = q
   end
+  self.isStarter = deck.isStarter == true
   self:clampToCollection()
 end
 

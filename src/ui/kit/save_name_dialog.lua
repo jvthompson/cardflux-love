@@ -9,7 +9,7 @@ local decks = require("src.data.deck_library")
 local D = {}
 
 -- spec:
---   title, fieldLabel, emptyNameMessage
+--   title, fieldLabel, emptyNameMessage, width (default 408)
 --   existing = { {name=, trailing=}, ... }  (or a function returning it)
 --   existingHint ("Existing saves -- tap to reuse a name"), emptyListText
 --   exists(name) -> bool
@@ -38,7 +38,7 @@ function D.open(spec)
   end
   dialog = overlays.dialog({
     title = spec.title,
-    width = 408,
+    width = spec.width or 408,
     content = function(d, x, y, w)
       local c = theme.c
       if st.confirming then
