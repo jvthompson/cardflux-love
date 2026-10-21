@@ -1,6 +1,7 @@
 -- Port of the filter/sort logic in lib/ui/widgets/card_sort_menu.dart,
 -- shared by the Deck Editor, the Card View tab and the in-game Card Library.
 local util = require("src.core.util")
+local tagMatch = require("src.core.tag_match")
 
 local F = {}
 
@@ -27,9 +28,12 @@ function F.sortCardDefinitions(cards, sortKey, sets, tagGroups)
     for i, t in ipairs(tags) do order[t] = i - 1 end
     rank = function(c)
       local best = #tags
-      for _, tag in ipairs(c.types) do
-        local idx = order[tag]
-        if idx ~= nil and idx < best then best = idx end
+      for _, entry in ipairs(c.types) do
+        local g, t = tagMatch.parse(entry)
+        if g == nil or (group and g == group.name) then
+          local idx = order[t]
+          if idx ~= nil and idx < best then best = idx end
+        end
       end
       return best
     end
@@ -49,17 +53,18 @@ end
 -- selectedTagsByGroup / excludedTagsByGroup: { groupId -> {tag -> true} };
 -- selectedSetIds: {setId -> true}.
 function F.cardMatchesFilters(card, tagGroups, selectedTagsByGroup, excludedTagsByGroup, selectedSetIds, searchQuery)
-  for _, set in pairs(excludedTagsByGroup or {}) do
-    for _, tag in ipairs(card.types) do
-      if set[tag] then return false end
-    end
-  end
   for _, group in ipairs(tagGroups) do
+    local excluded = excludedTagsByGroup and excludedTagsByGroup[group.id]
+    if excluded ~= nil then
+      for tag in pairs(excluded) do
+        if tagMatch.hasTag(card.types, group.name, tag) then return false end
+      end
+    end
     local selected = selectedTagsByGroup and selectedTagsByGroup[group.id]
     if selected ~= nil and next(selected) ~= nil then
       local ok = false
-      for _, tag in ipairs(card.types) do
-        if selected[tag] then ok = true break end
+      for tag in pairs(selected) do
+        if tagMatch.hasTag(card.types, group.name, tag) then ok = true break end
       end
       if not ok then return false end
     end

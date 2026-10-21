@@ -11,6 +11,7 @@ local models = require("src.core.models")
 local util = require("src.core.util")
 local fs = require("src.data.fs")
 local ops = require("src.data.gamedef_ops")
+local tagMatch = require("src.core.tag_match")
 local resolver = require("src.data.image_resolver")
 local fileDialog = require("src.platform.file_dialog")
 local common = require("src.ui.screens.gamedef.common")
@@ -99,8 +100,9 @@ end
 local function setHasRarity(game, set, rarityTags)
   for _, card in ipairs(game.cards) do
     if card.setId == set.id then
-      for _, tg in ipairs(card.types) do
-        if util.contains(rarityTags, tg) then return true end
+      for _, entry in ipairs(card.types) do
+        local _, t = tagMatch.parse(entry)
+        if util.contains(rarityTags, t) then return true end
       end
     end
   end

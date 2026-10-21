@@ -1,5 +1,6 @@
 -- Port of lib/game/pack_generator.dart.
 local util = require("src.core.util")
+local tagMatch = require("src.core.tag_match")
 
 local P = {}
 
@@ -32,7 +33,12 @@ function P.selectPackCards(setCards, packSettings, rng)
 
   local function poolFor(tag)
     return util.filter(setCards, function(c)
-      return not pickedIds[c.id] and util.contains(c.types, tag)
+      if pickedIds[c.id] then return false end
+      for _, entry in ipairs(c.types) do
+        local _, t = tagMatch.parse(entry)
+        if t == tag then return true end
+      end
+      return false
     end)
   end
 

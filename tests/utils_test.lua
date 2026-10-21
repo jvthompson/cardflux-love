@@ -189,6 +189,11 @@ return function(t)
       t.eq(#miss, 1)
       for _, c in ipairs(hit) do t.ok(util.contains(c.types, "Rare")) end
     end)
+    t.it("matches qualified \"Group|Tag\" entries by tag name", function()
+      local p = { H.cardDef("r1", { "Rarity|Rare" }), H.cardDef("c1", { "Rarity|Common" }) }
+      local r = packs.selectPackCards(p, { { tag = "Rare", count = 1 } }, util.seededRng(1))
+      t.eq(t.ids(r, "id"), { "r1" })
+    end)
   end)
 
   t.describe("card sort/filter", function()
@@ -214,6 +219,20 @@ return function(t)
       t.ok(filters.cardMatchesFilters(u, { race }, {}, {}, { set_a = true }, ""))
       t.ok(filters.cardMatchesFilters(d, { race }, {}, {}, {}, "  dunADAN "))
       t.notOk(filters.cardMatchesFilters(d, { race }, {}, {}, {}, "zzz"))
+    end)
+
+    t.it("qualified tags from a different group with the same name don't cross-match", function()
+      local faction = models.TagGroup.new({ id = "faction", name = "Faction", tags = { "Elf", "Human" } })
+      -- "e2" carries Faction's "Elf", not Race's -- same tag text, different group.
+      local e2 = models.CardDefinition.new({ id = "e2", cardTitle = "Faction Elf Card", types = { "Faction|Elf" } })
+      local eQualified = models.CardDefinition.new({ id = "eq", cardTitle = "Race Elf Card", types = { "Race|Elf" } })
+      local sel = { race = { Elf = true } }
+      t.ok(filters.cardMatchesFilters(eQualified, { race, faction }, sel, {}, {}, ""))
+      t.notOk(filters.cardMatchesFilters(e2, { race, faction }, sel, {}, {}, ""))
+      -- A legacy bare "Elf" (no group) still matches either group, as before.
+      t.ok(filters.cardMatchesFilters(e, { race, faction }, sel, {}, {}, ""))
+      t.eq(t.ids(filters.sortCardDefinitions({ e2, eQualified }, "race", sets, { race, faction }), "id"),
+        { "eq", "e2" })
     end)
   end)
 

@@ -11,6 +11,7 @@ local uuid = require("src.core.uuid")
 local fs = require("src.data.fs")
 local resolver = require("src.data.image_resolver")
 local common = require("src.ui.screens.gamedef.common")
+local ops = require("src.data.gamedef_ops")
 local CR = require("src.ui.table.card_render")
 local color = require("src.core.color")
 local colorpicker = require("src.ui.kit.colorpicker")
@@ -160,7 +161,11 @@ function T:drawTagGroup(ro, i, group, x, y, w)
   if expanded then
     if ui.iconButton("expand_more", hx, y + 8, { id = k .. ":exp", tooltip = "Collapse" }) then self.expanded[gk] = false end
     local nw = math.min(360, hw - 48 - 80)
+    local oldName = group.name
     group.name = ui.textField(k .. ":name", hx + 44, y + 4, nw, group.name, { label = "Group Name" })
+    if group.name ~= oldName and oldName ~= "" then
+      ops.renameTagGroupInCards(self.editor.game.cards, oldName, group.name)
+    end
     ui.text(count, hx + 44 + nw + 12, y, { size = 12, h = headerH, valign = "middle", color = c.onSurfaceVariant })
   else
     local title = group.name == "" and "(unnamed group)" or group.name

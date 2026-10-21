@@ -258,6 +258,15 @@ return function(t)
         models.TagGroup.new({ id = "2", name = " rarity ", tags = { "Common", "Rare" } }) }), { "Common", "Rare" })
       t.eq(ops.rarityTags({}), {})
     end)
+    t.it("renameTagGroupInCards: rewrites only the renamed group's qualified entries", function()
+      local cards = {
+        H.cardDef("a", { "Rarity|Common", "Faction|Common" }),
+        H.cardDef("b", { "Common" }),
+      }
+      ops.renameTagGroupInCards(cards, "Rarity", "Tier")
+      t.eq(cards[1].types, { "Tier|Common", "Faction|Common" })
+      t.eq(cards[2].types, { "Common" }, "legacy bare entries are untouched")
+    end)
     t.it("library migration", function()
       local dir = tempDir()
       t.notOk(ops.directoryHasEntries(fs.join(dir, "from")))

@@ -12,6 +12,7 @@ local util = require("src.core.util")
 local uuid = require("src.core.uuid")
 local fs = require("src.data.fs")
 local filters = require("src.core.card_filters")
+local tagMatch = require("src.core.tag_match")
 local resolver = require("src.data.image_resolver")
 local common = require("src.ui.screens.gamedef.common")
 local CR = require("src.ui.table.card_render")
@@ -372,7 +373,7 @@ function T:drawForm(card, x, y, w, h)
       yy = yy + G
       local hidden = self.hiddenTagGroups[group.id] == true
       local on = 0
-      for _, tag in ipairs(group.tags) do if util.contains(card.types, tag) then on = on + 1 end end
+      for _, tag in ipairs(group.tags) do if tagMatch.hasTag(card.types, group.name, tag) then on = on + 1 end end
       if common.collapseHeader(k .. ":vis:" .. group.id, group.name, fx - 4, yy, fw + 4, 32, not hidden,
         on > 0 and (on .. " selected") or nil) then
         self.hiddenTagGroups[group.id] = not hidden or nil
@@ -382,10 +383,14 @@ function T:drawForm(card, x, y, w, h)
         yy = yy + 6
         local place, bottom = widgets.flow(fx, yy, fw, widgets.chipHeight, 8)
         for ti, tag in ipairs(group.tags) do
-          local isOn = util.contains(card.types, tag)
+          local isOn = tagMatch.hasTag(card.types, group.name, tag)
           local px, py = place(widgets.chipWidth(tag, isOn))
           if widgets.chip(tag, px, py, isOn, { id = k .. ":tag:" .. group.id .. ":" .. ti }) then
-            if isOn then util.removeValue(card.types, tag) else card.types[#card.types + 1] = tag end
+            if isOn then
+              tagMatch.removeTag(card.types, group.name, tag)
+            else
+              card.types[#card.types + 1] = tagMatch.encode(group.name, tag)
+            end
           end
         end
         yy = bottom()

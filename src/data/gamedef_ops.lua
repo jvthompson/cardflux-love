@@ -3,6 +3,7 @@
 local json = require("lib.json")
 local fs = require("src.data.fs")
 local models = require("src.core.models")
+local tagMatch = require("src.core.tag_match")
 
 local O = {}
 
@@ -265,6 +266,18 @@ function O.rarityTags(tagGroups)
     if g.name:match("^%s*(.-)%s*$"):lower() == "rarity" then return g.tags end
   end
   return {}
+end
+
+-- Rewrites every card's "oldName|Tag" types entries to "newName|Tag", so a
+-- Tag Group rename doesn't silently orphan already-tagged cards. Entries
+-- belonging to other groups, and legacy bare entries, are untouched.
+function O.renameTagGroupInCards(cards, oldName, newName)
+  for _, card in ipairs(cards) do
+    for i, entry in ipairs(card.types) do
+      local g, t = tagMatch.parse(entry)
+      if g == oldName then card.types[i] = tagMatch.encode(newName, t) end
+    end
+  end
 end
 
 ---------------------------------------------------------------------------
