@@ -32,6 +32,7 @@ function T.new(editor)
   local self = setmetatable({ editor = editor }, T)
   self.filters = filterBar.newState(editor.game)
   self.poolFraction, self.previewFraction = 0.5, 0.25
+  self.formTab = "main" -- "main" | "extra": which half of the card form is shown
   self.tabNavigatesInsideForm = false
   self.tabFocusesTitle = false -- Tab to a card also focuses its title, text selected
   self.hiddenTagGroups = {} -- tag group id -> true while its chips are collapsed
@@ -304,10 +305,21 @@ function T:drawForm(card, x, y, w, h)
   local fieldOpts = function(label)
     return { label = label, h = 44, onTab = self.tabNavigatesInsideForm and nextCard or nil }
   end
+
+  local sel = self.formTab == "extra" and 2 or 1
+  local newSel = widgets.tabBar("cv:formtab", x, y, w, { "Main Data", "Extra Data" }, sel)
+  self.formTab = newSel == 2 and "extra" or "main"
+  y, h = y + widgets.tabBarHeight, h - widgets.tabBarHeight
+
+  if self.formTab == "extra" then
+    self:drawExtraFields(card, x, y, w, h)
+    return
+  end
+
   -- With tabFocusesTitle on, Tab in the title moves on to the next card too.
   local titleOpts = fieldOpts("Card Title")
   if self.tabFocusesTitle then titleOpts.onTab = nextCard end
-  local off = ui.beginScroll("cv:form", x, y, w, h)
+  local off = ui.beginScroll("cv:form:main", x, y, w, h)
   local pad = 16
   local fx, fw = x + pad, w - 2 * pad
   local hw = (fw - G) / 2
@@ -398,23 +410,42 @@ function T:drawForm(card, x, y, w, h)
     end
   end
 
-  -- Extra fields.
-  yy = yy + 20
-  ui.text("Extra Fields", fx, yy, { weight = "medium", h = 24, valign = "middle" })
-  yy = yy + 24 + 8
+  local th
+  card.unownable, th = common.toggleRow(k .. ":unownable", "Unownable",
+    "Always stays unowned on the table -- any player can interact with it", fx, yy, fw, card.unownable)
+  yy = yy + th + pad
+  card.isFreeCard, th = common.toggleRow(k .. ":freecard", "Free Card",
+    "On collection-mode servers, every player always has unlimited copies", fx, yy, fw, card.isFreeCard)
+  yy = yy + th + pad
+  ui.endScroll("cv:form:main", yy + off - y)
+end
+
+-- The "Extra Data" tab: one row per extraField, key above a wrapping
+-- 3-line value box so longer strings (e.g. an episode synopsis) stay
+-- readable and editable.
+function T:drawExtraFields(card, x, y, w, h)
+  local k = "cv:form:" .. keyOf(card)
+  local nextCard = function(shift) self:tabToCard(shift and -1 or 1) end
+  local onTab = self.tabNavigatesInsideForm and nextCard or nil
+  local off = ui.beginScroll("cv:form:extra", x, y, w, h)
+  local pad = 16
+  local fx, fw = x + pad, w - 2 * pad
+  local yy = y + pad - off
+
   local extra = self:extraRows(card)
   local removeRow
-  local kw = (fw - 8 - 48) / 2
+  local valueH = ui.textAreaHeight(3)
   for i, row in ipairs(extra.rows) do
     local rk = k .. ":extra" .. i
-    local newKey = ui.textField(rk .. ":k", fx, yy, kw, row.key, fieldOpts("Key"))
-    local newValue = ui.textField(rk .. ":v", fx + kw + 8, yy, kw, row.value, fieldOpts("Value"))
+    local newKey = ui.textField(rk .. ":k", fx, yy, fw - 48, row.key, { label = "Key", h = 44, onTab = onTab })
+    if ui.iconButton("close", fx + fw - 40, yy + 2, { id = rk .. ":rm", tooltip = "Remove Field" }) then removeRow = i end
+    yy = yy + 44 + 8
+    local newValue = ui.textArea(rk .. ":v", fx, yy, fw, valueH, row.value, { label = "Value", onTab = onTab })
     if newKey ~= row.key or newValue ~= row.value then
       row.key, row.value = newKey, newValue
       writeExtraFields(card, extra)
     end
-    if ui.iconButton("close", fx + fw - 44, yy + 2, { id = rk .. ":rm", tooltip = "Remove Field" }) then removeRow = i end
-    yy = yy + 44 + 8
+    yy = yy + valueH + 16
   end
   if removeRow then
     table.remove(extra.rows, removeRow)
@@ -432,15 +463,7 @@ function T:drawForm(card, x, y, w, h)
     writeExtraFields(card, extra)
   end
   yy = yy + 40 + 12
-
-  local th
-  card.unownable, th = common.toggleRow(k .. ":unownable", "Unownable",
-    "Always stays unowned on the table -- any player can interact with it", fx, yy, fw, card.unownable)
-  yy = yy + th + pad
-  card.isFreeCard, th = common.toggleRow(k .. ":freecard", "Free Card",
-    "On collection-mode servers, every player always has unlimited copies", fx, yy, fw, card.isFreeCard)
-  yy = yy + th + pad
-  ui.endScroll("cv:form", yy + off - y)
+  ui.endScroll("cv:form:extra", yy + off - y)
 end
 
 ---------------------------------------------------------------------------
@@ -472,6 +495,7 @@ function T:draw(x, y, w, h)
 
   local yy = filterBar.drawFilters("cv", self.filters, game, x + 12, y, w - 24, { compact = true,
     leading = { { label = "Add Card", icon = "add", id = "cv:add", onClick = function() self:addBlankCard() end } } })
+  yy = filterBar.drawSearch("cv", self.filters, game, x + 12, yy + 12, w - 24, { labelBackground = theme.c.surface })
   if yy > y then yy = yy + 4 end
   local visible = self:visibleCards()
   local bh = y + h - yy

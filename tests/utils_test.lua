@@ -221,6 +221,17 @@ return function(t)
       t.notOk(filters.cardMatchesFilters(d, { race }, {}, {}, {}, "zzz"))
     end)
 
+    t.it("extraField search (\":field text\")", function()
+      local withField = models.CardDefinition.new({ id = "x", cardTitle = "X Card",
+        extraFields = { episode = "Blood Harvest" } })
+      t.ok(filters.cardMatchesFilters(withField, {}, {}, {}, {}, ":episode Blood"))
+      t.ok(filters.cardMatchesFilters(withField, {}, {}, {}, {}, ":Episode blood harvest"))
+      t.notOk(filters.cardMatchesFilters(withField, {}, {}, {}, {}, ":episode zzz"))
+      t.notOk(filters.cardMatchesFilters(withField, {}, {}, {}, {}, ":missingfield"))
+      t.ok(filters.cardMatchesFilters(withField, {}, {}, {}, {}, ":episode"))
+      t.notOk(filters.cardMatchesFilters(d, {}, {}, {}, {}, ":episode"))
+    end)
+
     t.it("qualified tags from a different group with the same name don't cross-match", function()
       local faction = models.TagGroup.new({ id = "faction", name = "Faction", tags = { "Elf", "Human" } })
       -- "e2" carries Faction's "Elf", not Race's -- same tag text, different group.

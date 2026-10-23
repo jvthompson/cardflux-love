@@ -61,7 +61,7 @@ function C:drawCollection(x, y, w, h)
   ui.text(distinct .. " of " .. collectible .. " cards  ·  " .. total .. " copies", x, y + 26, { size = 13, color = c.onSurfaceVariant })
   local yy = filterBar.drawFilters("co", self.filters, game, x, y + 52, w - 150, { compact = true })
   self.ownedOnly = ui.checkbox("co:owned", x + w - 130, y + 52 + 7, self.ownedOnly, { label = "Owned only" })
-  yy = filterBar.drawSearch("co", self.filters, x, yy + 8, w, { labelBackground = c.surface }) + 4
+  yy = filterBar.drawSearch("co", self.filters, game, x, yy + 8, w, { labelBackground = c.surface }) + 4
   local visible = util.filter(filterBar.visible(self.filters, game), function(d)
     return not d.unownable and (not self.ownedOnly or d.isFreeCard or (owned[d.id] or 0) > 0)
   end)

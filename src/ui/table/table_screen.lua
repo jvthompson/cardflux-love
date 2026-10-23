@@ -1870,7 +1870,7 @@ function T:drawLibrary()
   local x, y, w, h = panel.draw("library", pw, ph, "Card Library", function() self.libraryOpen = false end,
     #visible .. " of " .. #game.cards .. " card" .. (#game.cards == 1 and "" or "s"))
   local yy = filterBar.drawFilters("lib", L, game, x + 16, y, w - 32) + 12
-  yy = filterBar.drawSearch("lib", L, x + 16, yy, w - 32, { labelBackground = PANEL, clearColor = WHITE }) + 4
+  yy = filterBar.drawSearch("lib", L, game, x + 16, yy, w - 32, { labelBackground = PANEL, clearColor = WHITE }) + 4
   local gridH = y + h - yy
   if #visible == 0 then
     ui.text("No cards match the current filters.", x, yy, { w = w, h = gridH, align = "center", valign = "middle", color = { 1, 1, 1, 0.54 } })

@@ -7,6 +7,8 @@ local util = require("src.core.util")
 local filters = require("src.core.card_filters")
 local filterMenu = require("src.ui.kit.filter_menu")
 
+local input = ui.input
+
 local B = {}
 
 -- Fully permissive: nothing selected, nothing excluded, no search.
@@ -122,15 +124,118 @@ function B.drawFilters(prefix, st, game, x, y, w, opts)
   return yy + 40
 end
 
--- Search-by-name-or-ID field with a clear button. opts: labelBackground,
--- clearColor. Returns the y just below it.
-function B.drawSearch(prefix, st, x, y, w, opts)
+-- Every distinct extraField name across the game's cards (case-insensitive
+-- dedup, first-seen casing kept), alphabetical.
+local function extraFieldNames(game)
+  local seen, names = {}, {}
+  for _, c in ipairs(game.cards) do
+    for key in pairs(c.extraFields) do
+      local lk = key:lower()
+      if not seen[lk] then
+        seen[lk] = true
+        names[#names + 1] = key
+      end
+    end
+  end
+  table.sort(names, function(a, b) return a:lower() < b:lower() end)
+  return names
+end
+
+local SUGGEST_ITEM_H = 36
+local SUGGEST_MAX_VISIBLE = 6
+
+-- While the search field is focused and the query is still a bare
+-- ":fieldName" token (no space typed yet), shows a popup of matching
+-- extraField names below it. Up/Down move the highlight (wrapping), Enter
+-- or a click fills the field with ":name " ready to type the search text,
+-- and Escape (or losing focus, or typing the space) dismisses it the same
+-- way any other field-attached popup does.
+local function drawFieldSuggestions(id, st, game, x, y, w)
+  if ui.focus ~= id then return end
+  local query = st.query or ""
+  if query:sub(1, 1) ~= ":" or query:find(" ") then return end
+  local typed = query:sub(2):lower()
+  local names = util.filter(extraFieldNames(game), function(n)
+    return typed == "" or util.containsText(n:lower(), typed)
+  end)
+  if #names == 0 then return end
+
+  local sst = ui.state(id .. ":suggest")
+  local scrollId = id .. ":suggest:scroll"
+  if sst.lastTyped ~= typed then
+    sst.hi, sst.lastTyped = 1, typed
+    ui.scrollTo(scrollId, 0)
+  end
+  sst.hi = math.max(1, math.min(#names, sst.hi))
+
+  local function pick(name)
+    st.query = ":" .. name .. " "
+    ui.focusFieldAtEnd(id)
+  end
+  for _, k in ipairs(input.keys) do
+    if k.key == "down" then sst.hi, sst.follow = sst.hi < #names and sst.hi + 1 or 1, true
+    elseif k.key == "up" then sst.hi, sst.follow = sst.hi > 1 and sst.hi - 1 or #names, true
+    elseif k.key == "return" or k.key == "kpenter" then pick(names[sst.hi]) end
+  end
+
+  local c = theme.c
+  local listH = math.min(#names, SUGGEST_MAX_VISIBLE) * SUGGEST_ITEM_H
+  local popupH = listH + 8
+  local sw, sh = ui.screenSize()
+  local px, py, pw = x, y, w
+  if py + popupH > sh - 8 then py = math.max(8, y - popupH - 48) end
+  if px + pw > sw - 8 then px = sw - 8 - pw end
+  ui.overlay(function()
+    ui.cover(-1e9, -1e9, 2e9, 2e9)
+    -- Keeps the field "focused" while a click lands inside the popup
+    -- instead of the field itself (same trick ui.textField uses for its
+    -- own region) -- otherwise the generic outside-click blur would close
+    -- this popup before the click's release could pick anything.
+    if input.pressed[1] and ui.hoverIgnoringLayer(px, py, pw, popupH) then ui._focusHitThisFrame = true end
+    ui.shadow(px, py, pw, popupH, 4, 2)
+    ui.rect("fill", px, py, pw, popupH, 4, c.surfaceContainer)
+    -- Keep the keyboard-highlighted row in view (mouse hover doesn't need
+    -- this -- a hovered row is already on screen), the same "scroll to
+    -- reveal" idea ui.textArea uses to keep its caret's line visible.
+    if sst.follow then
+      sst.follow = false
+      local top, bottom = (sst.hi - 1) * SUGGEST_ITEM_H, sst.hi * SUGGEST_ITEM_H
+      local cur = ui.scrollOffset(scrollId)
+      if top < cur then ui.scrollTo(scrollId, top)
+      elseif bottom > cur + listH then ui.scrollTo(scrollId, bottom - listH) end
+    end
+    local off = ui.beginScroll(scrollId, px, py + 4, pw, listH)
+    local yy = py + 4 - off
+    for i, name in ipairs(names) do
+      local ir = ui.region(id .. ":sg" .. i, px, yy, pw, SUGGEST_ITEM_H, { cursor = "hand" })
+      if ir.hovered then
+        sst.hi = i
+        ui.rect("fill", px, yy, pw, SUGGEST_ITEM_H, 0, theme.alpha(c.onSurface, 0.08))
+      elseif i == sst.hi then
+        ui.rect("fill", px, yy, pw, SUGGEST_ITEM_H, 0, theme.alpha(c.primary, 0.12))
+      end
+      ui.text(name, px + 12, yy, { w = pw - 24, h = SUGGEST_ITEM_H, valign = "middle", ellipsis = true, color = c.onSurface })
+      if ir.clicked then pick(name) end
+      yy = yy + SUGGEST_ITEM_H
+    end
+    ui.endScroll(scrollId, #names * SUGGEST_ITEM_H)
+  end)
+end
+
+-- Search-by-name-or-ID field with a clear button, plus ":fieldName text"
+-- to search one extraField by name (see core/card_filters.lua) -- typing
+-- ":" pops up a list of the game's extraField names to autocomplete from
+-- (see drawFieldSuggestions above). opts: labelBackground, clearColor.
+-- Returns the y just below it.
+function B.drawSearch(prefix, st, game, x, y, w, opts)
   opts = opts or {}
-  st.query = ui.textField(prefix .. ":search", x, y, w - (st.query ~= "" and 44 or 0), st.query, {
-    label = "Search", hint = "Search by name or ID", h = 44, labelBackground = opts.labelBackground })
+  local id = prefix .. ":search"
+  st.query = ui.textField(id, x, y, w - (st.query ~= "" and 44 or 0), st.query, {
+    label = "Search", hint = "Search by name or ID, or :field text", h = 44, labelBackground = opts.labelBackground })
   if st.query ~= "" and ui.iconButton("clear", x + w - 40, y + 2, { tooltip = "Clear search", id = prefix .. ":clearq", color = opts.clearColor }) then
     st.query = ""
   end
+  drawFieldSuggestions(id, st, game, x, y + 44, w)
   return y + 44
 end
 

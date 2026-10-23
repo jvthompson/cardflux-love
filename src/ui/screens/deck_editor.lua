@@ -217,7 +217,7 @@ end
 function E:drawPool(x, y, w, h)
   local game = self.game
   local yy = filterBar.drawFilters("de", self.filters, game, x + 12, y, w - 24)
-  yy = filterBar.drawSearch("de", self.filters, x + 12, yy + 12, w - 24, { labelBackground = theme.c.surface })
+  yy = filterBar.drawSearch("de", self.filters, game, x + 12, yy + 12, w - 24, { labelBackground = theme.c.surface })
   local visible = self:visibleCards()
   local gx, gy, gw, gh = x, yy, w, y + h - yy
   if #visible == 0 and self.ownedQty then

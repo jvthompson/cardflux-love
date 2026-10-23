@@ -162,7 +162,7 @@ function T:drawGrid(scope, x, y, w, h, filters, owned, draggable)
   local game = self.game
   owned = owned or {}
   local yy = filterBar.drawFilters("tr:" .. scope, filters, game, x, y, w, { compact = true })
-  yy = filterBar.drawSearch("tr:" .. scope, filters, x, yy + 8, w, { labelBackground = c.surface }) + 4
+  yy = filterBar.drawSearch("tr:" .. scope, filters, game, x, yy + 8, w, { labelBackground = c.surface }) + 4
   local visible = util.filter(filterBar.visible(filters, game), function(d)
     return not d.unownable and (d.isFreeCard or (owned[d.id] or 0) > 0)
   end)

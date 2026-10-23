@@ -74,6 +74,16 @@ function F.cardMatchesFilters(card, tagGroups, selectedTagsByGroup, excludedTags
   end
   local query = util.trim(searchQuery or ""):lower()
   if query == "" then return true end
+  -- ":fieldName text" searches one extraField by name instead of the
+  -- title/ID -- e.g. ":episode Blood" on an X-Files CCG card.
+  if query:sub(1, 1) == ":" then
+    local field, text = query:sub(2):match("^(%S+)%s*(.*)$")
+    if not field then return false end
+    for k, v in pairs(card.extraFields) do
+      if k:lower() == field then return util.containsText(tostring(v):lower(), text) end
+    end
+    return false
+  end
   return util.containsText(card.cardTitle:lower(), query) or util.containsText(card.id:lower(), query)
 end
 

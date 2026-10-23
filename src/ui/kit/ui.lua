@@ -824,6 +824,15 @@ function ui.focusField(id, selectAll)
 end
 function ui.blur() pendingFocus = false end
 
+-- Focuses a field (if not already) with its caret at the end and nothing
+-- selected -- e.g. after programmatically filling in a value the user
+-- should keep typing after, without wiping it out on the next keystroke.
+local caretEndRequests = {}
+function ui.focusFieldAtEnd(id)
+  pendingFocus = id
+  caretEndRequests[id] = true
+end
+
 -- Single-line outlined text field with a floating label.
 --   text, changed, submitted = ui.textField(id, x, y, w, text, opts)
 -- opts: label, hint, prefix, error (string), disabled, password, maxLength,
@@ -846,6 +855,10 @@ function ui.textField(id, x, y, w, text, opts)
   if selectAllRequests[id] then
     selectAllRequests[id] = nil
     st.anchor, st.caret, st.scrollX = 0, n, 0
+  end
+  if caretEndRequests[id] then
+    caretEndRequests[id] = nil
+    st.caret, st.anchor = n, nil
   end
   if st.caret > n then st.caret = n end
   if st.anchor and st.anchor > n then st.anchor = n end
@@ -1065,6 +1078,326 @@ end
 -- Height a text field occupies including its error line.
 function ui.textFieldHeight(opts)
   return (opts and opts.h or 48) + ((opts and opts.error and opts.error ~= "") and 20 or 0)
+end
+
+-- Height a text area occupies for a given number of visual lines.
+function ui.textAreaHeight(lines, opts)
+  local f = theme.font((opts and opts.size) or 16)
+  return f:getHeight() * (lines or 3) + 20
+end
+
+-- Multi-line outlined text field with word-wrap and a floating label, for
+-- reading/editing longer strings comfortably. The value itself stays a
+-- flat string -- wrapping is cosmetic only, so Enter still submits (like
+-- textField) rather than inserting a newline, and paste still strips
+-- \r\n. Caret/selection are absolute character offsets into that string;
+-- visual line boundaries are derived each frame via font:getWrap (the same
+-- API ui.textHeight/ui.clampLines use), assuming -- like those -- that a
+-- wrap point consumes a single whitespace character.
+--   text, changed, submitted = ui.textArea(id, x, y, w, h, text, opts)
+-- opts: label, hint, error (string), disabled, maxLength, autofocus,
+--       filter (fn(str)->bool), selectAllOnFocus, noTab, onTab (fn(shift)),
+--       labelBackground, size (default 16)
+function ui.textArea(id, x, y, w, h, text, opts)
+  opts = opts or {}
+  text = text or ""
+  local c = theme.c
+  local st = fieldState[id]
+  if not st then
+    st = { caret = utf8Len(text), anchor = nil, scrollY = 0, blink = frameTime, prefX = nil }
+    fieldState[id] = st
+  end
+  if opts.autofocus and st.lastFrame ~= frameIndex - 1 then pendingFocus = id end
+  st.lastFrame = frameIndex
+  local n = utf8Len(text)
+  if selectAllRequests[id] then
+    selectAllRequests[id] = nil
+    st.anchor, st.caret, st.scrollY = 0, n, 0
+  end
+  if caretEndRequests[id] then
+    caretEndRequests[id] = nil
+    st.caret, st.anchor = n, nil
+  end
+  if st.caret > n then st.caret = n end
+  if st.anchor and st.anchor > n then st.anchor = n end
+  if st.anchor == st.caret then st.anchor = nil end
+  if not opts.disabled then focusOrder[#focusOrder + 1] = id end
+
+  local focused = ui.focus == id
+  local f = theme.font(opts.size or 16)
+  local lineH = f:getHeight()
+  local padX, padY = 12, 10
+  local innerX, innerW = x + padX, w - padX * 2
+  local innerY = y + padY
+  local changed, submitted = false, false
+
+  -- Visual line layout: wrapped[i] is line i's text, lineStarts[i] its
+  -- absolute character offset into `text`.
+  local wrapped, lineStarts = {}, {}
+  local function refreshWrap()
+    local _, w2 = f:getWrap(text, innerW)
+    if #w2 == 0 then w2 = { "" } end
+    wrapped = w2
+    local tn, p = utf8Len(text), 0
+    for i = 1, #wrapped do
+      lineStarts[i] = p
+      p = p + utf8Len(wrapped[i])
+      if p < tn and sub(text, p, p + 1) == " " then p = p + 1 end
+    end
+    for i = #wrapped + 1, #lineStarts do lineStarts[i] = nil end
+  end
+  refreshWrap()
+
+  local function lineOf(idx)
+    for i = #lineStarts, 1, -1 do
+      if idx >= lineStarts[i] then return i end
+    end
+    return 1
+  end
+
+  -- Width of the first i characters of a line (binary-searched elsewhere,
+  -- same technique ui.textField uses for its single line).
+  local function widthAt(lineText, i)
+    if i <= 0 then return 0 end
+    return f:getWidth(sub(lineText, 0, i))
+  end
+
+  local function caretInLine(li, relX)
+    local lineText = wrapped[li]
+    local ln = utf8Len(lineText)
+    if relX <= 0 then return 0 end
+    if relX >= widthAt(lineText, ln) then return ln end
+    local lo, hi = 0, ln
+    while lo < hi do
+      local mid = math.ceil((lo + hi) / 2)
+      if widthAt(lineText, mid) <= relX then lo = mid else hi = mid - 1 end
+    end
+    local dLo = math.abs(relX - widthAt(lineText, lo))
+    local dHi = lo < ln and math.abs(relX - widthAt(lineText, lo + 1)) or math.huge
+    return dHi < dLo and lo + 1 or lo
+  end
+
+  local function caretFromMouse(mx, my)
+    local li = math.floor((my - innerY + st.scrollY) / lineH) + 1
+    li = math.max(1, math.min(#wrapped, li))
+    return lineStarts[li] + caretInLine(li, mx - innerX)
+  end
+
+  local r = opts.disabled and { hovered = false } or ui.region(id, x, y, w, h, { cursor = "ibeam" })
+
+  if r.pressed then
+    ui._focusHitThisFrame = true
+    if not focused then
+      pendingFocus = id
+      if opts.selectAllOnFocus then
+        st.anchor, st.caret = 0, n
+      else
+        st.caret = caretFromMouse(input.mx, input.my)
+        st.anchor = nil
+      end
+    else
+      local p = caretFromMouse(input.mx, input.my)
+      if input.clicks[1] and input.clicks[1] >= 2 then
+        st.anchor, st.caret = wordLeft(text, p), wordRight(text, p)
+      elseif love.keyboard.isDown("lshift", "rshift") then
+        st.anchor = st.anchor or st.caret
+        st.caret = p
+      else
+        st.caret, st.anchor = p, nil
+      end
+    end
+    st.prefX = nil
+    st.blink = frameTime
+  elseif r.held and focused and input.down[1] and not (input.clicks[1] and input.clicks[1] >= 2) then
+    local p = caretFromMouse(input.mx, input.my)
+    if p ~= st.caret then
+      st.anchor = st.anchor or st.caret
+      st.caret = p
+      st.prefX = nil
+    end
+  end
+  if focused and r.pressed then ui._focusHitThisFrame = true end
+
+  local function selection()
+    if st.anchor == nil or st.anchor == st.caret then return nil end
+    return math.min(st.anchor, st.caret), math.max(st.anchor, st.caret)
+  end
+
+  local function deleteSelection()
+    local a, b = selection()
+    if not a then return false end
+    text = sub(text, 0, a) .. sub(text, b, utf8Len(text))
+    st.caret, st.anchor = a, nil
+    changed = true
+    return true
+  end
+
+  local function insert(s)
+    if opts.filter and not opts.filter(s) then return end
+    deleteSelection()
+    if opts.maxLength and utf8Len(text) + utf8Len(s) > opts.maxLength then
+      s = sub(s, 0, math.max(0, opts.maxLength - utf8Len(text)))
+    end
+    text = sub(text, 0, st.caret) .. s .. sub(text, st.caret, utf8Len(text))
+    st.caret, st.anchor = st.caret + utf8Len(s), nil
+    changed = true
+  end
+
+  if focused and not opts.disabled then
+    ui._focusHitThisFrame = ui._focusHitThisFrame or false
+    for _, t in ipairs(input.text) do insert(t) end
+    local ctrl = love.keyboard.isDown("lctrl", "rctrl")
+    local shift = love.keyboard.isDown("lshift", "rshift")
+    for _, k in ipairs(input.keys) do
+      local key = k.key
+      local len = utf8Len(text)
+      local function move(to)
+        if shift then st.anchor = st.anchor or st.caret else st.anchor = nil end
+        st.caret = math.max(0, math.min(len, to))
+      end
+      if key == "left" then
+        st.prefX = nil
+        local a = selection()
+        if a and not shift then st.caret, st.anchor = a, nil
+        else move(ctrl and wordLeft(text, st.caret) or st.caret - 1) end
+      elseif key == "right" then
+        st.prefX = nil
+        local _, b = selection()
+        if b and not shift then st.caret, st.anchor = b, nil
+        else move(ctrl and wordRight(text, st.caret) or st.caret + 1) end
+      elseif key == "up" or key == "down" then
+        local li = lineOf(st.caret)
+        local curX = st.prefX or widthAt(wrapped[li], st.caret - lineStarts[li])
+        st.prefX = curX
+        local ti = key == "up" and li - 1 or li + 1
+        if ti < 1 then move(0)
+        elseif ti > #wrapped then move(len)
+        else
+          if shift then st.anchor = st.anchor or st.caret else st.anchor = nil end
+          st.caret = lineStarts[ti] + caretInLine(ti, curX)
+        end
+      elseif key == "home" then
+        st.prefX = nil
+        move(lineStarts[lineOf(st.caret)])
+      elseif key == "end" then
+        st.prefX = nil
+        local li = lineOf(st.caret)
+        move(lineStarts[li] + utf8Len(wrapped[li]))
+      elseif key == "backspace" then
+        st.prefX = nil
+        if not deleteSelection() and st.caret > 0 then
+          local from = ctrl and wordLeft(text, st.caret) or st.caret - 1
+          text = sub(text, 0, from) .. sub(text, st.caret, len)
+          st.caret = from
+          changed = true
+        end
+      elseif key == "delete" then
+        st.prefX = nil
+        if not deleteSelection() and st.caret < len then
+          local to = ctrl and wordRight(text, st.caret) or st.caret + 1
+          text = sub(text, 0, st.caret) .. sub(text, to, len)
+          changed = true
+        end
+      elseif ctrl and key == "a" then
+        st.anchor, st.caret = 0, len
+      elseif ctrl and (key == "c" or key == "x") then
+        local a, b = selection()
+        if a then
+          love.system.setClipboardText(sub(text, a, b))
+          if key == "x" then deleteSelection() end
+        end
+      elseif ctrl and key == "v" then
+        local clip = (love.system.getClipboardText() or ""):gsub("[\r\n]+", " ")
+        if clip ~= "" then insert(clip) end
+      elseif key == "return" or key == "kpenter" then
+        submitted = true
+      elseif key == "escape" then
+        pendingFocus = false
+      elseif key == "tab" and opts.onTab then
+        opts.onTab(shift)
+      elseif key == "tab" and not opts.noTab then
+        -- Move focus to the next/previous field (last frame's order).
+        local order = #lastFocusOrder > 0 and lastFocusOrder or focusOrder
+        for i, fid in ipairs(order) do
+          if fid == id then
+            local j = shift and i - 1 or i + 1
+            if j < 1 then j = #order elseif j > #order then j = 1 end
+            pendingFocus = order[j]
+            local ns = fieldState[order[j]]
+            if ns then ns.anchor, ns.caret = 0, 1e9 end
+            break
+          end
+        end
+      end
+      st.blink = frameTime
+    end
+  end
+
+  refreshWrap()
+
+  -- Drawing
+  local borderCol = opts.error and c.error or (focused and c.primary or c.outline)
+  if opts.disabled then borderCol = theme.alpha(c.onSurface, 0.12) end
+  ui.rect("line", x + 0.5, y + 0.5, w - 1, h - 1, 4, borderCol, focused and 2 or 1)
+
+  local floatLabel = opts.label and (focused or text ~= "")
+  if floatLabel then
+    local lf = theme.font(12)
+    local lw = lf:getWidth(opts.label) + 8
+    ui.rect("fill", x + 8, y - 2, lw, 4, 0, opts.labelBackground or c.surface)
+    ui.text(opts.label, x + 12, y - lf:getHeight() / 2, { font = lf, color = opts.error and c.error or (focused and c.primary or c.onSurfaceVariant) })
+  end
+
+  local viewH = h - padY * 2
+  local contentH = #wrapped * lineH
+  local maxScroll = math.max(0, contentH - viewH)
+  if r.hovered and input.wheelY ~= 0 and maxScroll > 0 then
+    st.scrollY = math.max(0, math.min(maxScroll, st.scrollY - input.wheelY * lineH))
+    input.wheelY = 0
+  end
+
+  -- Keep the caret's line in view.
+  local caretLi = lineOf(st.caret)
+  local caretTop = (caretLi - 1) * lineH
+  if caretTop + lineH - st.scrollY > viewH then st.scrollY = caretTop + lineH - viewH end
+  if caretTop - st.scrollY < 0 then st.scrollY = caretTop end
+  st.scrollY = math.max(0, math.min(maxScroll, st.scrollY))
+
+  ui.pushClip(innerX, y + 2, innerW, h - 4)
+  local a, b = selection()
+  for i, lineText in ipairs(wrapped) do
+    local ly = innerY - st.scrollY + (i - 1) * lineH
+    if ly + lineH >= y and ly <= y + h then
+      if text == "" and i == 1 and not floatLabel and (opts.label or opts.hint) then
+        ui.text(opts.label or opts.hint, innerX, ly, { font = f, color = c.onSurfaceVariant })
+      elseif text == "" and i == 1 and opts.hint and focused then
+        ui.text(opts.hint, innerX, ly, { font = f, color = theme.alpha(c.onSurfaceVariant, 0.7) })
+      end
+      if focused and a then
+        local s, e = lineStarts[i], lineStarts[i] + utf8Len(lineText)
+        local sa, sb = math.max(a, s), math.min(b, e)
+        if sa < sb then
+          local sx = innerX + widthAt(lineText, sa - s)
+          local ex = innerX + widthAt(lineText, sb - s)
+          ui.rect("fill", sx, ly, ex - sx, lineH, 0, theme.alpha(c.primary, 0.3))
+        end
+      end
+      ui.text(lineText, innerX, ly, { font = f, color = opts.disabled and c.disabled or c.onSurface })
+    end
+  end
+  if focused and ((frameTime - st.blink) % 1.0) < 0.55 then
+    local li = lineOf(st.caret)
+    local cx = innerX + widthAt(wrapped[li], st.caret - lineStarts[li])
+    local cy = innerY - st.scrollY + (li - 1) * lineH
+    setColor(c.primary)
+    love.graphics.rectangle("fill", math.floor(cx), cy, 2, lineH)
+  end
+  ui.popClip()
+
+  if opts.error and opts.error ~= "" then
+    ui.text(opts.error, x + 12, y + h + 4, { size = 12, color = c.error, w = w - 24 })
+  end
+  return text, changed, submitted
 end
 
 ---------------------------------------------------------------------------
